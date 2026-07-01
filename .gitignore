@@ -1,0 +1,12 @@
+# Whitelist approach: only code/ and root docs are tracked for now.
+# data/, outputs/, literature/, notes/, galamsey_motivation_files/, rsconnect/,
+# and other root files are intentionally excluded (data lives on Dropbox).
+/*
+!/code/
+!/README.md
+!/.gitignore
+
+# R / RStudio cruft (in case it appears under code/)
+.Rhistory
+.Rproj.user/
+*.RData

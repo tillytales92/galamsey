@@ -1,0 +1,563 @@
+%======================================================================
+%  Galamsey — Academic Beamer slides (Overleaf-ready, self-contained)
+%
+%  Mirrors the content of galamsey_motivation.qmd, minus dynamic
+%  elements (the animated GIF is replaced by its final cumulative frame).
+%  Regression results are shown as proper LaTeX tables.
+%
+%  Overleaf setup — upload alongside this .tex a "figures/" folder that
+%  mirrors the repo's outputs/figures/ tree, i.e.:
+%
+%    galamsey_motivation_slides.tex
+%    figures/
+%      d1c_districts_ts_top12.png  d1d_districts_extent_top20.png
+%      d1d_national_gold_price.png
+%      maps/hex5km/      d1a_hex5km_cumulative.png  d1b_hex5km_artisanal_vs_industrial.png
+%      maps/districts/   d1a_districts_cumulative.png  d1b_districts_artisanal_vs_industrial.png
+%      spatial_clustering/  d2_map_incidence.png  d2a_morans_by_year.png  d2a_lisa_2017.png
+%                           d2bc_null_histogram.png  d2e_schematic.png  d2f_event_study.png
+%                           d2_geography_firststage.tex  d2d_spatial_lag.tex   (regression tables)
+%      motivating_facts/ d5a_ndvi_evi_distance_binscatter.png  d5b_ndvi_evi_event_study.png
+%
+%  Images are referenced by basename (resolved via \graphicspath below);
+%  the two regression-table fragments are pulled in with \input using their
+%  figures/spatial_clustering/ path. Both must live under the project root —
+%  Overleaf cannot read paths above it (no "../").
+%
+%  Theme: built-in Beamer base recoloured to the galamsey wine palette
+%  (#450457) — compiles on Overleaf and any standard TeX install with no
+%  extra theme packages. Remove "handout" below to enable \pause overlays.
+%======================================================================
+\documentclass[aspectratio=169,handout]{beamer}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,mathtools}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{caption}
+\captionsetup{font=scriptsize,labelfont=bf}
+
+\graphicspath{%
+  {figures/}%
+  {figures/maps/hex5km/}%
+  {figures/maps/hex10km/}%
+  {figures/maps/districts/}%
+  {figures/spatial_clustering/}%
+  {figures/motivating_facts/}%
+}
+
+%---------------------------------------------------------------
+%  Palette — galamsey wine
+%---------------------------------------------------------------
+\definecolor{galawine}{RGB}{69,4,87}
+\definecolor{galaorange}{RGB}{230,126,34}
+\definecolor{galagrey}{RGB}{120,120,120}
+
+\usefonttheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamercolor{structure}{fg=galawine}
+\setbeamercolor{title}{fg=galawine}
+\setbeamercolor{frametitle}{bg=galawine,fg=white}
+\setbeamercolor{alerted text}{fg=galaorange}
+\setbeamercolor{block title}{bg=galawine,fg=white}
+\setbeamercolor{block body}{bg=galawine!6,fg=black}
+\setbeamercolor{itemize item}{fg=galawine}
+\setbeamercolor{itemize subitem}{fg=galaorange}
+\setbeamertemplate{itemize items}[circle]
+\setbeamersize{text margin left=0.7cm,text margin right=0.7cm}
+
+% Flat wine frametitle bar (metropolis-like)
+\setbeamertemplate{frametitle}{%
+  \nointerlineskip%
+  \begin{beamercolorbox}[wd=\paperwidth,ht=3.0ex,dp=1.4ex,leftskip=0.5cm,rightskip=0.5cm]{frametitle}%
+    \usebeamerfont{frametitle}\insertframetitle%
+  \end{beamercolorbox}%
+}
+
+% Full-bleed wine section divider frames (echo the QMD purple "Part" slides)
+\AtBeginSection[]{%
+  \begin{frame}[plain]
+    \begin{tikzpicture}[remember picture,overlay]
+      \fill[galawine] (current page.south west) rectangle (current page.north east);
+    \end{tikzpicture}
+    \vfill
+    \centering{\color{white}\usebeamerfont{frametitle}\Large\textbf{\insertsection}}
+    \vfill
+  \end{frame}
+}
+
+\newcommand{\srcnote}[1]{{\scriptsize\color{galagrey}#1}}
+
+%---------------------------------------------------------------
+%  Title
+%---------------------------------------------------------------
+\title{Galamsey}
+\subtitle{Spatial Distribution, Clustering, and Evidence for Economic Spillovers}
+\author{Sree Ayyar \and Hema Balarama \and Yoshiki Wiskamp \and Till Meissner}
+\institute{London School of Economics}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+%======================================================================
+\begin{frame}{Overview}
+  \textbf{Data:} Barenblitt et al.\ (2021) remote-sensing panel --- mine
+  extent polygons, annual 2007--2017, SW Ghana ($\sim$104{,}730 km$^2$).
+
+  \medskip
+  \textbf{Unit of analysis:} 5 km hexagonal grid over the study region.
+
+  \medskip
+  \textbf{Questions:}
+  \begin{enumerate}\setlength\itemsep{0.4em}
+    \item \textbf{Where?} Spatial distribution of galamsey across SW Ghana
+    \item \textbf{Clustered?} Statistical evidence for spatial autocorrelation
+    \item \textbf{Why clustered?} Geography vs.\ social and economic drivers
+    \item \textbf{Spreading?} Evidence for spillovers along river corridors
+  \end{enumerate}
+
+  \medskip
+  \alert{Core question:} Is the spatial clustering of galamsey explained by
+  underlying geography (gold geology, river networks), or is there evidence
+  of social and economic spillover processes?
+\end{frame}
+
+%======================================================================
+\section{Where does galamsey happen?}
+%======================================================================
+
+\begin{frame}{Data: Barenblitt et al.\ (2021)}
+  \begin{columns}[T]
+    \begin{column}{0.56\textwidth}
+      \textbf{Remote-sensing derived mine extent, SW Ghana}
+      \begin{itemize}\setlength\itemsep{0.45em}
+        \item \textbf{Annual time series:} 2007--2017, new conversions per year
+        \item \textbf{Full 2019 extent:} artisanal vs industrial mining
+        \item Classified from Landsat imagery, Random Forest model
+        \item \textbf{Coverage:} SW Ghana only ($\sim$104{,}730 km$^2$) ---
+              northern districts have no data, not zero mines
+        \item \textbf{Accuracy:} producer accuracy 75.6\% --- $\sim$1 in 4
+              real mines missed; treat as positive labels only
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.44\textwidth}
+      \centering
+      \includegraphics[width=\linewidth]{d2_map_incidence.png}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Fine-Scale Incidence --- 5 km Hexagons}
+  \centering
+  \includegraphics[height=0.74\textheight]{d1a_hex5km_cumulative.png}
+
+  \srcnote{Cumulative artisanal mining land cover per 5 km hexagon, 2007--2017
+  (final frame of the animated sequence in the HTML deck). Tight spatial
+  clustering is evident within and across district boundaries.}
+\end{frame}
+
+\begin{frame}{Artisanal vs Industrial Mining --- 5 km Hexagons}
+  \centering
+  \includegraphics[width=0.92\linewidth]{d1b_hex5km_artisanal_vs_industrial.png}
+
+  \srcnote{Left: artisanal (galamsey). Right: industrial (formal). Artisanal
+  mining is more dispersed and river-proximate; industrial concentrates in
+  fewer, larger sites. Barenblitt 2019 extent.}
+\end{frame}
+
+\begin{frame}{District-Level Extent}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \textbf{Galamsey is widespread across SW Ghana}
+      \begin{itemize}\setlength\itemsep{0.45em}
+        \item \textbf{96 of Ghana's 260 districts} fall within the Barenblitt
+              survey area
+        \item Artisanal mining is recorded across the full survey area ---
+              not confined to a handful of hotspots
+        \item The remaining 164 districts have no coverage: absent data means
+              \emph{no survey}, not zero mines
+        \item \textbf{Highly concentrated:} the top 10\% of districts
+              ($\sim$10) account for \textbf{86\%} of total artisanal extent
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \centering
+      \includegraphics[width=0.92\linewidth]{d1a_districts_cumulative.png}
+    \end{column}
+  \end{columns}
+
+  \medskip
+  \srcnote{Cumulative artisanal mining land cover per district, 2005--2019.
+  Plasma colour scale (sqrt transform). Barenblitt et al.\ (2021).}
+\end{frame}
+
+%======================================================================
+\section{Is galamsey spatially clustered?}
+%======================================================================
+
+\begin{frame}{Global Moran's I: Is Clustering Statistically Significant?}
+  \centering
+  \includegraphics[height=0.72\textheight]{d2a_morans_by_year.png}
+
+  \srcnote{Global Moran's I on annual new mining (ha) per 5 km hexagon,
+  2007--2017. Queen contiguity weights, row-standardised. Red = $p<0.05$.
+  Moran's I consistently positive and significant.}
+\end{frame}
+
+\begin{frame}{LISA Clusters: Where Are the Hotspots?}
+  \centering
+  \includegraphics[height=0.72\textheight]{d2a_lisa_2017.png}
+
+  \srcnote{Local Moran's I clusters (LISA), artisanal mining extent 2019.
+  \textbf{HH} = high mining surrounded by high mining (hotspot);
+  \textbf{LL} = low surrounded by low. HH clusters are tightly localised
+  in a corridor of SW Ghana.}
+\end{frame}
+
+%======================================================================
+\section{What drives the clustering?}
+%======================================================================
+
+\begin{frame}{Decomposing Spatial Clustering}
+  The observed spatial autocorrelation has two components:
+  \[
+    I_{\text{observed}} \;=\;
+    \underbrace{I_{\text{geography}}}_{\text{clustering due to geography}}
+    \;+\;
+    \underbrace{I_{\text{excess}}}_{\text{excess (unexplained)}}
+  \]
+  \begin{itemize}\setlength\itemsep{0.5em}
+    \item \alert{$I_{\text{geography}}$} --- mines locate where geology and
+          rivers make mining viable: spatial concentration, but not
+          necessarily neighbour-to-neighbour spillover.
+    \item \alert{$I_{\text{excess}}$} --- mines cluster \emph{more than
+          geography alone can explain}. Consistent with social/economic
+          spillovers: labour mobility, information diffusion, reduced
+          enforcement risk.
+    \item \textbf{Strategy:} (1) confirm geography is a genuine predictor;
+          (2) show residual clustering far exceeds what the richest geography
+          null --- including an unrestricted spatial spline (M5) --- can
+          account for.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Geography as a Predictor: First Stage}
+  \begin{center}
+    {\footnotesize\input{figures/spatial_clustering/d2_geography_firststage.tex}}
+  \end{center}
+  \srcnote{LPM, 5 km hexes, robust SEs. $^{***}\,p<0.01$.}
+  \begin{itemize}\setlength\itemsep{0.35em}
+    \item \textbf{River proximity:} mining concentrates near waterways ---
+          alluvial gold deposits and water requirements of artisanal processing.
+    \item \textbf{Gold geology:} hexes on gold-suitable ground show higher
+          mine incidence --- consistent with ore-targeting.
+    \item Low $R^2$: geography explains \emph{where}, not \emph{why} mines cluster.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Building the Geography Control: M1 $\to$ M4}
+  \begin{itemize}\setlength\itemsep{0.5em}
+    \item \textbf{M1} --- first-stage geography: distance to river + gold
+          suitability
+    \item \textbf{M2} --- adds neighbourhood geography (spatial lags of both
+          covariates)
+    \item \textbf{M3} --- adds terrain (elevation, slope)
+    \item \textbf{M4} --- adds interactions
+  \end{itemize}
+  \medskip
+  \begin{center}
+    \IfFileExists{figures/spatial_clustering/d2_m1m4_ladder.tex}{%
+      {\small\input{figures/spatial_clustering/d2_m1m4_ladder.tex}}%
+    }{%
+      \textit{[M1--M4 fit table pending --- run \texttt{d03c\_maup\_robustness.R}]}%
+    }
+  \end{center}
+  \srcnote{5 km hexes. Fit rises M1$\to$M4 yet $p$\,(excess) $\approx 0$
+  throughout. Robust at 1 km and 2 km (MAUP).}
+\end{frame}
+
+\begin{frame}{Ruling Out Unobserved Geography: The Spatial Spline (M5)}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \[
+        \text{logit}\,P(\text{mine}_i) =
+          \underbrace{X_i\beta}_{\text{M4 cov.}} +
+          \underbrace{f(\text{east}_i,\;\text{north}_i)}_{\text{smooth surface}}
+      \]
+      \begin{itemize}\setlength\itemsep{0.4em}
+        \item A spatially \textbf{smooth} omitted driver --- geographic,
+              geological, economic, or institutional --- could still explain
+              the clustering even after M1--M4.
+        \item \textbf{M5} adds a \textbf{thin-plate spline}: a flexible 2-D
+              surface absorbing \emph{all} smooth spatial variation, measured
+              or not.
+        \item Lets \emph{pure location} soak up whatever covariates miss ---
+              the most conservative geography null possible.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{center}
+        \IfFileExists{figures/spatial_clustering/d2_m5_stats.tex}{%
+          {\small\input{figures/spatial_clustering/d2_m5_stats.tex}}%
+        }{%
+          \textit{[M4 vs M5 stats table pending]}%
+        }
+      \end{center}
+      \srcnote{5 km hexes. $p$\,(excess) $= 0$ under both M4 and M5.
+      Robust at 2 km.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{M5: Observed Clustering Still Exceeds the Null}
+  {\small\textbf{Simulation:} draw mine placements from model-predicted
+  probabilities (no spillover term), repeat 500$\times$, compute Moran's I ---
+  this is where clustering lands if only geography drives it.}
+
+  \medskip
+  \begin{columns}[T]
+    \begin{column}{0.60\textwidth}
+      \begin{center}
+        \IfFileExists{figures/spatial_clustering/d2_m5_null_5km.png}{%
+          \includegraphics[width=\linewidth]{d2_m5_null_5km.png}%
+        }{%
+          \textit{[Null distribution figure pending --- run \texttt{d03c\_maup\_robustness.R}]}%
+        }
+      \end{center}
+    \end{column}
+    \begin{column}{0.40\textwidth}
+      \textbf{Residual Moran's I}
+      \begin{center}
+        \IfFileExists{figures/spatial_clustering/d2_m5_resid_moran.tex}{%
+          {\small\input{figures/spatial_clustering/d2_m5_resid_moran.tex}}%
+        }{%
+          \textit{[Table pending]}%
+        }
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Mining Propensity Net of Measured Covariates}
+  \centering
+  \IfFileExists{figures/spatial_clustering/d2_m5_surface_5km.png}{%
+    \includegraphics[height=0.68\textheight]{d2_m5_surface_5km.png}%
+  }{%
+    \textit{[M5 surface map pending --- run \texttt{d03c\_maup\_robustness.R}]}%
+  }
+
+  \srcnote{M5 spatial term $s$(easting, northing), 5 km hexagons, mean-centred
+  logit. \textbf{Red} = more mining than geology/river/terrain predicts at that
+  hex; \textbf{Blue} = less. Not attributable to any smooth confounder.}
+\end{frame}
+
+%======================================================================
+\section{Does galamsey spread? Evidence for spillovers}
+%======================================================================
+
+\begin{frame}{Spatial Lag Model: Estimating Equation}
+  \[
+    \Delta y_{it} \;=\; \alpha_i \;+\; \gamma_t
+      \;+\; \rho\,\bar{y}_{N(i),\,t-1} \;+\; \varepsilon_{it}
+  \]
+  \begin{itemize}\setlength\itemsep{0.4em}
+    \item $\Delta y_{it}$: new artisanal mining in hex $i$, year $t$ (ha; or
+          0/1 for the LPM variant)
+    \item $\bar{y}_{N(i),\,t-1}$: lagged \emph{cumulative} mining stock in
+          queen-contiguous neighbours at end of $t-1$
+    \item $\rho$: spatial spillover coefficient
+    \item $\alpha_i$: hex FE --- absorb all time-invariant geography
+    \item $\gamma_t$: year FE --- absorb national shocks (gold price, policy)
+    \item \textbf{Identification:} within-hex variation over time. Residual
+          concern: time-varying \emph{local} confounders (e.g.\ new roads).
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Spatial Lag Regression: Results}
+  \begin{center}
+    {\footnotesize\input{figures/spatial_clustering/d2d_spatial_lag.tex}}
+  \end{center}
+  \begin{itemize}\setlength\itemsep{0.35em}
+    \item \textbf{Intensive margin:} $+10$ ha cumulative neighbour mining
+          $\to +0.91$ ha new mining this year ($t=7.5$, $p<10^{-13}$)
+    \item \textbf{Extensive margin:} $+50$ ha in neighbours $\to \sim$13 pp
+          higher probability of any mine onset ($t=8.8$, $p<10^{-17}$)
+  \end{itemize}
+  \srcnote{\textbf{Notes:} \texttt{fixest::feols}, two-way FE, SEs clustered by
+  hex. $^{***}\,p<0.01$. Caveat: time-varying local confounders not ruled out
+  without an instrument.}
+\end{frame}
+
+\begin{frame}{Upstream vs Downstream: Conceptual Logic}
+  \begin{columns}[T]
+    \begin{column}{0.44\textwidth}
+      \textbf{Mechanism:} mining upstream contaminates waterways and degrades
+      agricultural land --- reducing farming returns downstream and pushing
+      communities into artisanal mining.
+
+      \medskip
+      \textbf{Prediction:} if this channel operates, upstream neighbours'
+      mining should \emph{precede} focal-hex onset; downstream onset follows
+      once agricultural productivity falls.
+    \end{column}
+    \begin{column}{0.56\textwidth}
+      \centering
+      \includegraphics[width=0.85\linewidth]{d2e_schematic.png}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Upstream vs Downstream: Evidence}
+  \centering
+  \includegraphics[height=0.66\textheight]{d2f_event_study.png}
+
+  \srcnote{Mean cumulative mining in upstream vs downstream neighbours,
+  normalised to the year before focal-hex onset ($t=-1=0$). If upstream mining
+  degrades agricultural land and pushes downstream communities into mining,
+  upstream neighbours' mining should rise \emph{before} the focal onset.
+  River-adjacent 5 km hexes. Barenblitt et al.\ (2021).}
+\end{frame}
+
+\begin{frame}{Summary: A Cumulative Case for Economic Spillovers}
+  \begin{table}
+    \centering\small
+    \begin{tabular}{p{0.24\textwidth}p{0.36\textwidth}p{0.30\textwidth}}
+      \toprule
+      \textbf{Evidence} & \textbf{What it shows} & \textbf{Geography alternative} \\
+      \midrule
+      M1--M4 null & $p$\,(excess) $= 0$ across all measured-geography models
+        & Finer-scale geology than Girard 1:10M \\[0.3em]
+      M5 spatial spline & Excess clustering survives the most flexible
+        geography null & Non-smooth sub-grid driver \\[0.3em]
+      Spatial lag & Neighbour stock predicts onset, within-hex $+$ year FE
+        & Time-varying local confounders \\[0.3em]
+      Direction of spread & Raw data: faster downstream; statistical tests
+        inconclusive & --- \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+\end{frame}
+
+%======================================================================
+\section{Motivating Facts}
+%======================================================================
+
+\begin{frame}{National Trend vs Gold Price}
+  \centering
+  \includegraphics[height=0.70\textheight]{d1d_national_gold_price.png}
+
+  \srcnote{Annual new galamsey conversion (ha) alongside international gold
+  price (USD/troy oz). The 2007--2012 price boom coincides with a marked
+  acceleration in mining --- consistent with economic incentives driving entry.}
+\end{frame}
+
+\begin{frame}{NDVI and EVI vs Distance to Nearest Mine}
+  \centering
+  \includegraphics[height=0.70\textheight]{d5a_ndvi_evi_distance_binscatter.png}
+
+  \srcnote{Binned scatter of pixel-level NDVI (top) and EVI (bottom) vs
+  distance to nearest artisanal mine, 2019. Each point = mean of a 0.5 km bin;
+  point size $\propto$ pixel count; LOESS fit weighted by bin size. Landsat
+  250 m composites (6.25 ha/pixel).}
+\end{frame}
+
+\begin{frame}{Agricultural Productivity Around Mine Onset --- Event Study}
+  \centering
+  \includegraphics[height=0.68\textheight]{d5b_ndvi_evi_event_study.png}
+
+  \srcnote{Mean NDVI (top) and EVI (bottom) by distance band, normalised to
+  $t=-1$, aligned to each location's nearest mine onset year (Barenblitt TS,
+  2007--2017). Near bands = treated; far band (5--20 km) = control. A drop in
+  near bands at/after $t=0$ with a flat control band is consistent with
+  mine-driven vegetation loss.}
+\end{frame}
+
+\begin{frame}{Next Steps}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Empirical gaps --- data needed}
+      \begin{itemize}\small\setlength\itemsep{0.35em}
+        \item \textbf{Climate shocks:} does rainfall drought push people into
+              mining? Needs CHIRPS annual rainfall
+        \item \textbf{Formal-mine trigger:} does galamsey accelerate after a
+              licence appears nearby? Needs Minerals Commission licence series
+        \item \textbf{Reversion:} do mine areas recover? Needs RS panel with
+              annual mine \emph{presence}
+        \item \textbf{Cocoa yields:} spillovers onto COCOBOD district purchases
+        \item \textbf{Labour reallocation:} is agricultural employment falling
+              in high-galamsey districts? Needs census microdata
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \textbf{Methodological improvements}
+      \begin{itemize}\small\setlength\itemsep{0.35em}
+        \item \textbf{River flow direction:} replace the UTM-northing
+              upstream/downstream proxy with an actual flow-direction raster
+              (e.g.\ MERIT Hydro)
+        \item \textbf{NDVI/EVI for cropland only:} mask to cropland pixels
+              (ESA CCI / FAO land cover) to sharpen the agricultural signal
+        \item \textbf{Dataset construction:} build a hexagon or
+              enumeration-area panel combining mining intensity, NDVI/EVI and
+              census variables
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+%======================================================================
+\appendix
+\section{Annex: Additional Figures}
+%======================================================================
+
+\begin{frame}{Annex: Cumulative Mining Extent --- Districts}
+  \centering
+  \includegraphics[height=0.72\textheight]{d1a_districts_cumulative.png}
+
+  \srcnote{Cumulative artisanal mining land cover per district, 2005--2019.
+  Plasma colour scale (sqrt transform). Barenblitt et al.\ (2021).}
+\end{frame}
+
+\begin{frame}{Annex: Artisanal vs Industrial Mining --- Districts}
+  \centering
+  \includegraphics[width=0.92\linewidth]{d1b_districts_artisanal_vs_industrial.png}
+
+  \srcnote{Left: artisanal (galamsey). Right: industrial (formal). Note the
+  divergent spatial footprints. Barenblitt 2019 extent.}
+\end{frame}
+
+\begin{frame}{Annex: Top Districts by Mining Extent}
+  \centering
+  \includegraphics[height=0.72\textheight]{d1d_districts_extent_top20.png}
+
+  \srcnote{Top 20 districts by cumulative artisanal mining extent (ha),
+  2005--2019. A small number of districts account for the large majority of
+  total galamsey.}
+\end{frame}
+
+\begin{frame}{Annex: District Trajectories Over Time}
+  \centering
+  \includegraphics[height=0.72\textheight]{d1c_districts_ts_top12.png}
+
+  \srcnote{Annual new conversion (ha) for the 12 districts with highest
+  cumulative extent. Onset years and growth rates vary considerably.}
+\end{frame}
+
+%======================================================================
+\begin{frame}{References}
+  \footnotesize
+  \begin{itemize}\setlength\itemsep{0.6em}
+    \item Barenblitt, A., Payton, A., Lagomasino, D., Fatoyinbo, L., et al.\
+          (2021). The large footprint of small-scale artisanal gold mining in
+          Ghana. \emph{Science of the Total Environment}, 781, 146644.
+    \item Girard, V., et al.\ (2022). Gold-suitable geology of Africa
+          (CGMW-BRGM 1:10M Geological Map derivative).
+  \end{itemize}
+\end{frame}
+
+\end{document}

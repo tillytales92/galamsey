@@ -1,0 +1,1164 @@
+---
+title: "Galamsey event study — upstream→NDVI and neighbour→mining"
+author: "Sree Ayyar, Till Meissner"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+params:
+  resolution_km: 2   # set to 1, 2, or 5; or override via rmarkdown::render(params=list(resolution_km=5))
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 5, dpi = 120)
+pacman::p_load(tidyverse, sf, spdep, fixest, did, igraph, here, broom, kableExtra, panelView)
+# did_multiplegt_dyn lives in DIDmultiplegtDYN (optional — continuous-dose robustness only).
+# DIDmultiplegtDYN 2.3.0 calls polars via the bare symbol `pl` but does NOT import polars in its
+# NAMESPACE, so `pl` is only resolvable when polars is *attached* (library) on the search path —
+# otherwise did_multiplegt_dyn dies with "object 'pl' not found" inside $with_columns(). Hence we
+# require BOTH packages here and attach polars in the dcdh chunk.
+HAS_DCDH <- requireNamespace("DIDmultiplegtDYN", quietly = TRUE) &&
+            requireNamespace("polars", quietly = TRUE)
+
+union <- base::union
+
+# ---- Static-output export --------------------------------------------------
+# Every headline figure and table is also written to outputs/figures/event_study/
+# so galamsey_motivation.qmd can embed them without re-running any estimation.
+# Figures -> PNG via save_es(); tables -> GitHub-flavoured markdown via save_md()
+# (the deck reads these with cat(readLines(...))). All saves are guarded so an
+# export hiccup never aborts the knit.
+out_es <- here("outputs", "figures", "event_study")
+dir.create(out_es, recursive = TRUE, showWarnings = FALSE)
+
+save_es <- function(plot, file, width = 9, height = 5, dpi = 150) {
+  tryCatch(
+    ggplot2::ggsave(file.path(out_es, file), plot, width = width, height = height, dpi = dpi),
+    error = function(e) message("save_es skipped ", file, ": ", conditionMessage(e)))
+  invisible(plot)
+}
+
+save_md <- function(df, file, digits = 4, caption = NULL) {
+  tryCatch({
+    md <- knitr::kable(as.data.frame(df), format = "pipe", digits = digits, caption = caption)
+    writeLines(md, file.path(out_es, file))
+  }, error = function(e) message("save_md skipped ", file, ": ", conditionMessage(e)))
+  invisible(df)
+}
+
+# Grouped markdown table: rows are blocked by `group_col`, which becomes a bold header row above
+# each block (pack_rows-style) instead of repeating on every line. Renders as a plain GFM pipe
+# table the deck can cat(). Used for the treatment/exposure result tables.
+save_md_grouped <- function(df, file, group_col, digits = 4) {
+  tryCatch({
+    df   <- as.data.frame(df, check.names = FALSE)
+    cols <- setdiff(names(df), group_col)
+    fmt_col <- function(col)
+      if (is.numeric(col)) ifelse(is.na(col), "", as.character(round(col, digits)))
+      else                 ifelse(is.na(col), "", as.character(col))
+    body <- as.data.frame(lapply(df[cols], fmt_col), stringsAsFactors = FALSE, check.names = FALSE)
+    make_row <- function(cells) paste0("| ", paste(cells, collapse = " | "), " |")
+    lines <- c(make_row(cols), make_row(rep("---", length(cols))))
+    for (g in unique(as.character(df[[group_col]]))) {
+      idx   <- which(as.character(df[[group_col]]) == g)
+      lines <- c(lines, make_row(c(paste0("**", g, "**"), rep("", length(cols) - 1))))
+      for (i in idx) lines <- c(lines, make_row(unlist(body[i, ], use.names = FALSE)))
+    }
+    writeLines(lines, file.path(out_es, file))
+  }, error = function(e) message("save_md_grouped skipped ", file, ": ", conditionMessage(e)))
+  invisible(df)
+}
+```
+
+This document **implements** the event-study designs specified in
+[`event_study_design.md`](event_study_design.md). It reads the shared panel built by
+`2_build/b_03e_assemble_eventpanel.R` (`data/processed/event_panel_{1|2|5}km.rds`; resolution set via `params$resolution_km`) and estimates two distinct questions
+that share that panel:
+
+| | **Q1 — Waterborne degradation** | **Q2 — Mining diffusion** |
+|---|---|---|
+| Outcome | downstream NDVI | own-hex mining (intensity + onset) |
+| Treatment | **upstream** mining onset | **neighbour** mining onset |
+| Right neighbour | directed upstream (flow graph) | adjacency (queen) + upstream as river-corridor variant |
+| Placebo | downstream onset | downstream onset |
+
+**Q2 is the `d03` Section D2d spatial-lag regression, upgraded** from a single TWFE regression of
+new mining on the neighbour stock — exactly the contaminated continuous-treatment-TWFE estimator the
+design doc warns against — to a staggered event study with pre-trends and heterogeneity-robust
+estimators.
+
+Estimator default: **Callaway & Sant'Anna** (`did::att_gt` → `aggte(type="dynamic")`) with
+**not-yet-treated** controls; continuous-dose robustness via `did_multiplegt_dyn`. SEs clustered on a
+coarse spatial block (sub-basin stand-in — see caveats).
+
+---
+
+# Conceptual framework — neighbour definitions
+
+```{r schematic-neighbours, fig.width=9, fig.height=8, echo=FALSE}
+# Five-group schematic: focal / upstream-all / upstream-1-hop / lateral /
+# downstream-1-hop / downstream-all. Roles match the event-study treatment
+# columns used throughout this document.
+
+bbox_sfc <- st_as_sfc(st_bbox(c(xmin = 0, ymin = 0, xmax = 20000, ymax = 28000)))
+st_crs(bbox_sfc) <- 32630
+
+hex_ex <- st_sf(
+  geometry = st_make_grid(bbox_sfc, cellsize = 5000, square = FALSE)
+) |>
+  mutate(
+    hex_id = paste0("h", row_number()),
+    cx     = st_coordinates(st_centroid(geometry))[, 1],
+    cy     = st_coordinates(st_centroid(geometry))[, 2]
+  )
+
+mid_cx <- median(hex_ex$cx)
+mid_cy <- median(hex_ex$cy)
+
+# River linestring (flowing south → north = increasing y)
+river_pts <- matrix(c(
+  mid_cx - 400,      0,
+  mid_cx + 900,   7000,
+  mid_cx - 200,  14000,
+  mid_cx + 700,  21000,
+  mid_cx - 100,  28000
+), ncol = 2, byrow = TRUE)
+river_ex_sf <- st_sf(geometry = st_sfc(st_linestring(river_pts), crs = 32630))
+
+# Focal hex = slightly below grid midpoint: 2+ upstream hexes and 2 downstream hexes visible
+focal_i     <- which.min((hex_ex$cx - mid_cx)^2 + (hex_ex$cy - (mid_cy - 2000))^2)
+focal_id_ex <- hex_ex$hex_id[focal_i]
+focal_cy_ex <- hex_ex$cy[focal_i]
+
+# Hexes the river intersects
+river_hits <- which(lengths(st_intersects(hex_ex, river_ex_sf)) > 0)
+river_ids  <- hex_ex$hex_id[river_hits]
+
+# Upstream = river hexes strictly above focal; downstream = strictly below
+up_hits    <- river_hits[hex_ex$cy[river_hits] > focal_cy_ex]
+dn_hits    <- river_hits[hex_ex$cy[river_hits] < focal_cy_ex]
+up_all_ids <- hex_ex$hex_id[up_hits]
+dn_all_ids <- hex_ex$hex_id[dn_hits]
+
+# Nearest (1-hop): river hex immediately adjacent to focal in each direction
+near_up_id <- if (length(up_all_ids) > 0) up_all_ids[which.min(hex_ex$cy[up_hits])] else character(0)
+near_dn_id <- if (length(dn_all_ids) > 0) dn_all_ids[which.max(hex_ex$cy[dn_hits])] else character(0)
+
+# Lateral = queen-adjacent to focal but NOT on the flow path
+nb_ex       <- poly2nb(hex_ex, queen = TRUE)
+neigh_i     <- nb_ex[[focal_i]]
+lateral_ids <- hex_ex$hex_id[neigh_i][!hex_ex$hex_id[neigh_i] %in% river_ids]
+
+# Assign roles; nearest subsets take priority over "all reachable"
+hex_ex <- hex_ex |>
+  mutate(role = case_when(
+    hex_id == focal_id_ex   ~ "Focal (mine onset)",
+    hex_id == near_up_id    ~ "Upstream — 1-hop",
+    hex_id %in% up_all_ids  ~ "Upstream — all reachable",
+    hex_id %in% lateral_ids ~ "Lateral",
+    hex_id == near_dn_id    ~ "Downstream — 1-hop",
+    hex_id %in% dn_all_ids  ~ "Downstream — all reachable",
+    TRUE                    ~ "Other hex"
+  ))
+
+role_order <- c(
+  "Focal (mine onset)",
+  "Upstream — all reachable",
+  "Upstream — 1-hop",
+  "Lateral",
+  "Downstream — 1-hop",
+  "Downstream — all reachable",
+  "Other hex"
+)
+role_colours_ex <- c(
+  "Focal (mine onset)"         = "#721F81",
+  "Upstream — all reachable"   = "#4292C6",
+  "Upstream — 1-hop"           = "#08306B",
+  "Lateral"                    = "#238B45",
+  "Downstream — 1-hop"         = "#D94701",
+  "Downstream — all reachable" = "#FDAE6B",
+  "Other hex"                  = "#F0F0F0"
+)
+legend_labels <- c(
+  "Focal (mine onset)"         = "Focal — mine onset",
+  "Upstream — all reachable"   = "Upstream all reachable   [treatment]",
+  "Upstream — 1-hop"           = "Upstream nearest 1-hop   [treatment, variant]",
+  "Lateral"                    = "Lateral (queen, off-flow)  [comparison]",
+  "Downstream — 1-hop"         = "Downstream nearest 1-hop  [placebo]",
+  "Downstream — all reachable" = "Downstream all reachable  [placebo]",
+  "Other hex"                  = "Other hex"
+)
+
+label_map <- c(
+  "Focal (mine onset)"         = "ONSET",
+  "Upstream — all reachable"   = "UP",
+  "Upstream — 1-hop"           = "UP\n1-hop",
+  "Lateral"                    = "LAT",
+  "Downstream — 1-hop"         = "DN\n1-hop",
+  "Downstream — all reachable" = "DN"
+)
+label_df_ex <- hex_ex |>
+  st_drop_geometry() |>
+  filter(role %in% names(label_map)) |>
+  mutate(label   = label_map[role],
+         txt_col = if_else(role == "Downstream — all reachable", "grey20", "white"))
+
+arrow_x_ex   <- max(hex_ex$cx) + 2500
+arrow_top_ex <- mid_cy + 5500
+arrow_bot_ex <- mid_cy - 5500
+
+p_schem <- ggplot() +
+  geom_sf(data = hex_ex, aes(fill = role), colour = "grey55", linewidth = 0.45) +
+  geom_sf(data = river_ex_sf, colour = "#3B8ED0", linewidth = 1.4) +
+  geom_text(data = label_df_ex, aes(x = cx, y = cy, label = label, colour = txt_col),
+            fontface = "bold", size = 2.8, lineheight = 0.9) +
+  scale_colour_identity(guide = "none") +
+  annotate("segment",
+           x = arrow_x_ex, xend = arrow_x_ex,
+           y = arrow_top_ex, yend = arrow_bot_ex,
+           arrow = arrow(length = unit(0.3, "cm"), type = "closed"),
+           colour = "#3B8ED0", linewidth = 1.1) +
+  annotate("text", x = arrow_x_ex, y = arrow_top_ex + 1400,
+           label = "Flow\ndirection", colour = "#3B8ED0", size = 3, hjust = 0.5) +
+  scale_fill_manual(values = role_colours_ex, breaks = role_order,
+                    labels = legend_labels, name = NULL) +
+  labs(title   = "Neighbour-role schematic: five treatment groups",
+       subtitle = paste0(
+         "ONSET: focal hex where mine opens.\n",
+         "Upstream (treatment): all hexes reachable upstream via D8 flow graph; 1-hop = immediate predecessor only.\n",
+         "Lateral (comparison): queen-adjacent hexes NOT on the D8 flow path — no water link to focal.\n",
+         "Downstream (placebo): hexes reachable downstream via D8 flow graph; should show null effects."
+       ),
+       caption = "Schematic only — synthetic 5 km hex grid, northing-based flow path. No real data.") +
+  coord_sf(clip = "off") +
+  theme_void(base_size = 11) +
+  theme(plot.title      = element_text(face = "bold"),
+        plot.subtitle   = element_text(colour = "grey30", size = 9, lineheight = 1.4),
+        plot.caption    = element_text(colour = "grey50", size = 7),
+        plot.margin     = margin(5, 80, 5, 5),
+        legend.position = "right",
+        legend.text     = element_text(size = 8.5))
+
+p_schem
+
+# Save so galamsey_motivation.qmd can embed it as a static figure
+dir.create(here("outputs", "figures", "event_study"), recursive = TRUE, showWarnings = FALSE)
+ggsave(here("outputs", "figures", "event_study", "d2e_schematic.png"),
+       p_schem, width = 9, height = 8, dpi = 150)
+```
+
+# Data foundations
+
+```{r load-panel}
+es <- readRDS(here("data", "processed", sprintf("event_panel_%dkm.rds", params$resolution_km)))
+panel  <- es$panel
+hex_sf <- es$hex_sf
+
+# Coarse spatial block for clustering (sub-basin stand-in: 25 km centroid blocks). The design doc
+# asks for sub-basin clustering; we have no basin id in the panel yet, so this is a placeholder —
+# replace with a real basin id once available (e.g. from the MERIT 'upa' / a HydroBASINS overlay).
+cent <- sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(hex_sf))))
+blocks <- tibble(hex_id   = hex_sf$hex_id,
+                 block_id = paste0("b_", round(cent[, 1] / 25000), "_",
+                                   round(cent[, 2] / 25000)))
+# block_num: integer version of block_id required by did::att_gt's polars backend,
+# which cannot accept string cluster columns. feols can use block_id directly.
+panel <- left_join(panel, blocks, by = "hex_id") |>
+  mutate(block_num = as.integer(factor(block_id)))
+
+has_upstream <- !all(is.na(panel$up_onset_year))
+has_terrain  <- all(c("elev_mean", "slope_mean") %in% names(panel)) &&
+                !all(is.na(panel$elev_mean))
+xf <- if (has_terrain) ~ elev_mean + slope_mean else ~ 1
+
+c(upstream_columns_present = has_upstream, terrain_covariates_present = has_terrain)
+```
+
+```{r overlap, results='asis'}
+ndvi_years   <- es$ndvi_years
+mining_years <- es$mining_years
+overlap_txt <- sprintf(
+  "The NDVI stack covers %d–%d; Barenblitt mining spans %d–%d; the usable event window (their overlap) is **%d–%d**.",
+  min(ndvi_years), max(ndvi_years),
+  min(mining_years), max(mining_years),
+  max(min(ndvi_years), min(mining_years)),
+  min(max(ndvi_years), max(mining_years)))
+writeLines(overlap_txt, file.path(out_es, "es_overlap_window.md"))
+cat(overlap_txt)
+```
+
+```{r panel-censored}
+# Pre-own-entry censored panel — each hex dropped from the year it first mines.
+# Defined here so panelviews, V1 censored specs, and V2c all share the same object.
+panel_censored <- panel |> filter(is.na(own_onset_year) | year < own_onset_year)
+
+# Onset-year availability flags (used in panelviews, composition table, and lateral panelview).
+# V2c redefines has_near_flow / has_lateral using the stock columns — that is fine; the later
+# chunk's assignment overwrites these, and both checks should agree when the panel is complete.
+has_near_flow <- "nearest_up_onset_year"   %in% names(panel) && !all(is.na(panel$nearest_up_onset_year))
+has_lateral   <- "lateral_onset_year"      %in% names(panel) && !all(is.na(panel$lateral_onset_year))
+has_near_down <- "nearest_down_onset_year" %in% names(panel) && !all(is.na(panel$nearest_down_onset_year))
+```
+
+```{r control-pool-composition}
+# --- Own-mining composition of ever-treated hexes, by treatment definition ---
+# For each treatment, break the ever-treated group into three categories based on
+# whether the focal hex is also mining relative to the treatment onset year.
+cat_order <- c("Never mined themselves",
+               "Started mining after treatment onset",
+               "Already mining when treatment started")
+
+pool_breakdown <- function(onset_col, label) {
+  n_treated <- n_distinct(panel$hex_id[!is.na(panel[[onset_col]])])
+  panel |>
+    mutate(treat_onset = .data[[onset_col]]) |>
+    distinct(hex_id, own_onset_year, treat_onset) |>
+    filter(!is.na(treat_onset)) |>
+    mutate(category = case_when(
+      is.na(own_onset_year)             ~ "Never mined themselves",
+      own_onset_year > treat_onset      ~ "Started mining after treatment onset",
+      own_onset_year <= treat_onset     ~ "Already mining when treatment started"
+    )) |>
+    count(category, name = "n_hexes") |>
+    mutate(n_total   = n_treated,
+           share     = round(n_hexes / n_treated, 3),
+           treatment = label) |>
+    arrange(match(category, cat_order))
+}
+
+# Order: treatment → comparison → placebo (mirrors V2c stability table)
+# Guard variables (has_near_flow, has_lateral, has_near_down) defined in {r panel-censored}.
+defs <- list(
+  if (has_upstream)   list("up_onset_year",           "upstream — all reachable (treatment)"),
+  if (has_near_flow)  list("nearest_up_onset_year",   "upstream — 1-hop (treatment)"),
+  if (has_lateral)    list("lateral_onset_year",      "lateral — queen minus 1-hop up/down (comparison)"),
+  if (has_near_down)  list("nearest_down_onset_year", "downstream — 1-hop (placebo)"),
+  if (has_upstream)   list("down_onset_year",          "downstream — all reachable (placebo)")
+)
+defs <- Filter(Negate(is.null), defs)
+
+combined <- bind_rows(lapply(defs, \(d) pool_breakdown(d[[1]], d[[2]])))
+
+save_md_grouped(combined |> select(treatment, category, n_hexes, n_total, share),
+                "es_control_pool_composition.md", group_col = "treatment", digits = 3)
+
+grp_sizes  <- combined |> count(treatment) |> pull(n)
+grp_labels <- combined |> distinct(treatment) |> pull(treatment)
+
+combined |>
+  select(treatment, category, n_hexes, n_total, share) |>
+  kbl(caption = paste0(
+    "Own-mining composition of ever-treated hexes by treatment definition. ",
+    "'Never mined themselves' is the cleanest spillover sample; ",
+    "'Started mining after treatment onset' is clean at onset but endogenously treated later; ",
+    "'Already mining' is the contaminated group. ",
+    "n_total = all ever-treated hexes for that definition; share = n_hexes / n_total."
+  )) |>
+  kable_styling(full_width = FALSE) |>
+  pack_rows(index = setNames(grp_sizes, grp_labels))
+```
+
+<!-- ```{r panelview-adj, fig.height=6, fig.width=10} -->
+<!-- # --- panelview: adjacency treatment — full panel then pre-own-entry censored ---- -->
+<!-- # pv_complete_ids: hexes with no missing NDVI in 2007–2017; reused by all panelview chunks. -->
+<!-- # Showing both panels side-by-side exposes how many "treated" hexes are removed once we -->
+<!-- # drop the years after a hex starts mining itself (the V2c identification sample). -->
+<!-- panel_pv_adj <- panel |> -->
+<!--   filter(year >= 2007, year <= 2017) |> -->
+<!--   semi_join(pv_complete_ids, by = "hex_id") |> -->
+<!--   mutate(adj_D = as.integer(!is.na(adj_onset_year) & year >= adj_onset_year)) -->
+
+<!-- panel_pv_adj_cens <- panel_censored |> -->
+<!--   filter(year >= 2007, year <= 2017) |> -->
+<!--   semi_join(pv_complete_ids, by = "hex_id") |> -->
+<!--   mutate(adj_D = as.integer(!is.na(adj_onset_year) & year >= adj_onset_year)) -->
+
+<!-- do.call(panelview, c(list(ndvi_modis ~ adj_D, data = panel_pv_adj, -->
+<!--   main       = "Full panel — Treated Hexes (queen-adjacency onset).", -->
+<!--   legend.labs = c("Control Hex", "Treated Hex (before adj onset)", "Treated Hex (after adj onset)")), -->
+<!--   pv_args)) -->
+
+<!-- do.call(panelview, c(list(ndvi_modis ~ adj_D, data = panel_pv_adj_cens, -->
+<!--   main       = "Pre-own-entry censored — Treated Hexes (queen-adjacency onset).", -->
+<!--   legend.labs = c("Control Hex", "Treated Hex (before adj onset)", "Treated Hex (after adj onset)")), -->
+<!--   pv_args)) -->
+<!-- ``` -->
+
+**Treatment structure by threshold.** The C&S treatment clock is the first year the upstream mining
+**stock** crosses $\bar m$ (V2's `first_cross` rule). We show it at $\bar m = 0$ (any upstream onset
+— the V3 trigger) and $\bar m = 25$ ha (a V2 threshold), for two exposures: all-reachable upstream
+and the nearest 1-hop upstream neighbour. **Full panel only** — the pre-own-entry-censored panelview
+is temporarily disabled (rendering issue to fix).
+
+```{r panelview-thresholds, fig.height=6, fig.width=10, eval=has_upstream}
+pv_complete_ids <- panel |>
+  filter(year >= 2007, year <= 2017) |>
+  group_by(hex_id) |> filter(!any(is.na(ndvi_modis))) |>
+  ungroup() |> distinct(hex_id)
+
+# Treatment clock = first year `stock_col` exceeds mbar (NA = never treated), matching V2's
+# first_cross (defined later; inlined here because this chunk runs before the helpers chunk).
+# Built on the FULL panel restricted to complete-NDVI hexes; one panelview per (exposure, mbar).
+pv_show <- function(stock_col, mbar, main, file) {
+  d <- panel |>
+    filter(year >= 2007, year <= 2017) |>
+    semi_join(pv_complete_ids, by = "hex_id") |>
+    group_by(hex_id) |>
+    mutate(g_thr = {
+      col <- .data[[stock_col]]
+      y   <- year[!is.na(col) & col > mbar]
+      if (length(y)) min(y) else NA_integer_
+    }) |>
+    ungroup() |>
+    mutate(D = as.integer(!is.na(g_thr) & year >= g_thr))
+  p <- panelview(ndvi_modis ~ D, data = d, index = c("hex_id", "year"), main = main,
+                 legend.labs = c("Control", "Pre-treatment", "Post-treatment"),
+                 pre.post = TRUE, by.timing = TRUE, collapse.history = TRUE,
+                 display.all = TRUE, report.missing = FALSE, background = "white")
+  print(p)
+  save_es(p, file, width = 10, height = 6)
+  invisible(p)
+}
+
+pv_specs <- list(
+  list("up_stock_ha",         0,  "Upstream (all reachable) — any onset (mbar = 0)",       "es_panelview_up_mbar0.png"),
+  list("up_stock_ha",         25, "Upstream (all reachable) — stock > 25 ha (mbar = 25)",  "es_panelview_up_mbar25.png"),
+  list("nearest_up_stock_ha", 0,  "Upstream nearest 1-hop — any onset (mbar = 0)",         "es_panelview_nearestup_mbar0.png"),
+  list("nearest_up_stock_ha", 25, "Upstream nearest 1-hop — stock > 25 ha (mbar = 25)",    "es_panelview_nearestup_mbar25.png")
+)
+pv_specs <- Filter(\(s) s[[1]] %in% names(panel) && !all(is.na(panel[[s[[1]]]])), pv_specs)
+for (s in pv_specs) pv_show(s[[1]], s[[2]], s[[3]], s[[4]])
+```
+
+```{r helpers}
+mbar_grid <- c(0, 10, 25, 50)    # ha thresholds for V2 / V2c; mbar = 0 == "any mining" (onset)
+
+# C&S event study wrapper. `gcol` is a numeric column in `data` (0 = never-treated, else first-treat
+# year). Returns the att_gt object + dynamic (event-time) and overall aggregations.
+run_cs <- function(data, yname, gcol, xformla = xf, cluster = "block_num",
+                   control = "notyettreated", min_e = -5, max_e = 5) {
+  data <- data |> filter(is.finite(.data[[yname]]))
+  att <- did::att_gt(
+    yname = yname, tname = "year", idname = "hex_num", gname = gcol,
+    control_group = control, xformla = xformla, clustervars = cluster,
+    data = as.data.frame(data), est_method = "dr",
+    base_period = "universal", allow_unbalanced_panel = TRUE, bstrap = TRUE
+  )
+  list(att     = att,
+       dynamic = did::aggte(att, type = "dynamic", min_e = min_e, max_e = max_e, na.rm = TRUE),
+       overall = did::aggte(att, type = "group", na.rm = TRUE))
+}
+
+# first-treat column from a "stock crosses mbar" rule (Version 2)
+first_cross <- function(df, stock_col, mbar) {
+  df |> group_by(hex_id) |>
+    mutate(g_thr = {
+      col <- .data[[stock_col]]
+      y   <- year[!is.na(col) & col > mbar]   # NA treated as below threshold; avoids year[NA]=NAs
+      if (length(y)) min(y) else 0L
+    }) |>
+    ungroup()
+}
+
+# Summarise a map(mbar_grid, run_cs) list into a tidy ATT table row (used in V2 and V2c)
+cs_row <- function(cs_list, label)
+  imap_dfr(cs_list, ~tibble(exposure = label, mbar = .y,
+                             att = .x$overall$overall.att, se = .x$overall$overall.se))
+
+# Significance stars from a p-value vector.
+p_stars <- function(p) ifelse(p < .01, "***", ifelse(p < .05, "**", ifelse(p < .1, "*", "")))
+
+# Tidy a list of feols models into ONE wide markdown table: rows = coefficient terms,
+# columns = the supplied headers, cells = "estimate*** (se)". Used to persist the V1
+# distributed-lag etables as static markdown for the presentation deck.
+tidy_feols_md <- function(models, headers) {
+  imap_dfr(models, function(m, i) {
+    ct <- as.data.frame(fixest::coeftable(m))
+    tibble(term = rownames(ct),
+           col  = headers[i],
+           val  = sprintf("%.4f%s (%.4f)", ct[[1]], p_stars(ct[[4]]), ct[[2]]))
+  }) |>
+    tidyr::pivot_wider(names_from = col, values_from = val)
+}
+
+# --- V2 dynamic-ATT plotting -------------------------------------------------
+# tidy_dyn: one C&S dynamic aggregation -> tidy event-time frame (used by v2_dynplot).
+tidy_dyn <- function(dyn, label)
+  tibble(threshold  = label,
+         event_time = dyn$egt,
+         att        = dyn$att.egt,
+         se         = dyn$se.egt) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+
+# Four-threshold palette; ">0 ha" is mbar = 0 (any onset), added at the user's request.
+v2_thresh_cols <- c(">0 ha" = "#6A3D9A", ">10 ha" = "#2171B5",
+                    ">25 ha" = "#E67E22", ">50 ha" = "#27AE60")
+
+# v2_dynplot: overlay the C&S dynamic ATT across all four stock thresholds for one exposure.
+# CI shown as an unfilled (outline-only) band per the user's request — fill = NA, thin dotted edge.
+v2_dynplot <- function(cs_list, title, subtitle) {
+  bind_rows(
+    tidy_dyn(cs_list[["mbar_0"]]$dynamic,  ">0 ha"),
+    tidy_dyn(cs_list[["mbar_10"]]$dynamic, ">10 ha"),
+    tidy_dyn(cs_list[["mbar_25"]]$dynamic, ">25 ha"),
+    tidy_dyn(cs_list[["mbar_50"]]$dynamic, ">50 ha")
+  ) |>
+    mutate(threshold = factor(threshold, levels = names(v2_thresh_cols))) |>
+    ggplot(aes(event_time, att, colour = threshold)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+    geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi, colour = threshold),
+                fill = NA, linewidth = 0.25, linetype = "dotted") +
+    geom_line() + geom_point(size = 1.8) +
+    scale_colour_manual(values = v2_thresh_cols) +
+    labs(title = title, subtitle = subtitle,
+         x = "Event time (years relative to threshold crossing)",
+         y = "ATT on NDVI", colour = "Stock threshold") +
+    theme_bw(base_size = 11)
+}
+```
+
+---
+
+# Control variables in the C&S estimator
+
+`did::att_gt` uses `xformla` in both legs of the doubly-robust (DR) estimator: the propensity
+score model (what predicts a hex's treatment cohort) and the outcome regression (what predicts
+NDVI conditional on pre-treatment covariates). DR is consistent if *either* leg is correctly
+specified — but adding the right pre-treatment predictors of treatment timing strengthens the
+propensity score and makes treated/control groups more comparable.
+
+**Currently used:** `xf = ~ elev_mean + slope_mean` (or `~ 1` when terrain is absent). These
+capture topographic accessibility: high, steep terrain is harder to mine and has systematically
+different vegetation.
+
+---
+
+# Q1 — Upstream mining → downstream NDVI {.tabset}
+
+```{r q1-guard, results='asis'}
+if (!has_upstream)
+  cat(sprintf(paste0("> **Upstream columns are NA** — `hex_flow_edges_%dkm.csv` is absent. ",
+      "Run `b_03c_flow_graph.R` then `b_03d_flow_exposure.R` then `b_03e_assemble_eventpanel.R`, ",
+      "then re-knit.\n"), params$resolution_km))
+```
+
+## Version 1 — continuous distributed lag (dose, robustness)
+
+Two TWFE specs to separate the flow (short-run) and joint channels. TWFE `feols` is transparent
+but biased under heterogeneous dynamics; V2 (C&S) is the headline. The continuous-dose robustness
+check (dCDH) follows. The upstream-vs-downstream split is the directional placebo throughout.
+
+> **Collinearity note:** `up_stock_ha_{t-1} = Σ_{s<t} up_new_ha_s`, so including both the
+> lagged stock and flow lags in the same equation creates collinearity (the lags are the most
+> recent components of the cumulative sum). The three specs below separate them to avoid this.
+
+```{r q1-v1-prep, eval=has_upstream}
+# Build first-difference panels for all available stock dimensions.
+# across() creates lag_<col> columns for every stock column present in the data.
+make_dl <- function(df) {
+  stock_cols <- intersect(
+    c("up_stock_ha", "nearest_up_stock_ha", "adj_stock_ha",
+      "lateral_stock_ha", "nearest_down_stock_ha", "down_stock_ha"),
+    names(df)
+  )
+  df |> arrange(hex_id, year) |> group_by(hex_id) |>
+    mutate(
+      d_ndvi = ndvi_modis - dplyr::lag(ndvi_modis),
+      across(all_of(stock_cols), \(x) dplyr::lag(x), .names = "lag_{.col}")
+    ) |>
+    ungroup() |>
+    filter(!is.na(lag_up_stock_ha), !is.na(lag_down_stock_ha), !is.na(d_ndvi))
+}
+dl          <- make_dl(panel)
+dl_censored <- make_dl(panel_censored)
+```
+
+**1b — Flow lags only, no stock control** (short-run question: does new upstream mining lower NDVI growth?):
+
+```{r q1-v1b, eval=has_upstream}
+flow_dims <- list(
+  c("up_new_ha",            "upstream — all reachable (treatment)"),
+  c("nearest_up_new_ha",    "upstream — 1-hop (treatment)"),
+  c("lateral_new_ha",       "lateral (comparison)"),
+  c("nearest_down_new_ha",  "downstream — 1-hop (placebo)"),
+  c("down_new_ha",          "downstream — all reachable (placebo)")
+)
+flow_ok <- Filter(\(d) d[1] %in% names(dl) && !all(is.na(dl[[d[1]]])), flow_dims)
+
+run_flow <- function(df)
+  lapply(flow_ok, \(d)
+    feols(as.formula(paste0("d_ndvi ~ l(", d[1], ", 0:3) | hex_id + year")),
+          df, panel.id = ~hex_id + year, cluster = ~block_id))
+f_hdrs <- sapply(flow_ok, `[`, 2)
+m_flow_full <- run_flow(dl)
+m_flow_cens <- run_flow(dl_censored)
+etable(m_flow_full, headers = f_hdrs, title = "Flow lags — full panel")
+etable(m_flow_cens, headers = f_hdrs, title = "Flow lags — pre-own-entry censored")
+
+save_md(tidy_feols_md(m_flow_full, f_hdrs), "es_v1_flowlags_full.md")
+save_md(tidy_feols_md(m_flow_cens, f_hdrs), "es_v1_flowlags_censored.md")
+```
+
+**1c — Joint spec** (flow lags + stock control; collinearity caveat applies; placebo symmetric):
+
+```{r q1-v1c, eval=has_upstream}
+# lag_<col> columns created by make_dl via across(); e.g. lag_up_stock_ha, lag_adj_stock_ha.
+joint_dims <- list(
+  c("up_new_ha",            "lag_up_stock_ha",            "upstream — all reachable (treatment)"),
+  c("nearest_up_new_ha",    "lag_nearest_up_stock_ha",    "upstream — 1-hop (treatment)"),
+  c("lateral_new_ha",       "lag_lateral_stock_ha",       "lateral (comparison)"),
+  c("nearest_down_new_ha",  "lag_nearest_down_stock_ha",  "downstream — 1-hop (placebo)"),
+  c("down_new_ha",          "lag_down_stock_ha",          "downstream — all reachable (placebo)")
+)
+joint_ok <- Filter(\(d)
+  d[1] %in% names(dl) && !all(is.na(dl[[d[1]]])) &&
+  d[2] %in% names(dl) && !all(is.na(dl[[d[2]]])), joint_dims)
+
+run_joint <- function(df)
+  lapply(joint_ok, \(d)
+    feols(as.formula(paste0("d_ndvi ~ l(", d[1], ", 0:3) + poly(", d[2], ", 2) | hex_id + year")),
+          df, panel.id = ~hex_id + year, cluster = ~block_id))
+j_hdrs <- sapply(joint_ok, `[`, 3)
+m_joint_full <- run_joint(dl)
+m_joint_cens <- run_joint(dl_censored)
+etable(m_joint_full, headers = j_hdrs, title = "Joint spec — full panel")
+etable(m_joint_cens, headers = j_hdrs, title = "Joint spec — pre-own-entry censored")
+
+save_md(tidy_feols_md(m_joint_full, j_hdrs), "es_v1_joint_full.md")
+save_md(tidy_feols_md(m_joint_cens, j_hdrs), "es_v1_joint_censored.md")
+```
+
+```{r q1-v1-dcdh, eval=(has_upstream && HAS_DCDH)}
+# dCDH: heterogeneity-robust continuous-treatment estimator across all five stock dimensions.
+# Objects saved as dcdh_full[[label]] and dcdh_cens[[label]]; call summary() or plot() on any.
+# Adjacent excluded (same reason as V2): queen mixes treatment and placebo neighbours.
+
+# DIDmultiplegtDYN 2.3.0 references polars' `pl` as a bare symbol without importing it, so polars
+# MUST be attached (not just available) or did_multiplegt_dyn errors with "object 'pl' not found".
+library(polars)
+dcdh_dims <- Filter(
+  \(d) d[1] %in% names(panel) && !all(is.na(panel[[d[1]]])),
+  list(
+    c("up_stock_ha",           "upstream — all reachable (treatment)"),
+    c("nearest_up_stock_ha",   "upstream — 1-hop (treatment)"),
+    c("lateral_stock_ha",      "lateral (comparison)"),
+    c("nearest_down_stock_ha", "downstream — 1-hop (placebo)"),
+    c("down_stock_ha",         "downstream — all reachable (placebo)")
+  )
+)
+
+# Memory: did_multiplegt_dyn uses polars (Rust) and is heavy. Across the 10 runs (5 dims x 2 panels)
+# memory piles up and polars can fail to allocate (esp. at 2 km). So we keep ONLY $results (all the
+# plot and table chunks reference), discard the rest of the object, and gc() after each run so
+# polars releases its Rust-side memory before the next call — keeping peak memory down.
+run_dcdh <- function(df, col) {
+  m <- DIDmultiplegtDYN::did_multiplegt_dyn(
+    df        = as.data.frame(df),
+    outcome   = "ndvi_modis",
+    group     = "hex_id",
+    time      = "year",
+    treatment = col,
+    effects   = 5,
+    placebo   = 3,
+    cluster   = "block_num",
+    graph_off = TRUE          # we build our own full-vs-censored overlay plots below
+  )
+  res <- list(results = m$results)   # keep only what q1-v1-dcdh-plot / -table use
+  rm(m); gc()
+  res
+}
+
+dcdh_full <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel,          d[1])),
+                      sapply(dcdh_dims, `[`, 2))
+dcdh_cens <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel_censored, d[1])),
+                      sapply(dcdh_dims, `[`, 2))
+```
+
+```{r q1-v1-dcdh-plot, eval=(has_upstream && HAS_DCDH), fig.height=4.2, results='asis'}
+# One event-study plot per treatment dimension; each overlays the full and the pre-own-entry
+# censored panel. dCDH convention (from did_multiplegt_dyn): Effect_l -> event time +l (post),
+# Placebo_l -> event time -l (pre), reference period normalised to 0 at event time 0.
+tidy_dcdh <- function(obj, panel_lab) {
+  mk <- function(mat, sgn) {
+    if (is.null(mat) || !nrow(mat)) return(NULL)
+    tibble(event_time = sgn * seq_len(nrow(mat)),
+           est = mat[, "Estimate"], lo = mat[, "LB CI"], hi = mat[, "UB CI"])
+  }
+  bind_rows(mk(obj$results$Effects, 1L),
+            mk(obj$results$Placebos, -1L),
+            tibble(event_time = 0L, est = 0, lo = NA_real_, hi = NA_real_)) |>
+    mutate(panel = panel_lab) |>
+    arrange(event_time)
+}
+
+dcdh_cols <- c("Full panel" = "#2171B5", "Pre-own-entry censored" = "#E67E22")
+pd <- position_dodge(width = 0.25)
+
+for (nm in names(dcdh_full)) {
+  d <- bind_rows(tidy_dcdh(dcdh_full[[nm]], "Full panel"),
+                 tidy_dcdh(dcdh_cens[[nm]], "Pre-own-entry censored")) |>
+    mutate(panel = factor(panel, levels = names(dcdh_cols)))
+
+  p <- ggplot(d, aes(event_time, est, colour = panel, group = panel)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+    geom_line(position = pd) +
+    geom_point(position = pd, size = 1.9) +
+    geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.18, position = pd) +
+    scale_colour_manual(values = dcdh_cols) +
+    scale_x_continuous(breaks = sort(unique(d$event_time))) +
+    labs(title = paste0("dCDH — ", nm),
+         subtitle = "de Chaisemartin–D'Haultfœuille continuous-dose (stock) estimator; 95% CI",
+         x = "Event time (years relative to stock-dose change)",
+         y = "Effect on NDVI", colour = NULL) +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "bottom")
+  print(p)
+  slug <- gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(nm)))   # trim edge underscores
+  save_es(p, paste0("es_v1_dcdh_", slug, ".png"), height = 4.2)
+}
+```
+
+```{r q1-v1-dcdh-table, eval=(has_upstream && HAS_DCDH)}
+# Compact dCDH summary: the headline numbers behind the plots above. Per treatment x panel we show
+#   - ATE [95% CI]  : average total effect (single summary effect of the stock dose on NDVI)
+#   - p(pre-trend)  : joint placebo test (H0: all pre-period placebos = 0); HIGH p = flat pre-trends
+#   - p(effects)    : joint test (H0: all dynamic effects = 0); LOW p = effects jointly significant
+#   - Switchers     : number of switching hexes identifying the ATE (effective sample / precision)
+scl  <- function(x) if (is.null(x)) NA_real_ else as.numeric(x)
+# pick(): ATE is a 1-row matrix; guard the vector case too. Local var is named `a` (NOT `ate`) so it
+# does not get shadowed by the `ate` column inside tibble() when later columns reference it.
+pick <- function(a, col) if (is.matrix(a)) a[1, col] else a[[col]]
+dcdh_summary <- function(obj, panel_lab) {
+  a <- obj$results$ATE
+  tibble(panel     = panel_lab,
+         ate       = pick(a, "Estimate"),
+         ci_lo     = pick(a, "LB CI"),
+         ci_hi     = pick(a, "UB CI"),
+         p_pre     = scl(obj$results$p_jointplacebo),
+         p_effects = scl(obj$results$p_jointeffects),
+         switchers = pick(a, "Switchers"))
+}
+
+dcdh_tab <- imap_dfr(dcdh_full, \(obj, nm)
+  bind_rows(dcdh_summary(obj,            "Full panel"),
+            dcdh_summary(dcdh_cens[[nm]], "Pre-own-entry censored")) |>
+    mutate(treatment = nm, .before = 1))
+
+dcdh_out <- dcdh_tab |>
+  mutate(`ATE [95% CI]` = sprintf("%.4f [%.4f, %.4f]", ate, ci_lo, ci_hi),
+         `p(pre-trend)` = sprintf("%.3f", p_pre),
+         `p(effects)`   = sprintf("%.3f", p_effects))
+
+save_md_grouped(dcdh_out |> select(treatment, panel, `ATE [95% CI]`, `p(pre-trend)`, `p(effects)`, switchers),
+                "es_v1_dcdh_summary.md", group_col = "treatment")
+
+dcdh_out |>
+  select(panel, `ATE [95% CI]`, `p(pre-trend)`, `p(effects)`, switchers) |>  # treatment shown via pack_rows
+  kbl(caption = paste0(
+    "dCDH summary (continuous stock dose). ATE = average total effect on NDVI; ",
+    "p(pre-trend) = joint placebo test (high = pre-trends flat, design credible); ",
+    "p(effects) = joint test that dynamic effects are zero; Switchers = hexes identifying the ATE.")) |>
+  kable_styling(full_width = FALSE) |>
+  pack_rows(index = setNames(rep(2L, length(dcdh_full)), names(dcdh_full)))
+```
+
+## Version 2 — absorbing treatment at a stock threshold (headline)
+
+Treatment = first year the mining stock in a given exposure dimension crosses $\bar m$. C&S,
+not-yet-treated controls, NDVI in levels. Five exposure dimensions (treatment → comparison → placebo):
+
+- **Upstream all reachable / 1-hop** (treatment): waterborne contamination hypothesis
+- **Lateral** (comparison): queen neighbours that are NOT on the D8 flow path — pure land-use channel
+- **Downstream 1-hop / all reachable** (placebo): should be null if the channel is genuinely waterborne
+
+Adjacent (queen) is excluded because it aggregates upstream + lateral + downstream neighbours, confounding treatment and placebo signals. The $\bar m$ sweep across {0, 10, 25, 50} ha is the threshold-stability check.
+
+```{r q1-v2, eval=has_upstream}
+v2_up <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "up_stock_ha", mb), "ndvi_modis", "g_thr"))
+names(v2_up) <- paste0("mbar_", mbar_grid)
+
+if (has_near_flow) {
+  v2_near_up <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "nearest_up_stock_ha", mb), "ndvi_modis", "g_thr"))
+  names(v2_near_up) <- paste0("mbar_", mbar_grid)
+}
+if (has_lateral) {
+  v2_lat <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "lateral_stock_ha", mb), "ndvi_modis", "g_thr"))
+  names(v2_lat) <- paste0("mbar_", mbar_grid)
+}
+if (has_near_flow) {
+  v2_near_dn <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "nearest_down_stock_ha", mb), "ndvi_modis", "g_thr"))
+  names(v2_near_dn) <- paste0("mbar_", mbar_grid)
+}
+v2_dn <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "down_stock_ha", mb), "ndvi_modis", "g_thr"))
+names(v2_dn) <- paste0("mbar_", mbar_grid)
+
+# Dynamic stability table (treatment → comparison → placebo)
+v2_rg <- list(list(data = cs_row(v2_up, "upstream — all reachable (treatment)"),
+                   label = "Upstream — all reachable (treatment)"))
+if (has_near_flow && exists("v2_near_up"))
+  v2_rg <- c(v2_rg, list(list(data = cs_row(v2_near_up, "upstream — 1-hop (treatment)"),
+                               label = "Upstream — 1-hop (treatment)")))
+if (has_lateral && exists("v2_lat"))
+  v2_rg <- c(v2_rg, list(list(data = cs_row(v2_lat, "lateral (comparison)"),
+                               label = "Lateral (comparison)")))
+if (has_near_flow && exists("v2_near_dn"))
+  v2_rg <- c(v2_rg, list(list(data = cs_row(v2_near_dn, "downstream — 1-hop (placebo)"),
+                               label = "Downstream — 1-hop (placebo)")))
+v2_rg <- c(v2_rg, list(list(data = cs_row(v2_dn, "downstream — all reachable (placebo)"),
+                             label = "Downstream — all reachable (placebo)")))
+
+tbl_v2 <- bind_rows(lapply(v2_rg, `[[`, "data")) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+save_md_grouped(tbl_v2, "es_v2_stability_table.md", group_col = "exposure")
+kbl_v2 <- tbl_v2 |>
+  kbl(digits = 4, caption = "V2 (full panel): ATT on NDVI across stock thresholds and exposure dimensions.") |>
+  kable_styling(full_width = FALSE)
+start <- 1L
+for (g in v2_rg) {
+  n      <- nrow(g$data)
+  kbl_v2 <- pack_rows(kbl_v2, g$label, start, start + n - 1L)
+  start  <- start + n
+}
+kbl_v2
+```
+
+```{r q1-v2-plot-up, eval=has_upstream, fig.height=4.5}
+p_v2_up <- v2_dynplot(v2_up,
+  "Q1/V2 upstream (all reachable) — NDVI vs upstream stock threshold",
+  "C&S dynamic ATT, not-yet-treated controls; outline band = 95% CI")
+p_v2_up
+save_es(p_v2_up, "es_v2_upstream_all.png", height = 4.5)
+```
+
+```{r q1-v2-plot-near-up, eval=(has_upstream && has_near_flow && exists("v2_near_up")), fig.height=4.5}
+p_v2_near_up <- v2_dynplot(v2_near_up,
+  "Q1/V2 upstream 1-hop — NDVI vs immediate upstream stock threshold",
+  "Local waterborne signal: only direct 1-hop upstream neighbours")
+p_v2_near_up
+save_es(p_v2_near_up, "es_v2_upstream_1hop.png", height = 4.5)
+```
+
+```{r q1-v2-plot-lat, eval=(has_upstream && has_lateral && exists("v2_lat")), fig.height=4.5}
+p_v2_lat <- v2_dynplot(v2_lat,
+  "Q1/V2 lateral (comparison) — NDVI vs lateral stock threshold",
+  "Land-use channel only: queen neighbours minus 1-hop up/down (no flow link)")
+p_v2_lat
+save_es(p_v2_lat, "es_v2_lateral.png", height = 4.5)
+```
+
+```{r q1-v2-plot-near-dn, eval=(has_upstream && has_near_flow && exists("v2_near_dn")), fig.height=4.5}
+p_v2_near_dn <- v2_dynplot(v2_near_dn,
+  "Q1/V2 downstream 1-hop (placebo) — NDVI vs immediate downstream stock threshold",
+  "Should be null: 1-hop downstream mining cannot cause upstream NDVI via water")
+p_v2_near_dn
+save_es(p_v2_near_dn, "es_v2_downstream_1hop.png", height = 4.5)
+```
+
+```{r q1-v2-plot-dn, eval=has_upstream, fig.height=4.5}
+p_v2_dn <- v2_dynplot(v2_dn,
+  "Q1/V2 downstream (placebo) — NDVI vs downstream stock threshold",
+  "Should be null: downstream mining cannot cause upstream NDVI via water")
+p_v2_dn
+save_es(p_v2_dn, "es_v2_downstream_all.png", height = 4.5)
+```
+
+## Version 3 — mechanism: nearest-upstream clock, censored to pre-own-entry
+
+The clean waterborne test (tex V3 mechanism). Treatment clock is $T_i^{\text{UP}}$ = onset of the
+**immediate 1-hop upstream neighbour** (the tex's "nearest upstream hex"), triggered on *any* upstream
+mining (onset, not a stock threshold). Each hex is censored at its own onset, so own land-clearing
+cannot drive the response. **Headline = nearest 1-hop upstream onset**; all-reachable upstream is a
+broader-exposure robustness check; **downstream onset (1-hop and all-reachable) = directional placebos**
+(should be null if the channel is genuinely waterborne).
+
+```{r q1-v3-gap, eval=has_upstream, fig.height=3.5}
+# Headline clock = nearest 1-hop upstream onset. Show the T_own - T_nearest_up gap first: if there is
+# little spread the own and upstream clocks are collinear and the design is weakly identified.
+# Fall back to all-reachable upstream onset if the nearest column is unavailable.
+gap_src <- if ("nearest_up_onset_year" %in% names(panel) && !all(is.na(panel$nearest_up_onset_year))) {
+  panel |> filter(!is.na(nearest_up_onset_year)) |>
+    distinct(hex_id, own_onset_year, up_clock = nearest_up_onset_year)
+} else {
+  panel |> distinct(hex_id, own_onset_year, up_clock = up_onset_year)
+}
+p_v3_gap <- gap_src |>
+  filter(!is.na(own_onset_year), !is.na(up_clock)) |>
+  mutate(gap = own_onset_year - up_clock) |>
+  ggplot(aes(gap)) + geom_bar() +
+  labs(title = "Gap T_own - T_nearest_up (years)",
+       x = "own onset - nearest-upstream onset", y = "hexes")
+p_v3_gap
+save_es(p_v3_gap, "es_v3_gap_own_minus_nearestup.png", height = 3.5)
+```
+
+```{r q1-v3, eval=has_upstream}
+has_nearest      <- "nearest_up_onset_year"   %in% names(panel) && !all(is.na(panel$nearest_up_onset_year))
+has_nearest_down <- "nearest_down_onset_year" %in% names(panel) && !all(is.na(panel$nearest_down_onset_year))
+
+# nearest_*_onset_year are time-invariant per hex but stored year-by-year; years outside
+# the mining data range are NA, making gname non-constant within a unit for C&S.
+# Resolve to hex-level scalars first, then join by hex_id only.
+nearest_scalar <- panel |>
+  filter(!is.na(nearest_up_onset_year)) |>
+  distinct(hex_id, nearest_up_onset_year)
+
+nearest_down_scalar <- if (has_nearest_down) {
+  panel |> filter(!is.na(nearest_down_onset_year)) |> distinct(hex_id, nearest_down_onset_year)
+} else NULL
+
+drop_cols <- intersect(c("nearest_up_onset_year", "nearest_down_onset_year"), names(panel))
+
+# Native pipe |> has no `.` placeholder, so do the optional nearest-down join as an explicit step.
+censored <- panel |> filter(is.na(own_onset_year) | year < own_onset_year) |>
+  select(-any_of(drop_cols)) |>
+  left_join(nearest_scalar, by = "hex_id")
+if (!is.null(nearest_down_scalar))
+  censored <- left_join(censored, nearest_down_scalar, by = "hex_id")
+censored <- censored |>
+  mutate(
+    g_nearest      = if (has_nearest)      replace_na(nearest_up_onset_year,   0L) else NA_integer_,
+    g_up           = replace_na(up_onset_year,            0L),
+    g_nearest_down = if (has_nearest_down) replace_na(nearest_down_onset_year, 0L) else NA_integer_,
+    g_down         = replace_na(down_onset_year,          0L)
+  )
+
+# Headline = nearest 1-hop upstream; all-reachable upstream = robustness; downstream = placebos.
+if (has_nearest)      v3_nearest      <- run_cs(censored, "ndvi_modis", "g_nearest")
+v3_up   <- run_cs(censored, "ndvi_modis", "g_up")
+if (has_nearest_down) v3_nearest_down <- run_cs(censored, "ndvi_modis", "g_nearest_down")
+v3_down <- run_cs(censored, "ndvi_modis", "g_down")
+
+rows <- list(
+  if (has_nearest) tibble(treatment = "nearest upstream — 1-hop (headline)",
+                          att = v3_nearest$overall$overall.att,      se = v3_nearest$overall$overall.se),
+  tibble(treatment = "all-reachable upstream (robustness)",
+         att = v3_up$overall$overall.att,   se = v3_up$overall$overall.se),
+  if (has_nearest_down) tibble(treatment = "nearest downstream — 1-hop (placebo)",
+                               att = v3_nearest_down$overall$overall.att, se = v3_nearest_down$overall$overall.se),
+  tibble(treatment = "all-reachable downstream (placebo)",
+         att = v3_down$overall$overall.att, se = v3_down$overall$overall.se)
+)
+rows <- Filter(Negate(is.null), rows)
+
+v3_tbl <- bind_rows(rows) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+save_md(v3_tbl, "es_v3_results_table.md")
+
+v3_tbl |>
+  kbl(digits = 4, caption = paste0(
+    "Censored to pre-own-entry: nearest 1-hop upstream onset (headline) vs all-reachable upstream ",
+    "(robustness) and downstream placebos.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r q1-v3-nearest-plot, eval=(has_upstream && exists("v3_nearest")), fig.height=4.5}
+p_v3_nearest <- did::ggdid(v3_nearest$dynamic) +
+  ggplot2::labs(title = "Q1/V3 headline — NDVI vs nearest 1-hop upstream onset (pre-own-entry)",
+                subtitle = "T_i^UP = onset of the immediate (1-hop) upstream neighbour — tex V3 mechanism")
+p_v3_nearest
+save_es(p_v3_nearest, "es_v3_nearest_up_headline.png", height = 4.5)
+```
+
+```{r q1-v3-plot, eval=has_upstream, fig.height=4.5}
+p_v3_up <- did::ggdid(v3_up$dynamic) +
+  ggplot2::labs(title = "Q1/V3 robustness — NDVI vs all-reachable upstream onset (pre-own-entry)",
+                subtitle = "Broader exposure: earliest onset among ALL reachable upstream hexes")
+p_v3_up
+save_es(p_v3_up, "es_v3_upstream_all_robustness.png", height = 4.5)
+```
+
+```{r q1-v3-nearest-down-plot, eval=(has_upstream && exists("v3_nearest_down")), fig.height=4.5}
+p_v3_nearest_down <- did::ggdid(v3_nearest_down$dynamic) +
+  ggplot2::labs(title = "Q1/V3 placebo — NDVI vs nearest 1-hop downstream onset (pre-own-entry)",
+                subtitle = "Should be null: 1-hop downstream mining cannot cause upstream NDVI via water")
+p_v3_nearest_down
+save_es(p_v3_nearest_down, "es_v3_nearest_down_placebo.png", height = 4.5)
+```
+
+## Version 3b — faithful two-clock TWFE (the exact tex V3 specification)
+
+Implements the tex V3 equation literally: a single two-way-FE regression on the **pre-own-entry**
+sample with **two event-time clocks estimated jointly** — the hex's own-entry clock
+$\beta_k=\mathbf 1[t-T_i=k]$ (pre-period only, $k\in\{-K,\dots,-1\}$) and the nearest-upstream clock
+$\delta_j=\mathbf 1[t-T_i^{\text{UP}}=j]$ — both normalised to event time $-1$. $\beta_k$ traces the
+pre-entry NDVI decline common to all eventual enterers; $\delta_j$ isolates the part that follows the
+nearest upstream neighbour's onset (the waterborne channel). Unlike V3's single-clock C&S, this
+reproduces the tex's $\beta$-vs-$\delta$ decomposition — at the cost of TWFE's known
+heterogeneity / negative-weighting bias (exactly why V2/V3 use Callaway–Sant'Anna). Read the two
+clocks jointly: $\beta_k\approx0,\ \delta_j<0$ = pure waterborne; $\beta_k<0,\ \delta_j<0$ = mixed;
+$\beta_k<0,\ \delta_j\approx0$ = common pre-entry decline unrelated to upstream status.
+
+```{r q1-v3b, eval=(has_upstream && has_nearest)}
+# Two-clock TWFE on the pre-own-entry sample (`censored`, from the V3 chunk). Event times binned to
+# [-5, 5]; never-treated hexes fold into the -1 reference of each clock. On this sample every hex is
+# pre-own-entry, so k_own is always < 0 (own clock is a pure pre-trend, as in the tex).
+d3b <- censored |>
+  mutate(
+    k_own = if_else(!is.na(own_onset_year),
+                    pmax(as.integer(year - own_onset_year), -5L), -1L),
+    j_up  = if_else(!is.na(nearest_up_onset_year),
+                    pmin(pmax(as.integer(year - nearest_up_onset_year), -5L), 5L), -1L)
+  )
+
+m_v3b <- feols(ndvi_modis ~ i(k_own, ref = -1) + i(j_up, ref = -1) | hex_id + year,
+               data = d3b, cluster = ~ block_id)
+etable(m_v3b, title = "V3b — two-clock TWFE (own pre-entry clock + nearest-upstream clock)")
+
+# Tidy both clocks for a faceted event-study plot (+ the omitted -1 reference at 0).
+ct_v3b <- as.data.frame(fixest::coeftable(m_v3b))
+ct_v3b$term <- rownames(ct_v3b)
+lab_own <- "Own-entry clock β (pre-entry decline)"
+lab_up  <- "Nearest-upstream clock δ (waterborne)"
+v3b_coef <- ct_v3b |>
+  filter(grepl("^k_own::|^j_up::", term)) |>
+  transmute(clock      = ifelse(grepl("^k_own", term), lab_own, lab_up),
+            event_time = as.integer(sub(".*::", "", term)),
+            est        = .data[["Estimate"]],
+            se         = .data[["Std. Error"]]) |>
+  bind_rows(tibble(clock = c(lab_own, lab_up), event_time = -1L, est = 0, se = 0)) |>
+  mutate(ci_lo = est - 1.96 * se, ci_hi = est + 1.96 * se) |>
+  arrange(clock, event_time)
+save_md(v3b_coef |> transmute(clock, event_time,
+                              est = round(est, 4), se = round(se, 4)),
+        "es_v3b_coefficients.md")
+
+p_v3b <- ggplot(v3b_coef, aes(event_time, est)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), fill = NA, colour = "grey60",
+              linewidth = 0.25, linetype = "dotted") +
+  geom_line(colour = "#2171B5") + geom_point(colour = "#2171B5", size = 1.9) +
+  facet_wrap(~clock, scales = "free_x") +
+  labs(title    = "V3b — faithful tex two-clock TWFE (pre-own-entry sample)",
+       subtitle = "Joint feols: own-entry pre-period clock + nearest-upstream clock; ref = event time -1",
+       x = "Event time (years)", y = "NDVI coefficient") +
+  theme_bw(base_size = 11)
+p_v3b
+save_es(p_v3b, "es_v3b_twoclock.png", width = 10, height = 4.5)
+```
+
+---
+
+<!-- Q2 (neighbour mining -> own mining) temporarily commented out (2026-06-30). Chunks set to
+     eval=FALSE as well, because knitr still executes chunks inside HTML comments. To restore:
+     remove the <!-- / --> markers and revert eval=FALSE (originals: q2-d2d & q2-adj had no eval
+     flag; q2-up, q2-up-plot, q2-down-plot, q2-hazard were eval=has_upstream).
+
+# Q2 — Neighbour mining → own mining (D2d, upgraded) {.tabset}
+
+Does mining **spread**? Outcome = own-hex mining; treatment = neighbour mining onset. Two neighbour
+definitions: **adjacency** (standard land-use contagion, symmetric) and **upstream** (river-corridor
+/ placer-following, directed — the cleaner causal test, with downstream as placebo).
+
+> **Identification caveats (carried in the doc):** own and neighbour mining share gold-geology +
+> river fundamentals (reflection / common suitability — the very confound `d03`'s geography-weighted
+> Moran null addressed); mining is spatially clustered, so neighbour- and own-onset co-move
+> mechanically. The **pre-trends** are the defence: flat pre + jump post = diffusion; co-trending =
+> common fundamentals. Adjacency is symmetric (can't separate A→B from B→A); the **directed
+> upstream** design is the clean diffusion test.
+
+## D2d reproduction (naïve TWFE — the "before")
+
+The original `d03` D2d: new mining (and any-mining LPM) on the neighbour stock at $t-1$. Kept here as
+the baseline the event study improves on; its coefficient is *not* a clean causal effect.
+
+```{r q2-d2d, eval=FALSE}
+d2d <- panel |> arrange(hex_id, year) |> group_by(hex_id) |>
+  mutate(adj_stock_lag = dplyr::lag(adj_stock_ha)) |> ungroup() |>
+  mutate(any_own_new = as.integer(own_new_ha > 0))
+feols(c(own_new_ha, any_own_new) ~ adj_stock_lag | hex_id + year,
+      d2d, cluster = ~ block_id) |>
+  etable(headers = c("Own new (ha)", "Any own mining (LPM)"))
+```
+
+## Directed: upstream onset → own mining (headline)
+
+```{r q2-up, eval=FALSE}
+d_up <- panel |> mutate(g_up = replace_na(up_onset_year, 0L), g_down = replace_na(down_onset_year, 0L))
+q2_up   <- run_cs(d_up, "own_new_ha", "g_up")
+q2_down <- run_cs(d_up, "own_new_ha", "g_down")  # placebo: downstream onset should not "cause" own mining
+
+bind_rows(
+  tibble(treatment = "upstream onset",   att = q2_up$overall$overall.att,   se = q2_up$overall$overall.se),
+  tibble(treatment = "downstream (plac)", att = q2_down$overall$overall.att, se = q2_down$overall$overall.se)
+) |> kbl(digits = 3, caption = "Own mining (ha) response to upstream vs downstream neighbour onset.") |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r q2-up-plot, eval=FALSE, fig.height=4.5}
+did::ggdid(q2_up$dynamic) +
+  ggplot2::labs(title = "Q2 — own mining (ha) vs upstream-neighbour onset",
+                subtitle = "Pre-period flat + post jump = diffusion along the river corridor")
+```
+
+```{r q2-down-plot, eval=FALSE, fig.height=4.5}
+did::ggdid(q2_down$dynamic) +
+  ggplot2::labs(title = "Q2 placebo — own mining (ha) vs downstream-neighbour onset",
+                subtitle = "Should be null pre AND post: downstream onset cannot cause upstream mining")
+```
+
+## Adjacency benchmark (symmetric)
+
+```{r q2-adj, eval=FALSE}
+d_adj <- panel |> mutate(g_adj = first_treat_adj)
+q2_adj <- run_cs(d_adj, "own_new_ha", "g_adj")
+did::ggdid(q2_adj$dynamic) +
+  ggplot2::labs(title = "Q2 — own mining (ha) vs adjacency-neighbour onset (symmetric)",
+                subtitle = "Interpret pre-trends with the reflection caveat in mind")
+```
+
+## Extensive margin — onset hazard (transparent TWFE LPM)
+
+Among hex-years still **at risk** (before own onset, inclusive of the onset year), does an
+already-active neighbour raise the probability the hex itself starts mining this year?
+
+```{r q2-hazard, eval=FALSE}
+hz <- panel |>
+  filter(is.na(own_onset_year) | year <= own_onset_year) |>          # risk set: up to + incl onset
+  mutate(own_onset_event = as.integer(!is.na(own_onset_year) & year == own_onset_year),
+         up_active        = as.integer(!is.na(up_onset_year)  & year >= up_onset_year),
+         adj_active       = as.integer(!is.na(adj_onset_year) & year >= adj_onset_year))
+feols(own_onset_event ~ up_active + adj_active | hex_id + year, hz, cluster = ~ block_id) |>
+  etable(headers = "P(own onset this year)")
+```
+-->
+
+---
+
+# Static exports for the presentation deck
+
+Every headline figure and table above is also written to `outputs/figures/event_study/` so
+`4_presentation/galamsey_motivation.qmd` can embed them (`.png` via `include_graphics`, `.md`
+via `cat(readLines(...))`) without re-running any estimation. The manifest below lists what the
+last knit produced.
+
+```{r export-manifest}
+tibble(file = list.files(out_es, pattern = "\\.(png|md)$")) |>
+  mutate(kind = ifelse(grepl("\\.png$", file), "figure", "table")) |>
+  arrange(kind, file) |>
+  kbl(caption = "Static event-study outputs written to outputs/figures/event_study/.") |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# Caveats & next steps
+
+- **Sub-basin clustering** is a 25 km block stand-in; swap in a real basin id (HydroBASINS / MERIT
+  `upa` pour-points) for the headline SEs.
+- **Window**: Barenblitt is 2007–2017; the usable event window is the overlap with the NDVI stack
+  (see the overlap table). Onsets before NDVI coverage have no pre-period and are dropped by `did`.
+- **Coverage / accuracy**: Barenblitt is SW-Ghana only at 75.6% producer accuracy → onset measured
+  with error and "never-treated" conflates "never surveyed"; prefer not-yet-treated controls.
+- **Off-network galamsey** (~5.5% of mined ha at `ROUTE_KM2=10`) is unattributed upstream; the
+  `d_04_merit.R` 11j threshold sweep documents the sensitivity.
+- **Cropland masking**: NDVI is an all-pixel hex mean; restrict to cropland pixels (Q1's
+  *agricultural* channel) once a land-cover mask is available.
+- **dCDH** (`did_multiplegt_dyn`) runs only if `DIDmultiplegtDYN` is installed (`HAS_DCDH = `r HAS_DCDH`).
+```

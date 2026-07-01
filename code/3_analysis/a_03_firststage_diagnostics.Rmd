@@ -1,0 +1,444 @@
+﻿---
+title: "First-Stage Diagnostics & MAUP Robustness: A Model Ladder Across 1/2/5 km Grids"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+## Background
+
+`a_02_spatial_clustering.R` section D2bc decomposes observed spatial clustering of galamsey
+into geography-explained vs excess:
+
+$$I_{\text{observed}} = I_{\text{geography}} + I_{\text{excess}}$$
+
+The simulation fits a logistic first stage of binary mine presence (`any_art`) on geography,
+draws simulated mine assignments with probability ∝ fitted values, and compares the resulting
+**geography-weighted null** Moran's I distribution to the observed value (≈0.49 at 5 km). If
+the observed value sits far above the null, the clustering cannot be explained by spatially
+autocorrelated geography and points to social/economic spillover.
+
+**Two questions this document answers, together:**
+
+1. **Is the first stage strong enough to be a meaningful geography control?** A near-uniform
+   first stage would collapse the geography-weighted null onto the uniform null, making the
+   gap uninformative. We climb a nested model ladder and watch the fit.
+2. **Are the conclusions robust to the Modifiable Areal Unit Problem (MAUP)?** Results from a
+   single hex size could be an artefact of that grain. We re-run the *entire* ladder on the
+   **1, 2 and 5 km** grids and check the conclusions hold at every grain.
+
+### The model ladder (simplest → most complex)
+
+Each model is a strict superset of the previous, so within a resolution the AIC ladder is
+directly interpretable. (Replaces the old Fix 1–5 sections — same content, organised.)
+
+| ID | Specification | Adds |
+|----|---------------|------|
+| **M1** | `gold_suit_share + dist_river_km` | baseline (current D2bc weight model) |
+| **M2** | + `ns(dist_river_km, 4)` (replaces linear) + spatial lags of both covariates | non-linear river + neighbourhood smoothing — no new data |
+| **M3** | + `elev_mean + slope_mean` | exogenous terrain (alluvial mining favours flat, low ground) |
+| **M4** | + geology×river + geology×slope + geology×elev + river×slope | mechanism conjunctions (gold source × depositional setting) |
+
+M4 uses the **same four interactions on every grid** so it is one object for the MAUP read;
+which individual terms carry it differs by grain (see the Appendix — itself a MAUP finding).
+
+### How to read MAUP robustness here
+
+MAUP guarantees that *levels* move with grain — finer grids have lower mine prevalence and
+higher AUC. The direction of the raw Moran's I is not fixed: it depends on the spatial process.
+For galamsey, finer grids can produce *higher* observed clustering because 5 km cells average
+over mined valleys and unmined hillslope within the same unit, diluting the signal. At 1 km,
+activity resolves into tight mine-positive clusters surrounded by mine-negative cells — sharper
+local contrast raises Moran's I. Meanwhile the geography-weighted null tightens (less simulation
+variance with more observations), so the gap between observed and null can widen at finer grain.
+None of this is a problem: the robust claim is that the **conclusions are invariant** — terrain
+is the dominant geographic predictor, fit climbs the ladder the same way, and the observed
+clustering exceeds even the richest geography null (`p_excess ≈ 0`) at **all three** grains.
+Accordingly:
+
+- **AUC** is the cross-grid fit metric — it is rank-based and prevalence-robust.
+- **McFadden / Brier** are prevalence-sensitive → compare them *within* a grid only.
+- For the null, compare the **verdict** (observed ≫ null-95, `p_excess`), not the raw Moran's I
+  level across grids. The gap may be wider at finer grain — that strengthens, not undermines,
+  the excess-clustering result.
+
+---
+
+## 0. Setup — load the cached MAUP grid
+
+All heavy computation (fitting M1–M4 and the geography-weighted null on each grid) lives in
+**`code/2_build/b_02_firststage_models.R`**, which writes `d03_maup_results.rds`. This
+document only renders. Build order:
+
+1. `2_build/b_01_cross_section.R` → `hex_{1,2,5}km_crosssection.rds` caches (all resolutions).
+2. `d_02_elevation.R` with `HEX_RES_KM ∈ {1,2,5}` → the `hex_terrain_{res}km.csv` files (z11 DEM).
+3. `source("code/2_build/b_02_firststage_models.R")` → `d03_maup_results.rds`.
+
+```{r setup, message=FALSE, warning=FALSE}
+pacman::p_load(tidyverse, sf, scales, knitr, here)
+
+results_path <- here("data", "processed", "d03_maup_results.rds")
+
+if (!file.exists(results_path)) {
+  knitr::opts_chunk$set(eval = FALSE)
+  cat("**`d03_maup_results.rds` not found.** Run",
+      "`source('code/2_build/b_02_firststage_models.R')` first",
+      "(after building the per-resolution caches + `hex_terrain_{1,2,5}km.csv`), then re-knit.\n")
+} else {
+  res      <- readRDS(results_path)
+  fit_grid <- res$fit_grid
+  sim_grid <- res$sim_grid
+  int_grid <- res$int_grid
+  meta     <- res$meta
+
+  # Order factors for clean display
+  model_lv <- c("M1", "M2", "M3", "M4")
+  res_lv   <- sort(unique(fit_grid$res_km))
+  lab <- meta$ladder
+  fit_grid <- fit_grid |> mutate(model = factor(model, model_lv))
+  sim_grid <- sim_grid |> mutate(model = factor(model, model_lv))
+}
+```
+
+```{r meta-note, echo=FALSE, results='asis'}
+if (file.exists(results_path)) {
+  cat(sprintf(
+    "*Cached run: %s. Grids: %s km. Null draws per grid: %s. Seed: %d.*",
+    meta$run_date, paste(meta$res_run, collapse = "/"),
+    paste(sprintf("%s→%d", names(meta$n_sim), meta$n_sim), collapse = ", "), meta$seed
+  ))
+}
+```
+
+---
+
+## Part A — Fit quality across the MAUP grid
+
+Does the first stage strengthen as we climb the ladder, and does it do so *consistently* at
+every grain? **AUC is the headline** (cross-grid comparable). The full metric table follows.
+
+```{r partA-auc-wide}
+fit_grid |>
+  arrange(model) |>
+  mutate(label = lab[as.character(model)]) |>
+  select(model, label, res_km, auc) |>
+  mutate(res_km = paste0(res_km, " km"), auc = round(auc, 3)) |>
+  pivot_wider(names_from = res_km, values_from = auc) |>
+  select(-model) |>
+  rename(Model = label) |>
+  kable(caption = "AUC by model and resolution (cross-grid comparable). Fit should climb M1→M4 in every column.")
+```
+
+```{r partA-fig, fig.width=8, fig.height=4.5}
+fit_grid |>
+  ggplot(aes(model, auc, colour = factor(res_km), group = res_km)) +
+  geom_hline(yintercept = c(0.5, 0.7), linetype = c(3, 2), colour = "grey60") +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.4) +
+  annotate("text", x = 0.6, y = 0.705, label = "0.70 useful", hjust = 0, size = 3, colour = "grey45") +
+  annotate("text", x = 0.6, y = 0.505, label = "0.50 random", hjust = 0, size = 3, colour = "grey45") +
+  scale_colour_brewer(palette = "Dark2", name = "Hex size") +
+  scale_x_discrete(labels = \(m) paste0(m, "\n", str_wrap(lab[m], 14))) +
+  labs(
+    title    = "First-stage AUC climbs the model ladder — consistently across grids",
+    subtitle = "Same shape at 1/2/5 km = the fit gain is not a grain artefact (MAUP-robust)",
+    x = NULL, y = "AUC"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+```{r partA-full-table}
+fit_grid |>
+  arrange(res_km, model) |>
+  transmute(
+    Model      = lab[as.character(model)],
+    `Hex (km)` = res_km,
+    n          = n_fit,
+    Prevalence = round(prevalence, 3),
+    `McFadden R²` = round(mcfadden, 4),
+    AUC        = round(auc, 3),
+    Brier      = round(brier, 4),
+    AIC        = round(aic, 1)
+  ) |>
+  kable(caption = paste0(
+    "Full first-stage fit metrics. McFadden/Brier are prevalence-sensitive — compare within a ",
+    "grid (note prevalence falls as the grid refines). AIC is comparable within a grid only ",
+    "(same n). AUC is the cross-grid metric."
+  ))
+```
+
+**Read:** if AUC rises M1→M4 with the same ordering in all three columns, the ladder is doing
+real work at every grain. Terrain (M3) is expected to be the biggest single jump; the
+interactions (M4) sharpen the likelihood more than discrimination. McFadden below ~0.05 / AUC
+below ~0.60 at M1 flags the *baseline* as weak — the motivation for the ladder.
+
+---
+
+## Part B — Robustness of the clustering result to MAUP
+
+The money table. For each model × grid, the geography-weighted null vs the observed Moran's I.
+`p_excess` = share of null draws ≥ observed; **`p_excess ≈ 0` means the clustering survives the
+geography control**. The claim is that this holds for every model *and* every grain.
+
+```{r partB-pexcess-wide}
+sim_grid |>
+  mutate(label = lab[as.character(model)], res_km = paste0(res_km, " km")) |>
+  select(model, label, res_km, p_excess) |>
+  mutate(p_excess = round(p_excess, 3)) |>
+  pivot_wider(names_from = res_km, values_from = p_excess) |>
+  select(-model) |>
+  rename(Model = label) |>
+  kable(caption = "p_excess by model and resolution. 0 = observed clustering exceeds every null draw.")
+```
+
+```{r partB-full-table}
+sim_grid |>
+  arrange(res_km, model) |>
+  transmute(
+    Model        = lab[as.character(model)],
+    `Hex (km)`   = res_km,
+    draws        = n_sim,
+    `Observed I` = round(obs_moran, 4),
+    `Null mean`  = round(null_mean, 4),
+    `Null 95th`  = round(null_p95, 4),
+    p_excess     = round(p_excess, 4)
+  ) |>
+  kable(caption = paste0(
+    "Geography-weighted null vs observed. Observed Moran's I is identical across models within ",
+    "a grid (it is the raw clustering); the null shifts as the weight model strengthens. ",
+    "Raw I differs across grids by construction — compare the verdict, not the level."
+  ))
+```
+
+```{r partB-fig, fig.width=9, fig.height=4}
+# Per-grain: null 95th pct across the ladder (bars) vs the observed Moran's I (line).
+obs_by_res <- sim_grid |> distinct(res_km, obs_moran)
+
+sim_grid |>
+  ggplot(aes(model, null_p95)) +
+  geom_col(fill = "#2C7BB6", alpha = 0.8, width = 0.65) +
+  geom_hline(data = obs_by_res, aes(yintercept = obs_moran),
+             colour = "#C0392B", linewidth = 0.9, linetype = "dashed") +
+  geom_text(data = obs_by_res, aes(x = 0.6, y = obs_moran, label = sprintf("observed %.2f", obs_moran)),
+            colour = "#C0392B", vjust = -0.5, hjust = 0, size = 3, inherit.aes = FALSE) +
+  facet_wrap(~ paste0(res_km, " km"), scales = "free_y") +
+  labs(
+    title    = "Observed clustering towers over the geography-weighted null — at every grain",
+    subtitle = "Blue = null 95th pct under each model; red = observed Moran's I. Gap persists M1→M4 and 1→5 km.",
+    x = NULL, y = "Moran's I"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+**Read:** if the red observed line sits far above the blue null bars in every panel and
+`p_excess` stays ≈ 0 across the whole table, the spillover interpretation in D2d is robust both
+to a stronger geography control (down the ladder) and to the choice of grain (across panels).
+Note that the observed Moran's I need not decrease at finer grain — for galamsey, 1 km grids
+resolve mine clusters more sharply and can produce *higher* observed I while the null 95th
+simultaneously falls (tighter simulation distribution). A wider gap at finer grain further
+supports, rather than complicates, the excess-clustering claim.
+
+---
+
+## Part C — The spatial-spline null (M5), 5 km & 2 km
+
+Parts A–B control for **measured** geography — geology, river, terrain, their spatial lags and
+interactions. One worry survives that: the covariate list is necessarily incomplete, so any
+omitted but spatially smooth driver (economic, institutional, historical) could in principle
+manufacture the excess clustering. **M5** confronts this directly. It takes the richest measured
+model (M4) and adds a **thin-plate spline on hex centroids**, `s(easting_km, northing_km)`:
+
+$$\text{logit}\,P(\text{mine}_i) = \underbrace{X_i\beta}_{\text{M4 covariates}} \; + \; \underbrace{f(\text{easting}_i,\, \text{northing}_i)}_{\text{smooth spatial surface}}$$
+
+The spline is a flexible 2-D surface that **absorbs all smooth spatial variation, measured or
+not** — making it the most conservative geography null we can build. How it differs from M1–M4:
+those explain mine location with named covariates; M5 additionally lets *pure location* soak up
+whatever smooth structure the covariates miss. It is fit at the **5 km headline grain and the
+2 km grid** (not 1 km — the GAM + null simulation is costly there, and 2 km already probes finer
+structure). Its job is robustness to *omitted* geography, a different axis from the MAUP (grain)
+robustness of Parts A–B, so we keep it out of the cross-grid tables. (Result is robust to the
+spline basis size: `k = 60` here, unchanged at `k = 100`; verified in the now-removed d03d test script, see CHANGELOG.)
+
+```{r partC-stats}
+if (!is.null(res$m5)) {
+  res$m5$stats |>
+    arrange(desc(res_km),
+            match(model, c("M4 (measured geography)", "M5 (+ spatial spline)"))) |>
+    transmute(`Hex (km)` = res_km, Model = model, n, Prevalence = prevalence,
+              `McFadden R²` = mcfadden, AUC = auc, Brier = brier, AIC = aic,
+              `Dev. expl.` = dev_expl, `Spline edf` = edf, p_excess = round(p_excess, 4)) |>
+    kable(caption = paste0(
+      "M5 vs M4 at 5 km and 2 km. The spline lifts fit sharply (AUC, deviance explained) by ",
+      "soaking up smooth spatial structure — yet p_excess stays 0 at both grains: observed ",
+      "clustering still exceeds this more conservative null."))
+}
+```
+
+The null distribution makes the point visually, at each grain. The spline shifts the
+geography-weighted null far to the right (it now *expects* much more clustering), but the observed
+Moran's I still lies beyond it. Moran's I levels differ across grids, so each panel has its own
+scale and observed line.
+
+```{r partC-null-dist, fig.width=9.5, fig.height=4.5}
+if (!is.null(res$m5)) {
+  ggplot(res$m5$null_draws, aes(moran, fill = model)) +
+    geom_histogram(alpha = 0.55, position = "identity", bins = 40, colour = NA) +
+    geom_vline(data = res$m5$obs_moran, aes(xintercept = obs_moran),
+               colour = "#C0392B", linewidth = 0.9, linetype = "dashed") +
+    geom_text(data = res$m5$obs_moran,
+              aes(x = obs_moran, y = Inf, label = sprintf("obs %.3f", obs_moran)),
+              colour = "#C0392B", hjust = 1.08, vjust = 1.6, size = 3.1, inherit.aes = FALSE) +
+    facet_wrap(~ paste0(res_km, " km"), scales = "free") +
+    scale_fill_manual(values = c("M4 (measured geography)" = "#9ECAE1",
+                                 "M5 (+ spatial spline)"   = "#3182BD"), name = NULL) +
+    labs(title    = "Geography-weighted null distributions vs observed Moran's I",
+         subtitle = "Each grain: the spline pushes the null right (absorbs smooth structure) — observed still beyond it",
+         x = "Moran's I", y = "Null draws") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "top", plot.title = element_text(face = "bold"))
+}
+```
+
+```{r partC-resid}
+if (!is.null(res$m5)) {
+  res$m5$resid_moran |>
+    arrange(desc(res_km),
+            match(model, c("M4 (measured geography)", "M5 (+ spatial spline)"))) |>
+    transmute(`Hex (km)` = res_km, Model = model, `Residual Moran's I` = round(moran_i, 3),
+              `p-value` = signif(p_value, 3)) |>
+    kable(caption = paste0(
+      "Moran's I of deviance residuals. The spline roughly halves residual spatial ",
+      "autocorrelation but cannot remove it — the remainder is the short-range signal, the same ",
+      "quantity as the observed–null gap above."))
+}
+```
+
+The fitted spline surface is the mining propensity attributable to **location alone**, net of
+the measured covariates: where there is more (red) or less (blue) mining than geology, river and
+terrain predict. Shown at both grains — the 2 km panel resolves finer spatial structure.
+
+```{r partC-surface, fig.width=10, fig.height=6}
+if (!is.null(res$m5)) {
+  ggplot(res$m5$surface_sf) +
+    geom_sf(aes(fill = spatial_logit), colour = NA) +
+    facet_wrap(~ paste0(res_km, " km")) +
+    scale_fill_gradient2(low = "#2166AC", mid = "#F7F7F7", high = "#B2182B", midpoint = 0,
+                         na.value = "grey92", name = "Spatial effect\n(logit)") +
+    labs(title    = "Mining propensity net of the measured covariates",
+         subtitle = sprintf("M5 spatial term s(easting, northing), k = %d (mean-centred logit)",
+                            res$m5$k_tps),
+         caption  = paste0("Pure function of location: positive = more mining than geology/",
+                           "river/terrain predict at that hex. SW Ghana (Barenblitt).")) +
+    theme_minimal(base_size = 11)
+}
+```
+
+### What explains the gap — and what M5 can and cannot show
+
+The spline captures everything spatially **smooth**; by construction it cannot represent abrupt,
+hex-to-hex variation. And the null draws each location *independently* given its fitted
+probability. So the gap between observed and simulated Moran's I is the portion of clustering
+that (i) is finer-grained than any smooth surface and (ii) cannot be produced by independent
+allocation from such a surface. Two explanations are consistent with it:
+
+1. **Genuine spatial contagion / diffusion** — mining at one site raises the chance of mining at
+   an immediate neighbour through non-smooth mechanisms: labour and equipment moving short
+   distances, miners following a neighbour's discovery, propagation along a single river channel.
+   This is the galamsey-spillover reading.
+2. **A non-smooth, sub-grid covariate** — a real driver that changes *abruptly* between adjacent
+   hexes (a single ore vein, a fault, one road, a concession boundary) and so cannot be absorbed
+   by a smooth surface. Still geography/economics, just below the spline's resolution.
+
+M5 **cannot distinguish (1) from (2)** — both leave short-range residual clustering (the classic
+true-vs-apparent-contagion problem). What it establishes decisively is that the excess is **not
+attributable to any smooth confounder**, measured or unmeasured. Separating contagion from
+fine-scale heterogeneity needs the *temporal* dimension — whether mining in a hex predicts *new*
+conversion in its neighbours the following year — which a cross-sectional test cannot deliver.
+(One caveat on the surface map: because `gold_suit_share` is itself spatially smooth and
+collinear with the spline, the split of smooth signal between covariate and surface is not fully
+clean — read it qualitatively.)
+
+---
+
+## Interpretation & paper notes
+
+- **Cite `p_excess` from M4** (the richest geography control) **at 5 km** as the headline, and
+  report the 1 km and 2 km values as the MAUP-robustness check. M4 is the most conservative
+  geography null available among the *measured*-covariate models.
+- **Spatial-spline robustness (Part C).** Beyond MAUP, M5 adds a thin-plate spline that absorbs
+  *all* smooth spatial structure; `p_excess` stays 0 at 5 km (and at `k = 100`). This rules out
+  smooth omitted geography as the source of the excess. It cannot separate genuine contagion from
+  a non-smooth sub-grid driver — that needs the space–time panel (neighbour onset at *t* → new
+  conversion at *t+1*).
+- **Terrain is the workhorse.** Expect the M2→M3 step (adding elevation + slope) to be the
+  largest AUC gain, consistent with the alluvial-galamsey-on-flat-low-terrain prior. This means
+  the weak baseline was an *information* problem (coarse Girard geology), not a functional-form
+  one. Terrain is exogenous (not caused by mining; see `d03_intensive_margin_note.md`), so it is
+  legitimate in the D2bc weight model.
+- **Upper-/lower-bound framing (old Fix 4).** Even the richest control leaves the observed
+  clustering far above the null, so the "18× is an upper bound on excess" caveat is now a minor
+  footnote rather than a material concern — state it once, then rely on `p_excess`.
+- **MAUP statement for the paper:** *"We re-estimate the full first-stage ladder and the
+  geography-weighted null on 1, 2 and 5 km hexagons. Fit metrics move with grain as expected
+  (prevalence falls, AUC rises). The observed Moran's I increases at finer grain: coarser cells
+  average over mined and unmined terrain within the same unit, attenuating the signal, while
+  1 km hexagons resolve mine clusters sharply and produce stronger local contrast. The
+  geography-weighted null tightens simultaneously (more observations reduce simulation variance),
+  so the gap between observed clustering and the geography-explained null widens at finer grain.
+  The observed clustering exceeds even the richest geography null (`p_excess ≈ 0`) at every
+  resolution. The excess-clustering result is not an artefact of the modifiable areal unit —
+  if anything it strengthens as the grain refines."*
+
+---
+
+## Appendix — diagnostics
+
+### A1. Which interactions carry M4, by grain (a MAUP finding in its own right)
+
+Each single interaction added on top of the additive M3 base, judged by ΔAIC and a
+likelihood-ratio test. The *winning* interaction set changes with grain — direct evidence that
+which mechanism is resolvable depends on the unit.
+
+```{r appendix-int}
+int_grid |>
+  mutate(
+    res_km       = paste0(res_km, " km"),
+    aic          = round(aic, 1),
+    dAIC_vs_base = round(dAIC_vs_base, 1),
+    LR_p_vs_base = signif(LR_p_vs_base, 3)
+  ) |>
+  arrange(res_km, dAIC_vs_base) |>
+  rename(`Hex` = res_km, Interaction = interaction, AIC = aic,
+         `ΔAIC vs M3` = dAIC_vs_base, `LR p` = LR_p_vs_base) |>
+  kable(caption = paste0(
+    "Interaction breakdown on the additive M3 base. Useful if ΔAIC < −2 and LR p < 0.05. ",
+    "Expect geology×river to help at 5 km but fade at 1 km (Girard too coarse for sub-5 km ",
+    "variation), and river×slope to be the opposite (low-gradient reaches only resolve at 1 km)."
+  ))
+```
+
+**Why the reversal happens.** Girard geology is 1:10M, so it barely varies within a few km —
+at 1 km adjacent hexes share almost the same value and geology×river is near-collinear with the
+geology main effect (dead), whereas at 5 km coarse averaging gives it enough contrast to bite.
+River×slope is the mirror image: slope variation within a hex is averaged away at 5 km but a
+steep bank vs a low-gradient reach is distinguishable at 1 km — and low-slope × near-river is
+exactly the depositional setting where heavy minerals settle. This is the alluvial mechanism
+becoming visible only at finer grain, and it is why M4 fixes a *common* four-interaction set
+rather than a per-grid pick (keeping M4 one object for the MAUP comparison while the appendix
+records what drives it).
+
+### A2. Notes on superseded diagnostics
+
+Earlier versions of this document carried per-covariate diagnostics (KS test of each null vs
+uniform, deviance-residual Moran's I, partial-dependence and coefficient-sign plots) for a
+single resolution. Those were scaffolding to establish that the baseline was weak; the Part A
+metric ladder and the Part B null grid now carry that argument directly and across grains, so
+the single-resolution diagnostics have been retired. If a specific check is needed (e.g. the
+sign of a terrain coefficient), refit the model from the relevant `hex_{res}km_crosssection.rds`
+— the ladder formulas are defined at the top of `2_build/b_02_firststage_models.R`.

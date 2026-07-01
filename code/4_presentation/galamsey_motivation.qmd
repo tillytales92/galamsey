@@ -1,0 +1,1175 @@
+---
+title: "Galamsey"
+subtitle: "Spatial Distribution, Clustering, and Evidence for Economic Spillovers"
+author: ""
+date: today
+format:
+  revealjs:
+    theme: simple
+    slide-number: true
+    embed-resources: true
+    fig-align: center
+    echo: false
+    warning: false
+    message: false
+    smaller: true
+    margin: 0.05
+    footer: " "
+  beamer:
+    keep-tex: true
+    theme: Madrid
+    colortheme: default
+    fonttheme: structurebold
+    fig-align: center
+    echo: false
+    warning: false
+    message: false
+    include-in-header:
+      text: |
+        \definecolor{galawine}{RGB}{69,4,87}
+        \setbeamercolor{structure}{fg=galawine}
+        \setbeamercolor{frametitle}{bg=galawine, fg=white}
+        \setbeamercolor{title}{bg=galawine, fg=white}
+        \setbeamertemplate{navigation symbols}{}
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+pacman::p_load(tidyverse, here, knitr, scales)
+
+out_sc    <- here("outputs", "figures", "spatial_clustering")
+out_fig   <- here("outputs", "figures")
+out_map   <- here("outputs", "figures", "maps")
+out_mf    <- here("outputs", "figures", "motivating_facts")
+out_es    <- here("outputs", "figures", "event_study")
+out_merit <- here("outputs", "figures", "merit")
+out_ww    <- here("outputs", "figures", "waterways")
+
+dist_ext   <- read_csv(here("data", "processed",
+                             "mining_extent_by_districts_2019.csv"),
+                        show_col_types = FALSE)
+n_total_gh <- 260L
+
+# Precomputed by a_01_incidence_maps.R (nrow of survey_districts_sf).
+# Run a_01 first; falls back to NA so the presentation still renders.
+.n_path    <- here("data", "processed", "n_surveyed_districts.rds")
+n_surveyed <- if (file.exists(.n_path)) readRDS(.n_path) else NA_integer_
+
+top10_n     <- ceiling(n_surveyed * 0.1)
+top10_share <- round(100 * sum(sort(dist_ext$Artisanal, decreasing = TRUE)[1:top10_n]) /
+                       sum(dist_ext$Artisanal))
+```
+
+```{=html}
+<style>
+/* Keep two-column slides side-by-side even with large figures. A flex item won't
+   shrink below its content's intrinsic size (min-width:auto), so a big image forces
+   the row to wrap and drop below the text. min-width:0 lets the column shrink; the
+   img cap guarantees the figure never exceeds its column. */
+.reveal .columns { display: flex; align-items: flex-start; }
+.reveal .columns > .column { min-width: 0; }
+.reveal .columns > .column img { max-width: 100%; height: auto; }
+</style>
+```
+
+## Overview
+
+**Data:** Barenblitt et al. (2021) remote-sensing panel — mine extent polygons, annual 2007–2017, SW Ghana (~104,730 km²)
+
+**Unit of analysis:** 5 km hexagonal grid covering the study region
+
+**Questions:**
+
+1. **Where?** Spatial distribution of galamsey across SW Ghana
+2. **Clustered?** Statistical evidence for spatial autocorrelation
+3. **Why clustered?** Geography vs. social and economic drivers
+4. **Spreading?** Evidence for economic spillovers along river corridors
+
+**Core question:** Is the spatial clustering of galamsey explained by underlying geography (gold geology, river networks), or is there evidence of social and economic spillover processes?
+
+## What's New Since June 10
+
+::: {style="font-size: 0.9em;"}
+- **Model robustness (M1–M5):** simulations run at 1 km, 2 km, and 5 km hexagons with terrain (elevation, slope) and interaction terms added stepwise; MAUP robustness confirmed — excess clustering survives all specifications including an unrestricted spatial spline (M5)
+- **River flow direction:** MERIT Hydro D8 flow graph built for every hexagon — directed upstream/downstream relationships derived from actual hydrological routing (not the northing proxy used previously)
+- **Potential instruments:** investigated HAND (Height Above Nearest Drainage), MRVBF (valley-floor flatness), and the Stream Power and Stream Transport indices from MERIT Hydro, alongside gold-suitable geology (Girard) as controls and potential exclusion restrictions
+- **Event study design:** upstream mining onset → downstream NDVI drop (waterborne degradation channel); mining contagion modelled with staggered Callaway–Sant'Anna estimators; panel built at 1/2/5 km hexagons
+:::
+
+# Part 1 {background-color="#450457"}
+
+::: {style="color: white; font-size: 1.4em; margin-top: 0.5em;"}
+Where does galamsey happen?
+:::
+
+## Data: Barenblitt et al. (2021)
+
+:::: {.columns}
+::: {.column width="58%" style="font-size: 0.9em;"}
+**Remote-sensing derived mine extent, SW Ghana**
+
+- **Annual time series:** 2007–2017, new conversions per year
+- **Full 2019 extent:** artisanal vs industrial mining
+- Classified from Landsat imagery, Random Forest model
+- **Coverage:** SW Ghana only (~104,730 km²) — northern districts have no data, not zero mines
+- **Accuracy:** Producer accuracy 75.6% — ~1 in 4 real mines missed; treat as positive labels only; absence ≠ no mining
+:::
+::: {.column width="42%"}
+```{r}
+#| out-width: "100%"
+knitr::include_graphics(here(out_sc, "d2_map_incidence.png"))
+```
+:::
+::::
+
+## Fine-Scale Incidence — 5 km Hexagons
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_map, "hex5km", "d1a_hex5km_cumulative_animation.gif"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Cumulative artisanal mining land cover per 5 km hexagon, animated 2007–2017. Tight spatial clustering is evident within and across district boundaries.
+:::
+
+## Artisanal vs Industrial Mining — 5 km Hexagons
+
+```{r art-vs-ind-hex}
+f <- here(out_map, "hex5km", "d1b_hex5km_artisanal_vs_industrial.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[Figure pending — run d02_incidence_maps.R with hex5km unit]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Left: artisanal (galamsey). Right: industrial (formal). 5 km hexagons. Note the divergent spatial footprints — artisanal mining is more dispersed and river-proximate; industrial mining concentrates in fewer, larger sites. Barenblitt 2019 extent.
+:::
+
+## District-Level Extent {#district-extent}
+
+:::: {.columns}
+::: {.column width="52%" style="font-size: 0.85em;"}
+**Galamsey is widespread across SW Ghana**
+
+- **`r n_surveyed` of Ghana's `r n_total_gh` districts** fall within the Barenblitt survey area
+- Artisanal mining is recorded across the full survey area — galamsey is not confined to a handful of hotspots
+- The remaining `r n_total_gh - n_surveyed` districts have no coverage: absent data means *no survey*, not zero mines
+- **Highly concentrated:** the top 10% of districts (~`r top10_n`) account for **`r top10_share`% of total artisanal mining extent**
+
+::: {style="font-size: 0.8em; color: grey;"}
+🔍 *Click the figure to enlarge.*
+:::
+:::
+::: {.column width="48%"}
+```{r, fig.link="#annex-districts-cumulative"}
+#| out-width: "85%"
+#| fig-align: center
+knitr::include_graphics(here(out_map, "districts", "d1a_districts_cumulative.png"))
+```
+:::
+::::
+
+::: {style="font-size: 0.7em; color: grey;"}
+Cumulative artisanal mining land cover per district, 2005–2019. Plasma colour scale (sqrt transform). Barenblitt et al. (2021).
+:::
+
+# Part 2 {background-color="#450457"}
+
+::: {style="color: white; font-size: 1.4em; margin-top: 0.5em;"}
+Is galamsey spatially clustered?
+:::
+
+## Global Moran's I: Is Clustering Statistically Significant?
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_sc, "d2a_morans_by_year.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Global Moran's I on annual new mining (ha) per 5 km hexagon, 2007–2017. Queen contiguity weights, row-standardised. Red = p < 0.05. Moran's I consistently positive and significant — new mining is not randomly distributed across space.
+:::
+
+## LISA Clusters: Where Are the Hotspots?
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_sc, "d2a_lisa_2017.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Local Moran's I clusters (LISA), artisanal mining extent 2019. **HH** = high mining surrounded by high mining (hotspot). **LL** = low surrounded by low. HH clusters are tightly localised in a corridor of SW Ghana.
+:::
+
+# Part 3 {background-color="#450457"}
+
+::: {style="color: white; font-size: 1.4em; margin-top: 0.5em;"}
+What drives the clustering?
+:::
+
+## Decomposing Spatial Clustering
+
+The observed spatial autocorrelation has two components:
+
+$$I_{\text{observed}} \;=\; \underbrace{I_{\text{geography}}}_{\substack{\text{clustering due to}\\\text{geography}}} \;+\; \underbrace{I_{\text{excess}}}_{\substack{\text{excess clustering}\\\text{(unexplained)}}}$$
+
+::: incremental
+- **$I_{\text{geography}}$** — mines tend to locate where geology and river networks make mining viable. This produces spatial concentration, but not necessarily neighbour-to-neighbour spillover.
+- **$I_{\text{excess}}$** — mines cluster *more than geography alone can explain*. Consistent with social and economic spillover processes: labour mobility, information diffusion, reduced enforcement risk.
+- **Strategy:** (1) confirm geography is a genuine predictor (first stage); (2) show that residual clustering far exceeds what the richest geography null — including an unrestricted spatial spline (M5) — can account for.
+:::
+
+## Gold-Suitable Geology and Artisanal Mining
+
+```{r gold-geology-map}
+#| fig-align: center
+#| out-width: "62%"
+f_geo <- here(out_map, "gold_geology_with_mining_hexes.png")
+if (file.exists(f_geo)) knitr::include_graphics(f_geo) else
+  knitr::asis_output("*[Figure pending — run `d_06_gold_deposits.R` Sec G–I]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Amber: gold-suitable bedrock (Girard et al. 2022a, Layer 1 — CGMW-BRGM 1:10M geological map). Red hexagons: 5 km cells with artisanal mining (Barenblitt et al. 2021, 2019 extent).
+:::
+
+## Geography as a Predictor: First Stage
+
+::: {style="font-size: 0.75em;"}
+```{r first-stage, results='asis'}
+fs_md <- here(out_sc, "d2_geography_firststage.md")
+if (file.exists(fs_md)) cat(readLines(fs_md), sep = "\n") else
+  cat("*[First-stage table pending — run `d03_spatial_clustering.R`]*")
+```
+:::
+
+::: {style="font-size: 0.65em; color: grey;"}
+LPM, 5 km hexes, robust SEs. \*\*\* *p* < 0.01.
+:::
+
+- **River proximity:** mining concentrates near waterways — alluvial gold deposits and water requirements of artisanal processing.
+- **Gold geology:** hexes on gold-suitable ground show higher mine incidence — consistent with ore-targeting.
+- Low *R²*: geography explains *where*, not *why* mines cluster.
+
+```{r m5-setup}
+maup_path <- here("data", "processed", "d03_maup_results.rds")
+has_maup  <- file.exists(maup_path)
+has_m5    <- FALSE
+if (has_maup) {
+  pacman::p_load(sf)
+  .mres <- readRDS(maup_path)
+  .lab5 <- .mres$meta$ladder
+  .fit5 <- dplyr::filter(.mres$fit_grid, res_km == 5)
+  .sim5 <- dplyr::filter(.mres$sim_grid, res_km == 5)
+  .m5   <- .mres$m5
+  has_m5 <- !is.null(.m5)
+}
+```
+
+## Terrain Covariates: Elevation and Slope
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r elev-map}
+#| out-width: "78%"
+f_elev <- here(out_map, "elevation_utm30n.png")
+if (file.exists(f_elev)) knitr::include_graphics(f_elev) else
+  knitr::asis_output("*[Elevation map pending — run `d_02_elevation.R` Sec 4]*")
+```
+:::
+::: {.column width="50%"}
+```{r slope-map}
+#| out-width: "78%"
+f_slope <- here(out_map, "slope_utm30n.png")
+if (file.exists(f_slope)) knitr::include_graphics(f_slope) else
+  knitr::asis_output("*[Slope map pending — run `d_02_elevation.R` Sec 4]*")
+```
+:::
+::::
+
+::: {style="font-size: 0.7em; color: grey;"}
+Elevation (left) and slope in degrees (right), Ghana, UTM30N. AWS Terrain Tiles z11 (~76 m).
+:::
+
+## Building the Geography Control: M1 → M4
+
+::: incremental
+- **M1** — first-stage geography: distance to river + gold suitability
+- **M2** — adds a flexible spline for river proximity (non-linear distance-to-river) and spatial lags of both covariates
+- **M3** — adds terrain (elevation, slope)
+- **M4** — adds interactions
+:::
+
+```{r m5-ladder}
+if (has_maup) {
+  tab <- .fit5 |> dplyr::arrange(model) |>
+    dplyr::transmute(Model = as.character(model),
+                     Covariates = .lab5[as.character(model)],
+                     AUC = round(auc, 3), `McFadden R²` = round(mcfadden, 4))
+  pex <- .sim5 |> dplyr::transmute(Model = as.character(model),
+                     `p (excess)` = ifelse(p_excess == 0, "< 0.002",
+                                           as.character(round(p_excess, 3))))
+  dplyr::left_join(tab, pex, by = "Model") |> knitr::kable(align = "llccc")
+} else knitr::asis_output("*[M1–M4 table pending — run `d03c_maup_robustness.R`]*")
+```
+
+::: {style="font-size: 0.65em; color: grey;"}
+5 km hexes. Fit rises M1→M4 yet *p* (excess) ≈ 0 throughout. Robust at 1 km and 2 km (MAUP).
+:::
+
+## Ruling Out Unobserved Geography: The Spatial Spline (M5)
+
+:::: {.columns}
+::: {.column width="52%"}
+$$\text{logit}\,P(\text{mine}_i) = \underbrace{X_i\beta}_{\text{M4 covariates}} + \underbrace{f(\text{east}_i,\,\text{north}_i)}_{\text{smooth surface}}$$
+
+- A spatially **smooth** omitted driver — geographic, geological, economic, or institutional — could still manufacture the clustering even after M1–M4.
+- **M5** adds a **thin-plate spline**: a flexible 2-D surface absorbing *all* smooth spatial variation, measured or not.
+- Lets *pure location* soak up whatever the covariates miss — the most conservative geography null possible.
+:::
+::: {.column width="48%"}
+```{r m5-stats}
+if (has_m5) {
+  .m5$stats |> dplyr::filter(res_km == 5) |>
+    dplyr::arrange(match(model, c("M4 (measured geography)", "M5 (+ spatial spline)"))) |>
+    dplyr::transmute(Model = model, AUC = round(auc, 3),
+                     `McFadden R²` = round(dev_expl, 3),
+                     `Spline edf` = round(edf, 1),
+                     `p (excess)` = round(p_excess, 4)) |>
+    knitr::kable(align = "lcccc")
+} else knitr::asis_output("*[M5 table pending — run `d03c_maup_robustness.R` with M5 enabled]*")
+```
+
+::: {style="font-size: 0.65em; color: grey;"}
+5 km hexes. *p* (excess) = 0 under both M4 and M5. Robust at 2 km.
+:::
+:::
+::::
+
+## M5: Observed Clustering Still Exceeds the Null
+
+::: {style="font-size: 0.82em;"}
+**Simulation:** for each model (M4, M5) draw mine placements from model-predicted probabilities — no spillover term, mines placed independently — repeat 500×, compute Moran's I each draw. The histogram is where clustering should land if only geography drove it.
+:::
+
+:::: {.columns}
+::: {.column width="62%"}
+```{r m5-null}
+#| fig-width: 6
+#| fig-height: 4.2
+#| out-width: "82%"
+#| fig-align: center
+if (has_m5) {
+  nd   <- dplyr::filter(.m5$null_draws, res_km == 5)
+  obs5 <- dplyr::filter(.m5$obs_moran,  res_km == 5)
+  ggplot(nd, aes(moran, fill = model)) +
+    geom_histogram(alpha = 0.55, position = "identity", bins = 40, colour = NA) +
+    geom_vline(data = obs5, aes(xintercept = obs_moran),
+               colour = "#C0392B", linewidth = 0.9, linetype = "dashed") +
+    geom_text(data = obs5, aes(x = obs_moran, y = Inf, label = sprintf("obs %.3f", obs_moran)),
+              colour = "#C0392B", hjust = 1.08, vjust = 1.6, size = 4, inherit.aes = FALSE) +
+    scale_fill_manual(values = c("M4 (measured geography)" = "#9ECAE1",
+                                 "M5 (+ spatial spline)" = "#3182BD"), name = NULL) +
+    labs(x = "Moran's I", y = "Null draws") +
+    theme_minimal(base_size = 13) + theme(legend.position = "top")
+}
+```
+:::
+::: {.column width="38%"}
+**Residual Moran's I**
+```{r m5-resid}
+if (has_m5) {
+  .m5$resid_moran |> dplyr::filter(res_km == 5) |>
+    dplyr::arrange(match(model, c("M4 (measured geography)", "M5 (+ spatial spline)"))) |>
+    dplyr::transmute(Model = model, `Resid. I` = round(moran_i, 3),
+                     `p` = signif(p_value, 3)) |>
+    knitr::kable(align = "lcc")
+}
+```
+:::
+::::
+
+## Mining Propensity Net of Measured Covariates
+
+```{r m5-surface}
+#| fig-width: 7
+#| fig-height: 4.6
+#| fig-align: center
+#| out-width: "70%"
+if (has_m5) {
+  dplyr::filter(.m5$surface_sf, res_km == 5) |>
+    ggplot() +
+    geom_sf(aes(fill = spatial_logit), colour = NA) +
+    scale_fill_gradient2(low = "#2166AC", mid = "#F7F7F7", high = "#B2182B",
+                         midpoint = 0, na.value = "grey92", name = "Spatial effect\n(logit)") +
+    theme_minimal(base_size = 12)
+} else knitr::asis_output("*[M5 surface pending — run `d03c_maup_robustness.R`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+M5 spatial term *s*(easting, northing), 5 km hexagons, mean-centred logit. A pure function of location: **red** = more mining than geology/river/terrain predict at that hex; **blue** = less. The excess is *not* attributable to any smooth confounder.
+:::
+
+## Summary: Part 3
+
+::: incremental
+- **Geography explains where, not how tightly.** Gold-suitable geology and river proximity are strong first-stage predictors of mine location — but adding richer geography (terrain, spatial lags, interactions: M1→M4) barely reduces excess clustering
+
+- **Clustering survives the most conservative null.** An unrestricted thin-plate spline (M5), absorbing *all* smooth spatial variation in location, still leaves excess Moran's I far above the geography null — *p*(excess) = 0 throughout
+
+- **Neighbour stock predicts onset.** +10 ha of cumulative neighbour mining → +0.9 ha new mining that year; +50 ha raises probability of any onset by ~13 pp — within-hex and year fixed effects control for static geography and national shocks
+
+- **Conclusion:** The spatial pattern is consistent with economic spillover processes. Geography alone cannot account for it; the causal channel and direction are tested in the event study
+:::
+
+# Part 4 {background-color="#450457"}
+
+::: {style="color: white; font-size: 1.4em; margin-top: 0.5em;"}
+How does galamsey spread?
+:::
+
+## Spatial Lag Model: Estimating Equation
+
+$$\Delta y_{it} \;=\; \alpha_i \;+\; \gamma_t \;+\; \rho\;\bar{y}_{N(i),\,t-1} \;+\; \varepsilon_{it}$$
+
+::: incremental
+- $\Delta y_{it}$: new artisanal mining in hex $i$, year $t$ (hectares; or 0/1 indicator for LPM variant)
+- $\bar{y}_{N(i),\,t-1}$: lagged *cumulative* mining stock in queen-contiguous neighbours of $i$ at end of $t-1$
+- $\rho$: spatial spillover coefficient — does the stock of neighbour mining predict your new onset?
+- $\alpha_i$: hex fixed effects — absorb all time-invariant geography (geology, soil, river distance)
+- $\gamma_t$: year fixed effects — absorb national shocks (gold price, policy, rainfall)
+- **Identification:** within-hex variation over time, conditional on national trends. Residual concern: time-varying *local* factors not captured by hex FE (e.g., new access roads).
+:::
+
+## Spatial Lag Regression: Results
+
+::: {style="font-size: 0.75em;"}
+```{r spatial-lag, results='asis'}
+sl_md <- here(out_sc, "d2d_spatial_lag.md")
+if (file.exists(sl_md)) cat(readLines(sl_md), sep = "\n") else
+  cat("*[Spatial-lag table pending — run `d03_spatial_clustering.R`]*")
+```
+:::
+
+::: {style="font-size: 0.65em; color: grey;"}
+`fixest::feols`, two-way FE, SEs clustered by hex. \*\*\* *p* < 0.01.
+:::
+
+<br>
+
+::: incremental
+- **Intensive margin:** +10 ha of cumulative neighbour mining → +0.91 ha new mining this year ($t$ = 7.5, $p < 10^{-13}$)
+- **Extensive margin (LPM):** +50 ha in neighbours → ~13 pp higher probability of any mine onset ($t$ = 8.8, $p < 10^{-17}$)
+- Two-way FE absorbs static geography and national shocks; caveat: time-varying local confounders not ruled out.
+:::
+
+## Event Study: Do Mining Spillovers Reduce Agricultural Productivity?
+
+::: {style="font-size: 0.8em;"}
+**Question:** does galamsey in *surrounding* hexes reduce agricultural productivity — measured by NDVI — in a focal hex?
+:::
+
+::: {.incremental style="font-size: 0.8em;"}
+- **Two candidate channels:**
+  - **Land-use:** mining in *adjacent* hexes disturbs nearby land directly — e.g. access roads and worker camps spill over onto neighbouring hexagons
+  - **Waterborne:** mining *upstream* releases sediment and mercury into rivers, degrading farmland **downstream**
+- Distinguishing them requires *direction*, not just proximity: upstream vs downstream, not merely "nearby".
+- **Prediction (waterborne):** upstream mining onset → downstream NDVI decline. Downstream mining should *not* affect upstream NDVI — a built-in directional **placebo**.
+- **Test:** Callaway–Sant'Anna staggered event study on a hex × year panel, using MERIT-derived river flow direction to define who is upstream of whom.
+:::
+
+## Neighbour Roles Along the River Corridor {#roles}
+
+:::: {.columns}
+::: {.column width="38%" style="font-size: 0.72em;"}
+Each hex is classified *relative to a focal hex* using the river flow graph:
+
+- **Upstream** (all-reachable + nearest 1-hop) — **treatment**: can contaminate the focal hex via water
+- **Lateral** (queen-adjacent, off the flow path) — **comparison**: shares a border but no water link → isolates the pure land-use channel
+- **Downstream** (1-hop + all-reachable) — **placebo**: cannot reach the focal hex via water; should be null
+
+::: {style="font-size: 0.85em; color: grey;"}
+🔍 *Click the figure to enlarge.*
+:::
+:::
+::: {.column width="62%"}
+```{r schematic-slide, fig.link="#annex-schematic"}
+#| out-width: "96%"
+f_schem <- here(out_es, "d2e_schematic.png")
+if (file.exists(f_schem)) knitr::include_graphics(f_schem) else
+  knitr::asis_output("*[Schematic pending — knit `a_05_event_study.Rmd`]*")
+```
+:::
+::::
+
+## Three Ways to Capture Rivers {#rivers}
+
+:::: {.columns}
+::: {.column width="44%" style="font-size: 0.68em;"}
+"River" can mean three different things — each from a different data source:
+
+1. **OSM waterways** — surveyed/digitised vector lines (river, stream, brook…) from OpenStreetMap. Captures *where rivers have been mapped*; coverage depends on contributor effort. → first-stage `dist_river_km`.
+2. **MERIT Hydro** — a DEM-derived stream network from thresholding upstream drainage area (`upa` > 50 km²), *plus* the `dir` band, which routes each cell downslope into a **directed** flow graph. Captures not only where channels are but *which way water flows* — the basis for the upstream/downstream event study.
+3. **Remotely sensed surface water** — rivers, ponds and pits detected directly from satellite imagery via water indices (MNDWI, Landsat/Sentinel-2). Observed water, seasonally resolved; part of our own RS pipeline (Part 1). *Not used so far.*
+
+::: {style="font-size: 0.8em; color: grey;"}
+🔍 *Click the figure to enlarge.*
+:::
+:::
+::: {.column width="56%"}
+```{r rivers-osm-vs-merit, fig.link="#annex-osm-merit"}
+#| out-width: "100%"
+f_om <- here(out_ww, "dist_river_osm_vs_merit.png")
+if (file.exists(f_om)) knitr::include_graphics(f_om) else
+  knitr::asis_output("*[OSM-vs-MERIT figure pending — run `d_03_waterways.R` Sec 6]*")
+```
+
+::: {style="font-size: 0.6em; color: grey;"}
+Ways 1 vs 2 disagree: per-hex distance to nearest OSM waterway vs nearest MERIT channel (Ankobra). Below the 1:1 line, MERIT finds a nearer channel than OSM has mapped.
+:::
+:::
+::::
+
+## River Flow Direction from MERIT Hydro {#merit-flow}
+
+:::: {.columns}
+::: {.column width="38%" style="font-size: 0.72em;"}
+**MERIT Hydro** (Yamazaki et al. 2019): global ~90 m hydrography derived from spaceborne DEMs. Two bands drive our routing:
+
+- **`dir`** — D8 flow direction: each cell drains to one of its 8 neighbours
+- **`upa`** — upstream drainage area (km²): larger = further down the channel
+
+**D8 routing** chains these into a directed flow graph, aggregated to hexes → explicit **upstream/downstream** relations for every hex pair. Replaces the crude northing proxy used previously.
+
+::: {style="font-size: 0.85em; color: grey;"}
+🔍 *Click the figure to enlarge.*
+:::
+:::
+::: {.column width="62%"}
+```{r merit-flow-rank, fig.link="#annex-flow-rank"}
+#| out-width: "100%"
+f_fr <- here(out_merit, "ankobra_hex_flow_rank.png")
+if (file.exists(f_fr)) knitr::include_graphics(f_fr) else
+  knitr::asis_output("*[MERIT flow-rank map pending — run `d_04_merit.R`]*")
+```
+:::
+::::
+
+::: {style="font-size: 0.65em; color: grey;"}
+Ankobra basin. Downstreamness per hex: topological rank (left) and mean log upstream area (right). Red = MERIT channels (upa > 50 km²); pink outline = galamsey hex.
+:::
+
+## The Channel Filter and Upstream Exposure {#merit-filter}
+
+:::: {.columns}
+::: {.column width="38%" style="font-size: 0.72em;"}
+**Filter — route only along real channels.** A hex sources flow edges only from cells with upstream area **> 10 km²** (`ROUTE_KM2`). Without it, "flow" runs over ridges and hillslopes and leaks mining across drainage divides.
+
+- 10 km² keeps **94.5%** of mined hectares on-network (the 50 km² "river" label drops 23%)
+- Threshold swept over {2, 5, 10, 20} km² as a robustness check
+
+**Upstream exposure** = total mining area draining *through* each hex via the flow graph (raw, and distance-decayed).
+
+::: {style="font-size: 0.85em; color: grey;"}
+🔍 *Click the figure to enlarge.*
+:::
+:::
+::: {.column width="62%"}
+```{r merit-exposure, fig.link="#annex-upstream-exposure"}
+#| out-width: "100%"
+f_ue <- here(out_merit, "ankobra_hex_upstream_exposure.png")
+if (file.exists(f_ue)) knitr::include_graphics(f_ue) else
+  knitr::asis_output("*[Upstream-exposure map pending — run `d_04_merit.R`]*")
+```
+:::
+::::
+
+::: {style="font-size: 0.65em; color: grey;"}
+Own-hex galamsey (left) vs accumulated upstream mining draining through each hex, raw (centre) and distance-decayed (right). Exposure concentrates along the main Ankobra channel.
+:::
+
+## The Hex × Year Panel
+
+::: {style="font-size: 0.74em;"}
+**Unit:** hex × year (built at 1, 2, and 5 km grids); **outcome:** MODIS NDVI per hex-year. For each **exposure dimension** the panel records new mining (ha/yr), cumulative **stock** (ha), and **onset year**:
+
+| Dimension | How defined | Role |
+|---|---|---|
+| Own | focal hex itself | outcome-side / censoring |
+| Upstream — all / 1-hop | MERIT D8 flow graph | **treatment** |
+| Lateral | queen-adjacent minus 1-hop up/down | comparison |
+| Downstream — all / 1-hop | MERIT D8 flow graph | placebo |
+:::
+
+::: {.incremental style="font-size: 0.74em;"}
+- Directed columns come from the MERIT flow graph; lateral/adjacency from queen contiguity.
+- **Also carried per hex-year — outcomes & controls:** MODIS + Landsat NDVI/EVI (plus cropland-masked *forest-crop* / *no-mine-crop* variants), terrain (elevation, slope), gold-suitable-geology share, distance-to-river, and a 25 km sub-basin block id for clustering SEs.
+- Supports onset **clocks** (staggered DiD), stock **thresholds**, and distributed **lags** from one object.
+- Usable window = NDVI ∩ Barenblitt overlap (**2007–2017**).
+:::
+
+## Three Event-Study Designs
+
+::: {.incremental style="font-size: 0.74em;"}
+- **V1 — Continuous distributed lag (transparent; robustness).** Three specs on the annual panel: (i) **TWFE, flow only** — ΔNDVI on new upstream mining, lags 0–3; (ii) **TWFE, flow + stock** — adds a flexible control for the cumulative neighbour stock; (iii) **dCDH continuous-dose** on the annual upstream stock, which — unlike TWFE — is **robust to heterogeneous, dynamic treatment effects**. Estimators: `fixest::feols` (TWFE); `DIDmultiplegtDYN::did_multiplegt_dyn` (de Chaisemartin & D'Haultfœuille 2020, 2024). The dCDH dose is run on both the full and the pre-own-entry-censored panel.
+
+- **V2 — Absorbing stock threshold (headline).** A hex is "treated" the first year its neighbour mining *stock* crosses $\bar m \in \{0, 10, 25, 50\}$ ha; NDVI in **levels**; the $\bar m$ sweep is the stability check. Estimator: `did::att_gt` → `aggte` — **Callaway & Sant'Anna (2021)**, not-yet-treated controls.
+
+- **V3 — Nearest-upstream clock:**: not yet implemented
+:::
+
+::: {style="font-size: 0.62em; color: grey;"}
+Estimators & literature: TWFE via `fixest`; heterogeneity-robust continuous-dose dCDH via `DIDmultiplegtDYN` (de Chaisemartin & D'Haultfœuille 2020, 2024) for V1; Callaway & Sant'Anna (2021) staggered DiD via `did` for V2–V3. Downstream onset = directional **placebo** throughout.
+:::
+
+## Who Is in the Control Pool?
+
+::: {style="font-size: 0.5em;"}
+```{r control-pool, results='asis'}
+f <- here(out_es, "es_control_pool_composition.md")
+if (file.exists(f)) cat(readLines(f), sep = "\n") else
+  cat("*[Composition table pending — knit `a_05_event_study.Rmd`]*")
+```
+:::
+
+::: {style="font-size: 0.62em; color: grey;"}
+Own-mining composition of ever-treated hexes, per treatment definition. **Never mined themselves** = cleanest spillover sample; **started after treatment onset** = clean at onset, endogenously treated later; **already mining** = contaminated. `n_total` = all ever-treated hexes for that definition.
+:::
+
+## Treatment Timing — Upstream Panelviews {#es-panelviews}
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r pv-mbar0, fig.link="#annex-pv-mbar0"}
+#| out-width: "100%"
+f <- here(out_es, "es_panelview_up_mbar0.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.6em; color: grey;"}
+$\bar m = 0$ — any upstream onset (V3 trigger).
+:::
+:::
+::: {.column width="50%"}
+```{r pv-mbar25, fig.link="#annex-pv-mbar25"}
+#| out-width: "100%"
+f <- here(out_es, "es_panelview_up_mbar25.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.6em; color: grey;"}
+$\bar m = 25$ ha — a V2 stock threshold (later, fewer treated).
+:::
+:::
+::::
+
+::: {style="font-size: 0.62em; color: grey;"}
+Treatment-timing structure (all-reachable upstream stock crossing $\bar m$). 🔍 *Click a figure to enlarge.*
+:::
+
+## Version 1 — dCDH: Upstream Stock → NDVI
+
+```{r v1-dcdh-plot}
+#| fig-align: center
+#| out-width: "74%"
+f <- here(out_es, "es_v1_dcdh_upstream_all_reachable_treatment_.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[dCDH plot pending — knit `a_05` with `DIDmultiplegtDYN` installed]*")
+```
+
+::: {style="font-size: 0.62em; color: grey;"}
+de Chaisemartin–D'Haultfœuille continuous-dose estimator on the annual upstream mining **stock** — heterogeneity- and dynamics-robust. Full panel vs pre-own-entry censored; 95% CI. Effect_ℓ = post, Placebo_ℓ = pre.
+:::
+
+## Version 1 — Comparison & Placebo {#es-v1-placebo}
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r v1-lat-plot, fig.link="#annex-v1-lateral"}
+#| out-width: "100%"
+f <- here(out_es, "es_v1_dcdh_lateral_comparison_.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Lateral (comparison)** — queen off-flow: land-use channel only.
+:::
+:::
+::: {.column width="50%"}
+```{r v1-dn-plot, fig.link="#annex-v1-downstream"}
+#| out-width: "100%"
+f <- here(out_es, "es_v1_dcdh_downstream_all_reachable_placebo_.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Downstream (placebo)** — should be null if the channel is waterborne.
+:::
+:::
+::::
+
+::: {style="font-size: 0.6em; color: grey;"}
+Same dCDH continuous-dose design as the headline upstream result, applied to the lateral and downstream stock. 🔍 *Click a figure to enlarge.*
+:::
+
+## Version 1 — Nearest-Hop: Upstream & Downstream {#es-v1-hop}
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r v1-up1hop-plot, fig.link="#annex-v1-upstream-1hop"}
+#| out-width: "100%"
+f <- here(out_es, "es_v1_dcdh_upstream_1_hop_treatment_.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Upstream — 1-hop (treatment)** — nearest upstream neighbour only.
+:::
+:::
+::: {.column width="50%"}
+```{r v1-dn1hop-plot, fig.link="#annex-v1-downstream-1hop"}
+#| out-width: "100%"
+f <- here(out_es, "es_v1_dcdh_downstream_1_hop_placebo_.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Downstream — 1-hop (placebo)** — nearest downstream neighbour only.
+:::
+:::
+::::
+
+::: {style="font-size: 0.6em; color: grey;"}
+Restricting the flow-graph exposure to the single nearest upstream/downstream hex, rather than all reachable hexes. 🔍 *Click a figure to enlarge.*
+:::
+
+## Version 1 — dCDH: Summary
+
+::: {style="font-size: 0.58em;"}
+```{r v1-dcdh-table, results='asis'}
+f <- here(out_es, "es_v1_dcdh_summary.md")
+if (file.exists(f)) cat(readLines(f), sep = "\n") else
+  cat("*[dCDH summary pending — knit `a_05`]*")
+```
+:::
+
+::: {style="font-size: 0.6em; color: grey;"}
+ATE = average total effect on NDVI; **p(pre-trend)** high = flat pre-trends (design credible); **p(effects)** low = dynamic effects jointly significant; Switchers = hexes identifying the ATE.
+:::
+
+## Version 2 — Upstream Stock Threshold → NDVI (headline)
+
+```{r v2-up-plot}
+#| fig-align: center
+#| out-width: "72%"
+f <- here(out_es, "es_v2_upstream_all.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[V2 upstream plot pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.62em; color: grey;"}
+C&S dynamic ATT of NDVI on the year the all-reachable-upstream stock crosses $\bar m \in \{0, 10, 25, 50\}$ ha; not-yet-treated controls; outline band = 95% CI.
+:::
+
+## Version 2 — Comparison & Placebo {#es-v2-placebo}
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r v2-lat-plot, fig.link="#annex-v2-lateral"}
+#| out-width: "100%"
+f <- here(out_es, "es_v2_lateral.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Lateral (comparison)** — queen off-flow: land-use channel only.
+:::
+:::
+::: {.column width="50%"}
+```{r v2-dn-plot, fig.link="#annex-v2-downstream"}
+#| out-width: "100%"
+f <- here(out_es, "es_v2_downstream_all.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Downstream (placebo)** — should be null if the channel is waterborne.
+:::
+:::
+::::
+
+::: {style="font-size: 0.6em; color: grey;"}
+🔍 *Click a figure to enlarge.*
+:::
+
+## Version 2 — Nearest-Hop: Upstream & Downstream {#es-v2-hop}
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r v2-up1hop-plot, fig.link="#annex-v2-upstream-1hop"}
+#| out-width: "100%"
+f <- here(out_es, "es_v2_upstream_1hop.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Upstream — 1-hop (treatment)** — nearest upstream neighbour only.
+:::
+:::
+::: {.column width="50%"}
+```{r v2-dn1hop-plot, fig.link="#annex-v2-downstream-1hop"}
+#| out-width: "100%"
+f <- here(out_es, "es_v2_downstream_1hop.png")
+if (file.exists(f)) knitr::include_graphics(f) else
+  knitr::asis_output("*[pending — knit `a_05`]*")
+```
+::: {style="font-size: 0.58em; color: grey;"}
+**Downstream — 1-hop (placebo)** — nearest downstream neighbour only.
+:::
+:::
+::::
+
+::: {style="font-size: 0.6em; color: grey;"}
+C&S dynamic ATT restricted to the single nearest upstream/downstream hex, rather than all reachable hexes. 🔍 *Click a figure to enlarge.*
+:::
+
+## Version 2 — ATT Across Thresholds & Exposures
+
+::: {style="font-size: 0.3em;"}
+```{r v2-stability, results='asis'}
+f <- here(out_es, "es_v2_stability_table.md")
+if (file.exists(f)) cat(readLines(f), sep = "\n") else
+  cat("*[V2 stability table pending — knit `a_05`]*")
+```
+:::
+
+::: {style="font-size: 0.6em; color: grey;"}
+Overall ATT on NDVI by exposure dimension and stock threshold. Treatment (upstream) should be negative; lateral = land-use comparison; downstream = placebo (≈ 0).
+:::
+
+# Motivating Facts {background-color="#450457"}
+
+::: {style="color: white; font-size: 1.4em; margin-top: 0.5em;"}
+What triggers galamsey? What are its agricultural impacts?
+:::
+
+## National Trend vs Gold Price
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_fig, "d1d_national_gold_price.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Annual new galamsey conversion (ha) alongside international gold price (USD/troy oz). The 2007–2012 price boom coincides with a marked acceleration in mining activity — consistent with economic incentives driving entry.
+:::
+
+## Instruments: Exogenous Variation in Mining
+
+::: {style="font-size: 0.78em;"}
+**Problem.** Mine location is *endogenous* — miners dig where returns are highest, which correlates with local economic and agricultural conditions. Identifying mining's causal effect needs variation in mining *not* driven by those conditions.
+
+**Logic.** Galamsey is **alluvial (placer)** mining: miners follow where eroded gold physically settles. Geomorphology and geology predict those deposition sites and are fixed by nature — plausibly shifting mining (**relevance**) while affecting farm productivity and downstream outcomes *only through* mining (**exclusion**).
+:::
+
+::: {.incremental style="font-size: 0.72em;"}
+- **Gold-suitable geology** (Girard) — bedrock predisposed to host gold.
+- **HAND** (Height Above Nearest Drainage) — low = active floodplain / river terraces where alluvium and gold accumulate.
+- **MRVBF** (valley-bottom flatness) — broad flat valley floors act as sediment traps.
+- **Stream Power Index** $=\ln(\text{catchment area}\times\tan\text{slope})$ — low SPI on a channel = low-energy reach where heavy minerals drop out.
+- **Stream Transport Index** — sediment-transport capacity from slope × upslope area; where it falls, sediment (and gold) deposits.
+:::
+
+::: {style="font-size: 0.66em; color: grey;"}
+Caveat: exclusion is an *assumption*, not a fact — valley bottoms are also prime farmland, so terrain may affect agriculture directly. Treated as candidates to test, not settled instruments. (See `d_06_gold_deposits.R` / `gold_deposits.md`.)
+:::
+
+## Next Steps
+
+:::: {.columns}
+::: {.column width="50%" style="font-size: 0.85em;"}
+**In progress**
+
+- **Event study results** (`a_05_event_study.Rmd`): panel ready at 1/2/5 km; estimate and interpret Q1 (upstream→NDVI) and Q2 (mining contagion) with Callaway–Sant'Anna
+
+**Empirical gaps — data needed**
+
+- **Formal mine trigger** (D3c): Minerals Commission historical licence series
+- **Reversion** (D4a): RS panel with annual mine *presence* (not just onset)
+- **Cocoa yields** (D5c): COCOBOD district purchases
+- **Labour reallocation** (D6a–D6c): Ghana census microdata (IPUMS / GSS)
+- **Climate shocks** (D3b): CHIRPS annual rainfall merge
+
+:::
+::: {.column width="50%" style="font-size: 0.85em;"}
+**Methodological**
+
+- **Dataset construction** (D7a–D7c): hexagon or enumeration-area panel combining mining intensity, NDVI/EVI, and census variables
+:::
+::::
+
+# Annex {background-color="#450457"}
+
+::: {style="color: white; font-size: 1.4em; margin-top: 0.5em;"}
+Additional figures
+:::
+
+## Annex: Cumulative Mining Extent — Districts {#annex-districts-cumulative}
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_map, "districts", "d1a_districts_cumulative.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Cumulative artisanal mining land cover per district, 2005–2019. Plasma colour scale (sqrt transform). Barenblitt et al. (2021). [← back](#district-extent)
+:::
+
+## Annex: Artisanal vs Industrial Mining — Districts
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_map, "districts", "d1b_districts_artisanal_vs_industrial.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Left: artisanal (galamsey). Right: industrial (formal). Note the divergent spatial footprints. Barenblitt 2019 extent.
+:::
+
+## Annex: Top Districts by Mining Extent
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_fig, "d1d_districts_extent_top20.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Top 20 districts by cumulative artisanal mining extent (ha), 2005–2019. A small number of districts account for the large majority of total galamsey.
+:::
+
+## Annex: District Trajectories Over Time
+
+```{r}
+#| fig-align: center
+#| out-width: "88%"
+knitr::include_graphics(here(out_fig, "d1c_districts_ts_top12.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Annual new conversion (ha) for the 12 districts with highest cumulative extent. Onset years and growth rates vary considerably across districts.
+:::
+
+## Annex: Neighbour-Role Schematic {#annex-schematic}
+
+```{r}
+#| fig-align: center
+#| out-width: "80%"
+knitr::include_graphics(here(out_es, "d2e_schematic.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Five neighbour roles relative to a focal hex, defined via the MERIT D8 flow graph. [← back](#roles)
+:::
+
+## Annex: Rivers — OSM vs MERIT Channels {#annex-osm-merit}
+
+```{r}
+#| fig-align: center
+#| out-width: "92%"
+knitr::include_graphics(here(out_ww, "dist_river_osm_vs_merit.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Per-hex distance to nearest OSM waterway vs nearest MERIT channel (Ankobra); below the 1:1 line MERIT finds a nearer channel than OSM has mapped. [← back](#rivers)
+:::
+
+## Annex: MERIT Flow-Rank Map {#annex-flow-rank}
+
+```{r}
+#| fig-align: center
+#| out-width: "96%"
+knitr::include_graphics(here(out_merit, "ankobra_hex_flow_rank.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Downstreamness per hex: topological rank (left) and mean log upstream area (right). Red = MERIT channels (upa > 50 km²); pink outline = galamsey hex. [← back](#merit-flow)
+:::
+
+## Annex: Upstream Exposure Map {#annex-upstream-exposure}
+
+```{r}
+#| fig-align: center
+#| out-width: "100%"
+knitr::include_graphics(here(out_merit, "ankobra_hex_upstream_exposure.png"))
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Own-hex galamsey (left) vs accumulated upstream mining draining through each hex, raw (centre) and distance-decayed (right). [← back](#merit-filter)
+:::
+
+## Annex: Upstream Panelview — m̄ = 0 {#annex-pv-mbar0}
+
+```{r}
+#| fig-align: center
+#| out-width: "94%"
+f <- here(out_es, "es_panelview_up_mbar0.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Treatment timing at $\bar m = 0$ (any upstream onset), all-reachable upstream, full panel. [← back](#es-panelviews)
+:::
+
+## Annex: Upstream Panelview — m̄ = 25 ha {#annex-pv-mbar25}
+
+```{r}
+#| fig-align: center
+#| out-width: "94%"
+f <- here(out_es, "es_panelview_up_mbar25.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+Treatment timing at $\bar m = 25$ ha (a V2 stock threshold), all-reachable upstream, full panel. [← back](#es-panelviews)
+:::
+
+## Annex: V2 Lateral (comparison) {#annex-v2-lateral}
+
+```{r}
+#| fig-align: center
+#| out-width: "82%"
+f <- here(out_es, "es_v2_lateral.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V2 dynamic ATT — lateral (queen off-flow) stock threshold: pure land-use channel. [← back](#es-v2-placebo)
+:::
+
+## Annex: V2 Downstream (placebo) {#annex-v2-downstream}
+
+```{r}
+#| fig-align: center
+#| out-width: "82%"
+f <- here(out_es, "es_v2_downstream_all.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V2 dynamic ATT — downstream (all-reachable) stock threshold: waterborne placebo, should be ≈ 0. [← back](#es-v2-placebo)
+:::
+
+## Annex: V2 Upstream — 1-Hop {#annex-v2-upstream-1hop}
+
+```{r}
+#| fig-align: center
+#| out-width: "82%"
+f <- here(out_es, "es_v2_upstream_1hop.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V2 dynamic ATT — nearest-upstream-hex (1-hop) stock threshold: treatment. [← back](#es-v2-hop)
+:::
+
+## Annex: V2 Downstream — 1-Hop {#annex-v2-downstream-1hop}
+
+```{r}
+#| fig-align: center
+#| out-width: "82%"
+f <- here(out_es, "es_v2_downstream_1hop.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V2 dynamic ATT — nearest-downstream-hex (1-hop) stock threshold: placebo. [← back](#es-v2-hop)
+:::
+
+## Annex: V1 Lateral (comparison) {#annex-v1-lateral}
+
+```{r}
+#| fig-align: center
+#| out-width: "78%"
+f <- here(out_es, "es_v1_dcdh_lateral_comparison_.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V1 dCDH continuous-dose — lateral (queen off-flow) stock: pure land-use channel. [← back](#es-v1-placebo)
+:::
+
+## Annex: V1 Downstream (placebo) {#annex-v1-downstream}
+
+```{r}
+#| fig-align: center
+#| out-width: "78%"
+f <- here(out_es, "es_v1_dcdh_downstream_all_reachable_placebo_.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V1 dCDH continuous-dose — downstream (all-reachable) stock: waterborne placebo, should be ≈ 0. [← back](#es-v1-placebo)
+:::
+
+## Annex: V1 Upstream — 1-Hop {#annex-v1-upstream-1hop}
+
+```{r}
+#| fig-align: center
+#| out-width: "78%"
+f <- here(out_es, "es_v1_dcdh_upstream_1_hop_treatment_.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V1 dCDH continuous-dose — nearest-upstream-hex (1-hop) stock: treatment. [← back](#es-v1-hop)
+:::
+
+## Annex: V1 Downstream — 1-Hop {#annex-v1-downstream-1hop}
+
+```{r}
+#| fig-align: center
+#| out-width: "78%"
+f <- here(out_es, "es_v1_dcdh_downstream_1_hop_placebo_.png")
+if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pending — knit `a_05`]*")
+```
+
+::: {style="font-size: 0.7em; color: grey;"}
+V1 dCDH continuous-dose — nearest-downstream-hex (1-hop) stock: placebo. [← back](#es-v1-hop)
+:::
+
+```{=html}
+<script>
+window.addEventListener('load', function () {
+  function getSectionName(slide) {
+    var parent = slide.parentElement;
+    if (!parent) return '';
+    if (parent.classList.contains('slides')) return '';
+    var firstChild = parent.querySelector('section:first-child');
+    if (firstChild) {
+      var h1 = firstChild.querySelector('h1');
+      if (h1) return h1.textContent.trim();
+    }
+    return '';
+  }
+  function updateFooter(slide) {
+    var name = getSectionName(slide);
+    var footer = document.querySelector('.slide-footer');
+    if (footer) footer.textContent = name;
+  }
+  if (typeof Reveal !== 'undefined') {
+    Reveal.on('ready', function (e) { updateFooter(e.currentSlide); });
+    Reveal.on('slidechanged', function (e) { updateFooter(e.currentSlide); });
+  }
+});
+</script>
+```

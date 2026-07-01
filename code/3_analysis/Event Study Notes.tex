@@ -1,0 +1,139 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[round]{natbib}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.1em}
+\renewcommand{\baselinestretch}{1.3}
+\usepackage[margin=1in]{geometry}
+\usepackage{amssymb,amsmath,amsfonts,eurosym,ulem,graphicx,color,setspace,sectsty,comment,footmisc,natbib,pdflscape,array,hyperref,pdflscape,array,makecell, threeparttable, booktabs, geometry, xcolor, caption, subcaption, placeins,adjustbox}
+\usepackage[compact]{titlesec}
+\usepackage{changepage}
+\usepackage{enumitem}   
+
+\usepackage{amssymb, amsthm, amsmath}
+\usepackage{xparse}
+\usepackage{verbatim}
+
+\usepackage[createShortEnv]{proof-at-the-end}
+
+\newtheorem{thm}{Theorem}
+\newtheorem*{thm*}{Theorem}
+\providecommand*\thmautorefname{Theorem}
+
+% Lemmata
+\newtheorem{lemma}[thm]{Lemma}
+\newtheorem*{lemma*}{Lemma}
+\providecommand*\lemmaautorefname{Lemma}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{assumptionp}[theorem]{Assumption}
+
+
+\newenvironment{assumptionp}[1]{
+  \renewcommand\theassumptionalt{#1}
+  \assumptionalt
+}{\endassumptionalt}
+
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=purple,
+    filecolor=purple,      
+    urlcolor=purple,
+    citecolor=purple}
+%\newcommand{\todo}[1]{\emph{\color{red}{#1}}}
+%\ \todo and \note on, uncomment to turn off
+ \newcommand{\todo}[1]{}
+\urlstyle{same}
+\title{\textbf{Event Study}}
+
+
+\author{
+  Sree Ayyar}
+\date{\today}
+
+\newcolumntype{P}[1]{>{\centering\arraybackslash}p{#1}}
+
+\begin{document}
+\maketitle
+\paragraph{Version 1}
+\begin{itemize}
+    \item Observations at the $hex \times year$ level
+    \item \textbf{Objective:} How does NDVI change in years when a new mine opens nearby, relative to years when it does not? How does this depend on existing surrounding mining?
+\begin{equation}
+\Delta \text{NDVI}_{it} = \alpha_i + \gamma_t + \sum_{k=0}^{K} \beta_k \cdot \text{NewMining}_{N(i),\, t-k} + f(\text{MiningStock}_{N(i),\, t-1}) + \varepsilon_{it}
+\end{equation}
+
+\begin{itemize}
+    \item $\Delta \text{NDVI}_{it}$: annual change in NDVI for hexagon $i$ in year $t$
+    \item $\alpha_i$: hexagon fixed effects
+    \item $\gamma_t$: year fixed effects
+    \item $\text{NewMining}_{N(i),\, t-k}$: mining area opened in neighbouring hexes of $i$ in year $t-k$
+    \item $f(\text{MiningStock}_{N(i),\, t-1})$: flexible function of cumulative mining area already open in neighbouring hexes at end of $t-1$; controls for the baseline contamination
+    \item $\beta_k$: dynamic response coefficient at lag $k$
+\end{itemize}
+\item Conditioning on the stock partially separates the incremental effect of new openings from the cumulative effect of ongoing exposure; we measure the latter
+\item Interacting $\text{NewMining}_{N(i),\, t-k}$ and $f(\text{MiningStock}_{N(i),\, t-1})$ could be interesting too
+\item Could split $\text{NewMining}_{N(i),\, t-k}$ into upstream and downstream
+\end{itemize}
+
+\paragraph{Version 2}
+
+\begin{itemize}
+\item Observations at the $hex \times year$ level
+\item \textbf{Absorbing treatment effect} - instead of treating each new mine as a shock, we treat it as a threshold effect instead. If there is sufficient mining in surrounding hexagons ($\bar{m}$), then NDVI will start to worsen. Caveat, there is no way to know $\bar{m}$. 
+\begin{equation}
+\text{NDVI}_{it} = \alpha_i + \gamma_t + \sum_{k=-K}^{K} \beta_k \cdot \mathbf{1}[t - T_i = k] + \varepsilon_{it}
+\end{equation}
+
+\begin{itemize}
+    \item $\text{NDVI}_{it}$: level of NDVI for hexagon $i$ in year $t$ (not first-differenced)
+    \item $\alpha_i$: hexagon fixed effects
+    \item $\gamma_t$: year fixed effects, absorbing common shocks
+    \item $T_i$: year in which cumulative mining in neighbouring hexes first exceeds threshold $\bar{m}$ --- hexagon $i$ is ``treated'' once neighbourhood mining stock crosses threshold
+    \item $\mathbf{1}[t - T_i = k]$: indicator for hexagon $i$ being $k$ periods relative to its treatment date; $k < 0$ are pre-period coefficients (pre-trend test), $k \geq 0$ trace the dynamics
+    \item $\beta_k$: event-time coefficients, normalised to $\beta_{-1} = 0$; under the mechanism we expect $\beta_k < 0$ and $|\beta_k|$ increasing in $k$ as contamination accumulates
+\end{itemize}
+\end{itemize} 
+\paragraph{Version 3}
+\begin{itemize}
+    \item \textbf{What if we flip the logic?} Instead of investigating whether NDVI in a given hexagon responds to nearby mines, we could ask if mine entry in a given hexagon is a result of worsening NDVI. Specifically, we could define treatment as worsening NDVI downstream of existing mines. This would involve estimating the following:
+\begin{equation}
+\text{NDVI}_{it} = \alpha_i + \gamma_t + \sum_{k=-K}^{-1} \beta_k \cdot \mathbf{1}[t - T_i = k] + \sum_{j=-J}^{-1} \gamma_j \cdot \mathbf{1}[t - T_i^{\text{UP}} = j] + \varepsilon_{it}
+\end{equation}
+
+\begin{itemize}
+    \item $\text{NDVI}_{it}$: level of NDVI for hex $i$ in year $t$
+    \item $\alpha_i$: hex fixed effects
+    \item $\gamma_t$: year fixed effects
+    \item $T_i$: year in which hex $i$ first records any artisanal mining activity
+    \item $T_i^{\text{UP}}$: year in which the nearest upstream hex to $i$ (along the river corridor) first records any artisanal mining activity
+    \item $\mathbf{1}[t - T_i = k]$: indicator for hex $i$ being $k$ years before its own mine entry; pre-period coefficients $k \in \{-K, \ldots, -1\}$ are estimated, normalised to $k = -1$
+    \item $\mathbf{1}[t - T_i^{\text{UP}} = j]$: indicator for hex $i$ being $j$ years after its nearest upstream neighbour first entered mining; pre-period coefficients $j \in \{-J, \ldots, -1\}$ are estimated
+    \item $\beta_k$: event-time coefficients on own entry clock; a pattern of $\beta_k < 0$ growing in magnitude as $k \to 0$ indicates pre-entry vegetation decline common to all hexes
+    \item $\gamma_j$: event-time coefficients on upstream entry clock; $\gamma_j < 0$ indicates that NDVI in hex $i$ declines following upstream mine entry, consistent with waterway contamination propagating downstream before the focal hex itself enters mining
+\end{itemize}
+\item The coefficients $\beta_k$ and $\delta_k$ jointly identify the upstream contamination channel:
+
+\begin{itemize}
+    \item If $\beta_k \approx 0$ and $\delta_k < 0$: the pre-entry NDVI decline is concentrated entirely in downstream hexes, pointing directly to the waterway contamination channel
+    \item If $\beta_k < 0$ and $\delta_k < 0$ with $|\beta_k| \approx |\delta_k|$: upstream contamination is present but not the dominant driver --- all entering hexes show pre-entry decline regardless of downstream status, suggesting additional mechanisms, e.g. climate stress?
+    \item If $\beta_k < 0$ and $\delta_k \approx 0$: pre-entry vegetation decline is common to all entering hexes but does not vary with downstream status; other sources of spillover?
+\end{itemize}
+\end{itemize}
+
+\paragraph{General Notes}
+\begin{itemize}
+    \item Control group possibilities:
+\begin{itemize}
+    \item Never-treated hexagons -- ones which never see a galamsey mine
+    \item Not-yet-treated hexagones - eventually treated. This is the Callaway and Sant'Anna's preferred method and mine too.
+    \item For any version, would be good to know how big these groups are 
+\end{itemize}
+\item We want to follow the Callaway and Sant'Anna identification + estimation here for the staggered event study plots
+\end{itemize}
+\end{document}
+
+
