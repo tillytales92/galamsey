@@ -1,0 +1,653 @@
+---
+title: "Defining 'rivers' for the galamsey study — OSM vs MERIT Hydro vs remote sensing"
+subtitle: "An exploration on the Ankobra basin — notes and open questions"
+author: "Till Meissner"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 6, dpi = 110)
+pacman::p_load(terra, sf, leaflet, tidyverse, here, janitor, scales,
+               patchwork, htmltools, conflicted)
+conflicts_prefer(dplyr::filter, dplyr::select, dplyr::mutate,
+                 dplyr::summarise, base::intersect, base::union)
+UTM30N <- 32630
+
+# Bright, high-contrast palette for the leaflet layers (they sit on a dark
+# satellite basemap, where muted blues/reds/greys wash out).
+col_osm_nat <- "#3DE1FF"  # cyan  — OSM natural watercourses
+col_osm_art <- "#FF7A5C"  # coral — OSM artificial channels
+col_osm_oth <- "#FFE14D"  # yellow— OSM other/review
+col_upa10   <- "#FF9500"  # orange— MERIT channels, low cut
+col_upa50   <- "#FF3DDA"  # magenta MERIT channels, high cut
+col_gal     <- "#39FF14"  # neon green — galamsey polygons
+
+# Native-4326 MERIT Ankobra clip (bands: dir, upa, wth, elv). See d_04_merit.R.
+merit_path      <- here("data", "raw", "merit", "merit_hydro_ankobra.tif")
+osm_path        <- here("data", "raw", "shapefiles", "osm_waterways", "waterways_lines.shp")
+barenblitt_path <- here("data", "raw", "barenblitt", "FullConversiontoMiningExtent2019.shp")
+hex_cache_path  <- here("data", "processed", "hex_5km_crosssection.rds")
+```
+
+# What this research project is about {#background}
+
+*(Context for a reader coming to this cold — feel free to skip to [the specific question](#intro).)*
+
+**Galamsey** is small-scale, largely unlicensed **artisanal gold mining**, which has expanded rapidly
+across southern Ghana over the last two decades. Beyond clearing vegetation and reshaping valley
+floors, it discharges **mercury, suspended sediment and turbidity into rivers**, with widely reported
+consequences for water quality and for farmland downstream.
+
+This research project **maps galamsey and studies its drivers and consequences**, in two phases:
+
+1. **Remote sensing** — classifying mine presence from Landsat/Sentinel-2 imagery via Google Earth
+   Engine (1995–2025, all Ghana).
+2. **Spatial & economic analysis** — where mining occurs, why it clusters spatially, and what it does
+   to the surrounding environment and economy.
+
+The current analysis uses the **Barenblitt et al. (2021)** satellite-derived mining-extent maps for
+**SW Ghana** (annual, 2007–2017) as an interim data source, on a **hexagonal grid** (~5 km cells) over
+the study region.
+
+**The specific piece this note supports** is an *event study* of the **downstream** effect of mining:
+does galamsey **upstream** of a location degrade vegetation — and, by proxy, agricultural productivity
+and water quality — **downstream**, through waterborne transport of mercury and sediment? We proxy the
+downstream outcome with satellite **vegetation greenness (NDVI)**. To run that design we must know, for
+every location, which mines are hydrologically **upstream** of it. That is entirely a question of **how
+we define the river network and its direction of flow** — which is what this note is about, and where
+we would most value a geologist's / hydrologist's input.
+
+---
+
+# The question we are unsure about {#intro}
+
+This is a working note, not a settled write-up. We are trying to decide **what should count as a
+"river"** for the galamsey study, and we would value a geologist's / hydrologist's view on whether we
+are framing the problem sensibly at all.
+
+"River" enters the analysis in **two different places**, and it is not obvious the same definition
+should serve both:
+
+1. **A proximity covariate — `dist_river_km`.** Distance to the nearest watercourse as a predictor of
+   *where* galamsey occurs (alluvial gold sits in and beside channels). Here we need channel geometry.
+2. **A directed flow graph — the event-study treatment.** The upstream→downstream design
+   (`a_05_event_study.Rmd`) asks whether mining *upstream* of a hex degrades vegetation/water
+   downstream. Here we need channels **and flow direction**, and the network must respect drainage
+   divides.
+
+Three candidate data sources encode "river" quite differently:
+
+| Source | What a "river" is | Flow direction? | Small tributaries? |
+|--------|-------------------|-----------------|--------------------|
+| **OSM waterways** | A line a human mapped and labelled | No | Patchy — depends on mapping effort |
+| **MERIT Hydro** | A DEM cell whose upstream drainage area exceeds a threshold | **Yes** (D8) | Yes, down to the chosen threshold |
+| **Remote sensing** (MNDWI / JRC) | A pixel observed to hold surface water | No | Only where water is visible |
+
+> **The worry that motivates this note.** In the waterborne event study, does the pollution signal
+> from *large* rivers get diluted if we also label as "treated" many hexes that sit only on *tiny
+> streams* — which may not actually transport mercury/sediment far? But if we raise the river
+> threshold to keep only large channels, a large share of mining hexes fall out of the sample.
+> **Is that the right way to think about the trade-off, and how should it be handled?** The section
+> [*The event-study trade-off*](#tradeoff) is our attempt; we are genuinely unsure and would like your read.
+
+We work on the **Ankobra basin** — the SW-Ghana river most associated with galamsey pollution, and the
+area for which we already have a MERIT clip. Leaflet maps are used throughout because the
+channel-vs-observed comparison is mostly visual (hence an `.Rmd`: leaflet embeds cleanly in a
+self-contained `html_document`).
+
+---
+
+# Study area — the Ankobra corridor {#area}
+
+```{r load-area}
+# MERIT clip = the analysis window (the Ankobra corridor, native EPSG:4326).
+hydro <- rast(merit_path)
+names(hydro) <- c("dir", "upa", "wth", "elv")
+dir_r <- hydro[["dir"]]; upa_r <- hydro[["upa"]]; wth_r <- hydro[["wth"]]; elv_r <- hydro[["elv"]]
+
+merit_ext_ll  <- st_as_sf(as.polygons(ext(upa_r), crs = "EPSG:4326"))
+merit_ext_utm <- st_transform(merit_ext_ll, UTM30N)
+
+osm <- st_read(osm_path, quiet = TRUE) |> clean_names() |> st_make_valid() |>
+  st_transform(4326)
+osm_win <- suppressWarnings(st_crop(osm, st_bbox(merit_ext_ll)))
+
+ankobra_river <- osm_win |>
+  filter(str_detect(coalesce(name, ""), regex("ankobra", ignore_case = TRUE)))
+
+gal <- st_read(barenblitt_path, quiet = TRUE) |> clean_names() |> st_make_valid() |>
+  st_transform(4326)
+mt_col <- intersect(c("mine_type", "minetype"), names(gal))[1]
+gal_art <- gal[gal[[mt_col]] == 1, ]
+gal_win <- suppressWarnings(st_crop(gal_art, st_bbox(merit_ext_ll)))
+
+cat(sprintf("MERIT window: %.2f x %.2f deg | %d OSM segments | %d Ankobra-named | %d galamsey polys\n",
+            diff(st_bbox(merit_ext_ll)[c(1,3)]), diff(st_bbox(merit_ext_ll)[c(2,4)]),
+            nrow(osm_win), nrow(ankobra_river), nrow(gal_win)))
+```
+
+The MERIT clip is a narrow N–S strip: the Ankobra flows broadly south to the Gulf of Guinea. Galamsey
+polygons (Barenblitt 2019 artisanal) cluster along the valley — which is, of course, part of what we
+are trying to understand.
+
+---
+
+# Approach 1 — OSM waterways {#osm}
+
+OpenStreetMap `waterway=*` lines are **crowd-sourced, human-labelled** features. They give real, named
+rivers and a `waterway` **type** we can filter on. `d_03_waterways.R` keeps only *natural*
+watercourses; artificial canals/drains/ditches presumably cannot host alluvial gold (is that a safe
+assumption? — one for discussion).
+
+```{r osm-classify}
+natural    <- c("river", "stream", "brook", "wadi", "tidal_channel", "stream_pool", "flowline")
+artificial <- c("canal", "drain", "ditch", "lock_gate", "fish_pass", "weir", "dam",
+                "sluice_gate", "pressurised", "penstock")
+osm_win <- osm_win |>
+  mutate(ww_class = case_when(waterway %in% natural ~ "natural watercourse",
+                              waterway %in% artificial ~ "artificial channel",
+                              TRUE ~ "other / review"))
+
+osm_win |> st_drop_geometry() |> count(waterway, ww_class, sort = TRUE) |>
+  knitr::kable(caption = "OSM waterway types within the Ankobra window.")
+```
+
+```{r osm-leaflet, fig.height=7}
+class_pal <- colorFactor(c(col_osm_nat, col_osm_art, col_osm_oth),
+                         domain = c("natural watercourse", "artificial channel", "other / review"))
+leaflet(osm_win) |>
+  addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+  addProviderTiles("CartoDB.Positron", group = "Light") |>
+  addPolylines(color = ~class_pal(ww_class), weight = 2, opacity = 1,
+               label = ~paste0(coalesce(name, "(unnamed)"), " — ", waterway),
+               group = "OSM waterways") |>
+  addPolygons(data = gal_win, color = "white", weight = 1.2, fillColor = col_gal,
+              fillOpacity = 0.65, group = "Galamsey (Barenblitt)") |>
+  addLegend(pal = class_pal, values = ~ww_class, title = "OSM class", position = "bottomright") |>
+  addLayersControl(baseGroups = c("Satellite", "Light"),
+                   overlayGroups = c("OSM waterways", "Galamsey (Barenblitt)"),
+                   options = layersControlOptions(collapsed = FALSE))
+```
+
+OSM gives us real named rivers and a type field, for free. But coverage seems to be a function of
+*mapping effort* rather than hydrology — small tributaries (where alluvial galamsey may begin) look
+unevenly mapped, there is no flow direction, and "river" here mixes trunk rivers with tiny mapped
+streams while omitting unmapped ones. It may be fine as *a* proximity measure; it cannot build the
+directed flow graph.
+
+---
+
+# Approach 2 — MERIT Hydro {#merit}
+
+MERIT Hydro (Yamazaki et al. 2019, ~90 m) is a **DEM-derived, physically-modelled** river network,
+with four bands used differently in this project:
+
+| Band | Meaning | Use |
+|------|---------|-----|
+| `dir` | D8 flow direction (which neighbour each cell drains to) | The flow graph (upstream/downstream) |
+| `upa` | Upstream drainage area (km²) accumulated through each cell | Defining channels via a threshold |
+| `wth` | Satellite/OSM-fused river **width** (m); 0 = no mapped channel | A stricter, validated channel mask |
+| `elv` | Hydrologically-adjusted elevation | HAND / vertical drop (not morphometry) |
+
+## Why we use a `upa` threshold to define a "river" (and where we are unsure) {#upa-why}
+
+`upa` is the **catchment area draining through each cell**, from flow accumulation over the D8 pointer.
+Headwater cells have a tiny `upa`; moving downstream, tributaries merge and `upa` grows
+**monotonically**. Our reasoning is that a river is *where concentrated flow persists*, so a cell is
+"channel" when its `upa` exceeds a minimum catchment. On that logic **the threshold is the smallest
+upslope area we are willing to call a channel:**
+
+- **Low threshold** → a dense network reaching every gully (in the limit, every cell is a "stream").
+- **High threshold** → only the major trunk rivers survive.
+
+We have been treating the threshold as a modelling choice calibrated against OSM. **But is upstream
+area even the right variable to threshold on?** A geologist might prefer discharge, stream order,
+channel width, or a stream-power criterion — `upa` is a proxy for "how much water", not a measurement
+of it. We would welcome a view on what the physically meaningful cut-off is for "this is a river that
+can move sediment and contaminants".
+
+```{r upa-dist, fig.height=3.6}
+upa_vals <- values(upa_r, na.rm = TRUE)
+qtab <- tibble(quantile = c("50%", "90%", "99%", "99.9%", "max"),
+               upa_km2  = round(quantile(upa_vals, c(.5, .9, .99, .999, 1)), 2))
+knitr::kable(qtab, caption = "Distribution of upstream drainage area (upa, km²) across Ankobra cells.")
+
+tibble(upa = upa_vals[upa_vals > 0.05]) |>
+  ggplot(aes(upa)) +
+  geom_histogram(bins = 60, fill = "#2171B5") +
+  geom_vline(xintercept = c(10, 50), colour = c("#E67E22", "#C0392B"), linetype = 2) +
+  scale_x_log10(labels = comma) +
+  annotate("text", x = 10, y = Inf, label = "ROUTE_KM2 = 10", vjust = 1.5, hjust = 1.05,
+           colour = "#E67E22", size = 3) +
+  annotate("text", x = 50, y = Inf, label = "STREAM_KM2 = 50", vjust = 3, hjust = -0.05,
+           colour = "#C0392B", size = 3) +
+  labs(title = "Where do the two working thresholds sit?",
+       x = "Upstream drainage area (km², log scale)", y = "cells") +
+  theme_minimal(base_size = 11)
+```
+
+## The channel network at several thresholds {#upa-thresholds}
+
+```{r upa-networks}
+THRESH <- c(5, 10, 20, 50, 500)
+thr_summary <- map_dfr(THRESH, \(t) {
+  n <- sum(upa_vals > t)
+  tibble(`upa >` = paste0(t, " km²"), `channel cells` = n,
+         `% of grid` = round(100 * n / length(upa_vals), 2))
+})
+knitr::kable(thr_summary,
+             caption = "Channel-cell count by upa threshold. Lower cut = denser network reaching further up the tributaries.")
+```
+
+```{r upa-leaflet, fig.height=7}
+thr_show <- c(10, 50)                       # ROUTE_KM2 vs STREAM_KM2
+thr_cols <- c(col_upa10, col_upa50)
+m <- leaflet() |>
+  addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+  addProviderTiles("CartoDB.Positron", group = "Light")
+for (i in seq_along(thr_show)) {
+  mask_i <- ifel(upa_r > thr_show[i], 1L, NA)
+  pal_i  <- colorNumeric(thr_cols[i], domain = c(0, 1), na.color = "transparent")
+  m <- addRasterImage(m, mask_i, colors = pal_i, opacity = 0.95, project = TRUE,
+                      group = sprintf("MERIT upa > %g km²", thr_show[i]))
+}
+m |>
+  addPolylines(data = filter(osm_win, ww_class == "natural watercourse"),
+               color = col_osm_nat, weight = 1.5, opacity = 0.9, group = "OSM natural") |>
+  addPolygons(data = gal_win, color = "white", weight = 1.2, fillColor = col_gal,
+              fillOpacity = 0.65, group = "Galamsey") |>
+  addLegend(colors = c(col_upa10, col_upa50, col_osm_nat, col_gal),
+            labels = c("MERIT upa > 10", "MERIT upa > 50", "OSM natural", "Galamsey"),
+            title = "Layer", position = "bottomright") |>
+  addLayersControl(baseGroups = c("Satellite", "Light"),
+                   overlayGroups = c("MERIT upa > 10 km²", "MERIT upa > 50 km²",
+                                     "OSM natural", "Galamsey"),
+                   options = layersControlOptions(collapsed = FALSE)) |>
+  hideGroup("MERIT upa > 50 km²")
+```
+
+Toggling the layers: at `upa > 50 km²` we get the trunk Ankobra and its main tributaries, which looks
+close to the OSM *natural* "river" lines (this is roughly why `STREAM_KM2 = 50` was chosen). Dropping
+to `upa > 10 km²` fills in a finer tributary network that OSM misses and that many galamsey polygons
+sit on. **Which of these is the "real" river network for pollution transport is exactly what we are
+unsure about.**
+
+## Why two thresholds, and the tension between them {#two-thresholds}
+
+The project currently uses **two** cuts for the two jobs from [the introduction](#intro):
+
+- **`STREAM_KM2 = 50` — the "river" label.** Roughly where 4th-order tributaries begin; reproduces the
+  OSM natural-river network.
+- **`ROUTE_KM2 = 10` — the flow-graph routing cut.** Lower, so the directed graph reaches smaller
+  tributaries. The stated justification (`d_04_merit.R` §11g): at `upa > 50` about **23% of mined
+  hectares** fall off the channel network (never routed downstream), versus **~5.5% at `upa > 10`**.
+
+The `d_04` §11j sweep over {2, 5, 10, 20} km² reports that the per-hex upstream-exposure *ranking* is
+fairly stable across cuts, which we took to mean the exact value is not critical for the *routing*.
+But that robustness is about *connectivity*, not about *how much pollution a channel can carry* — which
+is the concern in the next section.
+
+---
+
+# The event-study trade-off: small streams vs. sample size {#tradeoff}
+
+This is the heart of the note. In the waterborne design, a hex is (loosely) a candidate for
+"waterborne treatment" if it sits on / near a channel that connects it to upstream mining. **The
+channel threshold sets who is in that sample, and it cuts two ways:**
+
+- **A low threshold (dense network).** Almost every mining hex counts as "on a river". But many of
+  those channels are *tiny* — headwater streams with little discharge. If such streams do not
+  actually transport mercury and sediment any meaningful distance, then we are labelling a lot of hexes
+  as waterborne-connected when physically they are not. In regression terms this looks like
+  **measurement error in the treatment**, which typically **attenuates** the estimated effect toward
+  zero — the genuine signal from large, transport-capable rivers gets averaged together with many
+  false-positive "treated" hexes.
+- **A high threshold (sparse network).** The remaining channels are genuinely big rivers, so a
+  "treated" hex is more plausibly *actually* exposed. But now a large share of mining hexes are **no
+  longer on a river at all** and drop out of the waterborne sample. That costs power, and — more
+  subtly — it may **change which mines are in the sample** (mines on big rivers may differ
+  systematically from mines on small streams: size, accessibility, industrial vs artisanal), so it is
+  not just a power loss but a possible **selection/composition** change.
+
+**Is this the right framing?** We think the trade-off is real, but we are not sure "pick one
+threshold" is the right response, for two reasons:
+
+1. **The threshold conflates two things** — *connectivity* (is this hex hydrologically linked to a
+   mine at all?) and *dose* (how much contaminant could actually arrive?). A binary on/off cut forces
+   one number to do both jobs.
+2. **Transport capacity is continuous, not a step.** Whether a stream moves galamsey pollution
+   presumably rises smoothly with discharge / stream power, rather than switching on at 10 or 50 km².
+
+Let us first *see* the trade-off in the Ankobra data, then list options — as questions, not answers.
+
+## How many mining hexes are "at a river" at each threshold? {#elig-demo}
+
+We take the 5 km hexes intersecting the Ankobra window, flag the **mining** hexes (Barenblitt
+artisanal, `art_ha > 0`), and ask, for a grid of thresholds, whether each mining hex **contains a
+MERIT channel cell** with `upa` above that threshold (i.e. does the mine sit on a channel that "counts"
+as a river at that cut). This is the source side of the waterborne channel: a mine only injects
+pollution into the routed network if it is on the network.
+
+```{r elig-compute}
+cs <- readRDS(hex_cache_path)
+hex_sf <- cs$hex_sf
+ha     <- cs$hex_analysis
+
+hex_win <- hex_sf[lengths(st_intersects(hex_sf, merit_ext_utm)) > 0, ] |>
+  left_join(select(ha, hex_id, art_ha, any_art), by = "hex_id")
+
+# Max upstream area among each hex's MERIT cells → does it contain a channel > t?
+hex_win$max_upa <- terra::extract(upa_r, vect(st_transform(hex_win, 4326)),
+                                  fun = max, na.rm = TRUE)[, 2]
+mine <- filter(hex_win, art_ha > 0)
+
+THRG <- c(0, 5, 10, 20, 50, 100)
+elig_tab <- map_dfr(THRG, \(t) tibble(
+  `upa threshold (km²)`      = t,
+  `mining hexes`             = nrow(mine),
+  `at a river (eligible)`    = sum(mine$max_upa > t, na.rm = TRUE),
+  `% retained`               = round(100 * mean(mine$max_upa > t, na.rm = TRUE), 1),
+  `% dropped`                = round(100 * mean(!(mine$max_upa > t), na.rm = TRUE), 1)
+))
+knitr::kable(elig_tab, caption = paste0(
+  "Ankobra window: of ", nrow(mine), " mining (artisanal) 5 km hexes, how many still sit on a ",
+  "channel as the river threshold rises. Raising the cut from 10 to 50 km² drops ~1 in 4 mining hexes ",
+  "out of the waterborne sample."))
+```
+
+```{r elig-curve, fig.height=4}
+elig_tab |>
+  ggplot(aes(`upa threshold (km²)`, `% retained`)) +
+  geom_line(colour = "#2171B5", linewidth = 1) +
+  geom_point(size = 2, colour = "#2171B5") +
+  geom_vline(xintercept = c(10, 50), linetype = 2, colour = c("#E67E22", "#C0392B")) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(title = "The sample-size cost of a stricter river threshold",
+       subtitle = "Share of Ankobra mining hexes that remain 'on a river' as the upa cut rises",
+       x = "upa threshold (km²)", y = "% of mining hexes retained") +
+  theme_minimal(base_size = 11)
+```
+
+```{r elig-riversize, fig.height=4}
+# How big is the channel each mining hex sits on? This is the flip side of the worry:
+# how many mining hexes are only on small streams?
+pct_small10 <- round(100 * mean(mine$max_upa <= 10, na.rm = TRUE))
+pct_small50 <- round(100 * mean(mine$max_upa <= 50, na.rm = TRUE))
+mine |> st_drop_geometry() |>
+  ggplot(aes(pmax(max_upa, 0.1))) +
+  geom_histogram(bins = 30, fill = "#8856A7") +
+  geom_vline(xintercept = c(10, 50), linetype = 2, colour = c("#E67E22", "#C0392B")) +
+  scale_x_log10(labels = comma) +
+  labs(title = "What size river does each mining hex sit on?",
+       subtitle = sprintf("~%d%% of mining hexes sit on a channel ≤ 10 km²; ~%d%% ≤ 50 km² (upstream area).",
+                          pct_small10, pct_small50),
+       x = "Largest channel in the hex — upstream area (km², log scale)",
+       y = "mining hexes") +
+  theme_minimal(base_size = 11)
+```
+
+```{r elig-facetmap, fig.height=7}
+# Where are the eligible vs dropped mining hexes, as the threshold rises?
+thr_facets <- c(5, 10, 20, 50)
+osm_nat_ll <- filter(osm_win, ww_class == "natural watercourse")
+elig_long <- map_dfr(thr_facets, \(t) hex_win |>
+  st_transform(4326) |>
+  mutate(threshold = factor(paste0("upa > ", t, " km²"),
+                            levels = paste0("upa > ", thr_facets, " km²")),
+         status = case_when(art_ha > 0 & max_upa > t ~ "mine — on a river (kept)",
+                            art_ha > 0               ~ "mine — off network (dropped)",
+                            TRUE                     ~ "no mine")))
+
+ggplot(elig_long) +
+  geom_sf(aes(fill = status), colour = "grey85", linewidth = 0.1) +
+  geom_sf(data = osm_nat_ll, colour = "#3B8ED0", linewidth = 0.3, inherit.aes = FALSE) +
+  facet_wrap(~ threshold, nrow = 1) +
+  scale_fill_manual(values = c("mine — on a river (kept)"    = "#1A9850",
+                               "mine — off network (dropped)" = "#D73027",
+                               "no mine"                      = "grey92"),
+                    name = NULL) +
+  labs(title = "Which mining hexes stay in the waterborne sample as the river threshold rises",
+       subtitle = "Ankobra window, 5 km hexes. Green = mine on a channel at that cut; red = mine dropped; blue = OSM natural rivers.",
+       caption = "Barenblitt artisanal mining; MERIT Hydro upa. Higher threshold = more red (mines fall out).") +
+  theme_void(base_size = 10) +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"),
+        plot.caption = element_text(colour = "grey50", size = 7))
+```
+
+The red hexes are the cost of a stricter definition; the green are the "confidently on a real river"
+sample. The histogram is the other side of the coin: it shows how many mines sit only on small
+channels in the first place.
+
+## Ways this might be addressed — options and questions {#options}
+
+We are unsure which of these is right (or whether the premise holds). Candidates, roughly from least
+to most structural:
+
+1. **Treat the threshold as a robustness axis, not a single choice.** Estimate the downstream effect
+   across the whole grid of cuts and report the path. *If* the effect **strengthens** as we restrict to
+   larger rivers, that is arguably *evidence for* the waterborne mechanism (transport capacity
+   matters), not a nuisance. If it is flat, the small-stream dilution worry may be overstated.
+   **Question:** would you expect the effect to grow with river size if the mechanism is real?
+2. **Use a continuous, flow-weighted dose instead of a binary "on a river".** Weight each mine's
+   contribution by the discharge / `upa` / channel width `wth` at the connecting reach, so a mine on
+   the trunk Ankobra counts for more than one on a trickle. This keeps every mine in the sample
+   (no drop-outs) while down-weighting small streams. (`d_04` already prototypes a distance-decayed
+   upstream exposure — this would extend it with a flow weight.) **Question:** is `upa` an acceptable
+   proxy for transport capacity, or is discharge/stream power needed?
+3. **Stratify by stream order / size class and estimate separately.** Headwater vs mid-order vs trunk.
+   This tests the mechanism directly rather than assuming a cut-off. MERIT can yield Strahler order
+   (`d_04` §10d). **Question:** is Strahler order the right stratifier, or something else?
+4. **Interact treatment with a flow measure.** Keep the low threshold (retain the sample) but interact
+   upstream-mining treatment with the receiving reach's `upa`/`wth`. If the effect loads on the
+   high-flow interaction, the dilution worry is *quantified* rather than assumed.
+5. **A physically-motivated decay/dilution kernel.** Model contaminant concentration falling with
+   downstream distance, with a decay length that depends on discharge — so small streams "transport"
+   only a short way by construction. **Question:** does a simple dilution/settling model exist that we
+   could parameterise for mercury vs. suspended sediment?
+6. **Separate the two roles of the threshold.** Use a low cut for *connectivity* (don't drop mines
+   from the graph) and a flow-based *dose* for intensity. This directly answers the two-jobs-one-number
+   problem in [the trade-off section](#tradeoff).
+
+### Open questions for a geologist / hydrologist {#geo-questions}
+
+These are the questions where we most need expertise, because they determine whether the trade-off
+above is even the binding one:
+
+- **How far does galamsey pollution actually travel, and does that depend on stream size?** Is mercury
+  mostly **sediment-bound** (settles quickly → proximity/large-river matters) or **dissolved /
+  methylated** (travels far → even small streams connect)? These imply very different "right"
+  thresholds.
+- **Is there a physical catchment/discharge size below which a mine's load is simply not detectable
+  downstream?** If so, that number — not a statistical convenience — should set the threshold.
+- **Do turbidity/sediment and mercury have different transport lengths?** We use NDVI as the outcome,
+  which may respond to sediment/turbidity more than to mercury — should the "river" definition differ
+  by which pollutant/outcome we care about?
+- **Is upstream drainage area an acceptable channel proxy at ~90 m, or should we be using channel
+  width (`wth`), modelled discharge, or stream power instead?**
+- **Are dry-season vs. wet-season flows so different that an annual "is this a river" label is
+  meaningless for parts of the network?**
+
+---
+
+# The other MERIT bands for the Ankobra {#merit-bands}
+
+For completeness, the bands beyond the threshold discussion.
+
+### `upa` — upstream drainage area
+
+```{r upa-map, fig.height=6}
+plot(log1p(upa_r), col = hcl.colors(50, "Blues", rev = TRUE),
+     main = "log(1 + upstream drainage area) [km²] — Ankobra")
+```
+
+`upa` rises smoothly downstream; the bright trunk is the Ankobra itself (max ≈ 8,400 km² at the
+outlet). Besides thresholding, its log is a natural **"downstreamness" scalar** (higher = further down
+the network).
+
+### `wth` — river width {#wth}
+
+```{r wth-map, fig.height=6}
+wth_ch <- wth_r; wth_ch[wth_ch == 0] <- NA
+plot(wth_ch, col = hcl.colors(30, "Blues", rev = TRUE),
+     main = "MERIT river channel width (m) — Ankobra (0 = no mapped channel)")
+```
+
+```{r wth-summary}
+wth_pos <- values(wth_r, na.rm = TRUE); wth_pos <- wth_pos[wth_pos > 0]
+cat(sprintf("wth non-zero cells: %d (%.2f%% of grid) | median %.1f m | max %.1f m\n",
+            length(wth_pos), 100 * length(wth_pos) / length(upa_vals),
+            median(wth_pos), max(wth_pos)))
+```
+
+`wth` is a **satellite + OSM-fused, validated river width**, non-zero on only a small fraction of
+cells (the confidently-mapped channels). It might be a more *physical* channel definition than a `upa`
+threshold — it marks reaches observed to be rivers — but it will miss narrow headwater tributaries. It
+is tempting as a middle ground; whether it is better than a `upa` cut for our purpose is unclear to us.
+
+```{r wth-leaflet, fig.height=7}
+pal_wth <- colorNumeric("plasma", domain = wth_pos, na.color = "transparent")
+leaflet() |>
+  addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+  addProviderTiles("CartoDB.Positron", group = "Light") |>
+  addRasterImage(ifel(upa_r > 10, 1L, NA),
+                 colors = colorNumeric(col_upa10, c(0, 1), na.color = "transparent"),
+                 opacity = 0.6, project = TRUE, group = "MERIT upa > 10 km²") |>
+  addRasterImage(wth_ch, colors = pal_wth, opacity = 1, project = TRUE,
+                 group = "MERIT width (wth)") |>
+  addPolylines(data = filter(osm_win, ww_class == "natural watercourse"),
+               color = col_osm_nat, weight = 1.5, opacity = 0.9, group = "OSM natural") |>
+  addLegend(pal = pal_wth, values = wth_pos, title = "wth (m)", position = "bottomright") |>
+  addLayersControl(baseGroups = c("Satellite", "Light"),
+                   overlayGroups = c("MERIT width (wth)", "MERIT upa > 10 km²", "OSM natural"),
+                   options = layersControlOptions(collapsed = FALSE))
+```
+
+### `elv` — hydrologically-adjusted elevation
+
+```{r elv-map, fig.height=6}
+plot(elv_r, col = hcl.colors(50, "Terrain2"),
+     main = "MERIT hydro-adjusted elevation (m) — Ankobra")
+```
+
+`elv` is nudged cell-by-cell to enforce downhill flow — right for HAND (vertical drop to nearest
+channel), but not for slope/morphometry (use MERIT-**DEM** there).
+
+---
+
+# Approach 3 — remotely sensed surface water {#rs}
+
+A third notion of "river" is **observed surface water** — pixels that actually hold water. Two
+flavours: (1) our own **MNDWI** from Landsat/Sentinel-2 (`rs01`/`rs02`), which with NDTI can even flag
+*turbid* mining ponds; and (2) **JRC Global Surface Water** (`JRC/GSW1_4/GlobalSurfaceWater`), a
+validated occurrence layer (1984–2021, 30 m). Neither is downloaded yet, so the code below is a
+template (needs GEE auth) and is not evaluated on knit.
+
+```{r rs-jrc-template, eval=FALSE}
+library(rgee)
+bb  <- st_bbox(merit_ext_ll)
+aoi <- ee$Geometry$Rectangle(c(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]))
+occurrence <- ee$Image("JRC/GSW1_4/GlobalSurfaceWater")$select("occurrence")$clip(aoi)
+mndwi <- ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
+  filterBounds(aoi)$filterDate("2023-11-01", "2024-03-01")$
+  filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", 40))$median()$
+  normalizedDifference(c("B3", "B11"))$rename("mndwi")$clip(aoi)
+# Export to Drive, read back with terra::rast(), overlay in leaflet as above.
+```
+
+This observes *actual* water, including mining ponds the other sources never encode — but it detects
+*water bodies*, not a connected channel graph; it is seasonal and cloud-limited; narrow rivers under
+canopy are invisible; and it gives no flow direction. It seems best as a **complement** (validating
+MERIT channels, flagging ponds) rather than the definition of the network.
+
+---
+
+# Does the definition move `dist_river_km`? {#compare}
+
+A practical check: on the 5 km hexes inside the Ankobra window, how much does distance-to-nearest-river
+shift across definitions? (Mirrors `d_03_waterways.R` §5–7, restricted to the MERIT extent.)
+
+```{r dist-compare, fig.height=5}
+cent    <- st_centroid(hex_sf)
+inside  <- lengths(st_intersects(cent, merit_ext_utm)) > 0
+hex_in  <- cent[inside, ]
+
+osm_all_utm <- st_transform(osm_win, UTM30N)
+osm_nat_utm <- st_transform(filter(osm_win, ww_class == "natural watercourse"), UTM30N)
+chan_pts <- function(thr) {
+  m <- ifel(upa_r > thr, 1L, NA)
+  suppressWarnings(as.points(m) |> st_as_sf() |> st_transform(UTM30N))
+}
+merit10 <- chan_pts(10); merit50 <- chan_pts(50)
+wth_pts <- suppressWarnings(as.points(ifel(wth_r > 0, 1L, NA)) |> st_as_sf() |>
+                              st_transform(UTM30N))
+
+dist_to <- function(pts, tgt) {
+  idx <- st_nearest_feature(pts, tgt)
+  as.numeric(st_distance(pts, tgt[idx, ], by_element = TRUE)) / 1000
+}
+dcmp <- tibble(
+  hex_id          = hex_sf$hex_id[inside],
+  `OSM all`       = dist_to(hex_in, osm_all_utm),
+  `OSM natural`   = dist_to(hex_in, osm_nat_utm),
+  `MERIT upa>50`  = dist_to(hex_in, merit50),
+  `MERIT upa>10`  = dist_to(hex_in, merit10),
+  `MERIT wth>0`   = dist_to(hex_in, wth_pts)
+)
+dcmp |>
+  pivot_longer(-hex_id, names_to = "definition", values_to = "dist_km") |>
+  group_by(definition) |>
+  summarise(mean = round(mean(dist_km), 2), median = round(median(dist_km), 2),
+            max = round(max(dist_km), 2), .groups = "drop") |>
+  knitr::kable(caption = "Per-hex distance to nearest river (km) by definition — Ankobra window.")
+```
+
+```{r dist-scatter, fig.height=4.2}
+dcmp |>
+  pivot_longer(c(`MERIT upa>50`, `MERIT upa>10`, `MERIT wth>0`),
+               names_to = "merit_def", values_to = "merit_km") |>
+  ggplot(aes(`OSM natural`, merit_km)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey60", linetype = 2) +
+  geom_point(alpha = 0.4, size = 0.7, colour = "#2171B5") +
+  facet_wrap(~ merit_def) + coord_equal() +
+  labs(title = "Distance to river: OSM natural vs MERIT definitions (5 km hexes)",
+       subtitle = "Below the 1:1 line = MERIT finds a nearer channel than OSM",
+       x = "OSM natural (km)", y = "MERIT (km)") +
+  theme_minimal(base_size = 10)
+```
+
+The denser MERIT network (`upa > 10`) places almost every hex close to a channel; `wth` / `upa > 50`
+behave more like the OSM natural rivers. Which is "better" again depends on the use, and on the
+mechanism questions in [*Open questions for a geologist*](#geo-questions).
+
+---
+
+# Where we have landed — provisionally {#synthesis}
+
+Our *current, tentative* leaning (open to revision):
+
+| Use | Leaning | Why — and our uncertainty |
+|-----|---------|---------------------------|
+| **Flow graph / upstream treatment** | MERIT `dir` + a **low** `upa` cut (10 km²) | Only source with flow direction; the low cut keeps small-tributary mines in the graph. *But* whether those small channels should carry treatment weight is exactly [the trade-off](#tradeoff). |
+| **`dist_river_km` covariate** | MERIT `upa > 50` or OSM natural (they agree) | Reproduces the observed river network; robustness = swap between them. |
+| **Pollution-source / pond validation** | Remote sensing (MNDWI, JRC) | Sees real standing water incl. galamsey ponds — a complement, not the network. |
+
+The part we are **least** sure about is the treatment-definition trade-off ([above](#tradeoff)): whether
+to pick a threshold, sweep it, weight by flow, or stratify by stream size. Our instinct is that a
+**continuous flow-weighted dose** (option 2/4) is more honest than any single cut — but that rests on
+`upa`/`wth` being an acceptable proxy for how far galamsey pollution actually travels, which is a
+question for someone who knows the geochemistry. **Feedback on the [open questions](#geo-questions) would
+change what we build next.**
+
+---
+
+*Data: MERIT Hydro (Yamazaki et al. 2019); OpenStreetMap contributors; Barenblitt et al. (2021).
+Companion scripts: `d_03_waterways.R` (OSM), `d_04_merit.R` (MERIT flow graph), `d_05_ndvi.R` (Ankobra
+basin definition). See also `4_presentation/methodology_explainer.md` (event-study designs).*

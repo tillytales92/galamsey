@@ -1,4 +1,4 @@
-﻿# d_03_waterways.R
+# d_03_waterways.R
 # Three-part script:
 #
 # PART 1 — Download (Secs 0b–0c)
@@ -34,7 +34,8 @@ pacman::p_load(sf, terra, here, janitor, tidyverse, scales, patchwork, conflicte
 conflicts_prefer(
   dplyr::filter, dplyr::select, dplyr::mutate, dplyr::summarise,
   dplyr::rename, dplyr::arrange, dplyr::lag,
-  base::intersect, base::union, base::setdiff
+  base::intersect, base::union, base::setdiff,
+  here::here
 )
 UTM30N <- 32630
 

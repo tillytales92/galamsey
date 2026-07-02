@@ -81,10 +81,19 @@ that share that panel:
 
 | | **Q1 — Waterborne degradation** | **Q2 — Mining diffusion** |
 |---|---|---|
-| Outcome | downstream NDVI | own-hex mining (intensity + onset) |
+| Outcome | downstream vegetation (NDVI/EVI; base, no-mine-crop, forest-crop) | own-hex mining (intensity + onset) |
 | Treatment | **upstream** mining onset | **neighbour** mining onset |
 | Right neighbour | directed upstream (flow graph) | adjacency (queen) + upstream as river-corridor variant |
 | Placebo | downstream onset | downstream onset |
+
+**Q1 is estimated for every vegetation-index outcome available in the panel** (see the
+`outcomes-setup` chunk below): NDVI and EVI, each as the hex-wide mean ("base"), the mean over
+non-mine pixels only ("no-mine-crop" — isolates spillover to surrounding land from the mechanical
+on-mine land-clearing signal), and the mean over Evergreen-Broadleaf-Forest pixels only
+("forest-crop" — the sparsest of the three; see `d_05_ndvi.R`'s forestcrop-missingness
+diagnostics). `ndvi_modis` remains the **headline** (its figures/tables keep their original
+filenames for the presentation deck); the other outcomes run inside the *same* V1–V3b code blocks
+as additional rows/columns/facets, not a separate section.
 
 **Q2 is the `d03` Section D2d spatial-lag regression, upgraded** from a single TWFE regression of
 new mining on the neighbour stock — exactly the contaminated continuous-treatment-TWFE estimator the
@@ -276,6 +285,35 @@ has_terrain  <- all(c("elev_mean", "slope_mean") %in% names(panel)) &&
 xf <- if (has_terrain) ~ elev_mean + slope_mean else ~ 1
 
 c(upstream_columns_present = has_upstream, terrain_covariates_present = has_terrain)
+```
+
+```{r outcomes-setup}
+# Vegetation-index outcomes used throughout Q1: NDVI/EVI x {base, no-mine-crop, forest-crop}.
+# no-mine-crop masks out the cumulative mine footprint (isolates spillover to surrounding land from
+# the mechanical on-mine land-clearing signal); forest-crop restricts to Evergreen Broadleaf Forest
+# pixels (IGBP class 2) -- the sparsest of the three (d_05_ndvi.R's forestcrop-missingness
+# diagnostics: ~80% NA at 5 km, worse at finer grids; the MODIS land-cover stack currently stops at
+# 2020). Kept only if present in THIS panel and not all-NA. ndvi_modis is listed first and stays the
+# HEADLINE throughout Q1 (its own filenames are unchanged, for the presentation deck); the rest are
+# folded into the same V1-V3b code blocks as additional rows/columns/facets.
+OUTCOMES <- c(
+  ndvi_modis                = "NDVI",
+  evi_modis                 = "EVI",
+  ndvi_modis_nominecrop     = "NDVI (no-mine-crop)",
+  evi_modis_nominecrop      = "EVI (no-mine-crop)",
+  ndvi_modis_forestcrop     = "NDVI (forest-crop)",
+  evi_modis_forestcrop      = "EVI (forest-crop)"
+)
+OUTCOMES <- OUTCOMES[names(OUTCOMES) %in% names(panel)]
+OUTCOMES <- OUTCOMES[vapply(names(OUTCOMES), \(c) !all(is.na(panel[[c]])), logical(1))]
+extra_outcomes <- setdiff(names(OUTCOMES), "ndvi_modis")   # everything beyond the NDVI headline
+
+# Runtime note: every Q1 version below (V1 TWFE + dCDH, V2 C&S stock-threshold, V3 C&S onset-clock,
+# V3b two-clock TWFE) loops over `OUTCOMES`. With all 6 present this multiplies the number of C&S /
+# dCDH fits ~6x versus the original NDVI-only document -- expect a much longer knit (dCDH especially,
+# see the memory note in the q1-v1-dcdh chunk). Trim OUTCOMES here (e.g. to NDVI + EVI only, or drop
+# the forest-crop pair given its sparsity) for a faster exploratory run.
+names(OUTCOMES)
 ```
 
 ```{r overlap, results='asis'}
@@ -520,6 +558,82 @@ v2_dynplot <- function(cs_list, title, subtitle) {
          y = "ATT on NDVI", colour = "Stock threshold") +
     theme_bw(base_size = 11)
 }
+
+# --- Multi-outcome extensions (V1/V2/V3/V3b loop over OUTCOMES; see outcomes-setup) -------------
+
+# outcome_dynplot: overlay the C&S dynamic ATT across OUTCOMES for one exposure/threshold (mirrors
+# v2_dynplot, but the overlaid series is the outcome rather than the stock threshold).
+outcome_dynplot <- function(dyn_list, labels, title, subtitle) {
+  df <- bind_rows(purrr::map2(dyn_list, labels, \(d, l) tidy_dyn(d, l)))
+  df$outcome <- factor(df$threshold, levels = labels)
+  ggplot(df, aes(event_time, att, colour = outcome, fill = outcome)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+    geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.12, colour = NA) +
+    geom_line() + geom_point(size = 1.6) +
+    labs(title = title, subtitle = subtitle,
+         x = "Event time (years relative to treatment)", y = "ATT on outcome",
+         colour = "Outcome", fill = "Outcome") +
+    theme_bw(base_size = 11)
+}
+
+# run_v2_exposures: the V2 "5 exposures x mbar_grid" battery for one outcome. Returns a named list
+# mirroring the headline v2_up/v2_near_up/v2_lat/v2_near_dn/v2_dn variables, gated by the same
+# has_near_flow / has_lateral guards used for the NDVI headline (both set in panel-censored).
+run_v2_exposures <- function(yname) {
+  mk <- \(stock_col) { l <- map(mbar_grid, \(mb) run_cs(first_cross(panel, stock_col, mb), yname, "g_thr"))
+                       set_names(l, paste0("mbar_", mbar_grid)) }
+  list(
+    up      = mk("up_stock_ha"),
+    near_up = if (has_near_flow) mk("nearest_up_stock_ha")   else NULL,
+    lat     = if (has_lateral)   mk("lateral_stock_ha")      else NULL,
+    near_dn = if (has_near_flow) mk("nearest_down_stock_ha") else NULL,
+    dn      = mk("down_stock_ha")
+  )
+}
+
+# v2_rows_from_exposures: tidy (exposure, mbar, att, se) rows from a run_v2_exposures() result (or
+# the equivalent list built from the headline v2_up/v2_near_up/... variables).
+v2_rows_from_exposures <- function(exp_list) {
+  rows <- list(
+    cs_row(exp_list$up, "upstream — all reachable (treatment)"),
+    if (!is.null(exp_list$near_up)) cs_row(exp_list$near_up, "upstream — 1-hop (treatment)"),
+    if (!is.null(exp_list$lat))     cs_row(exp_list$lat,     "lateral (comparison)"),
+    if (!is.null(exp_list$near_dn)) cs_row(exp_list$near_dn, "downstream — 1-hop (placebo)"),
+    cs_row(exp_list$dn, "downstream — all reachable (placebo)")
+  )
+  bind_rows(Filter(Negate(is.null), rows))
+}
+
+# run_v3_defs: the V3 "4 treatment definitions" battery for one outcome, on the pre-own-entry
+# censored+nearest-scalar panel `df` (built in the q1-v3 chunk). Mirrors v3_nearest/v3_up/
+# v3_nearest_down/v3_down for the NDVI headline; has_nearest/has_nearest_down passed explicitly
+# (rather than read as globals) since they are only defined once the q1-v3 chunk has run.
+run_v3_defs <- function(df, yname, has_nearest, has_nearest_down) {
+  list(
+    nearest      = if (has_nearest)      run_cs(df, yname, "g_nearest")      else NULL,
+    up           = run_cs(df, yname, "g_up"),
+    nearest_down = if (has_nearest_down) run_cs(df, yname, "g_nearest_down") else NULL,
+    down         = run_cs(df, yname, "g_down")
+  )
+}
+
+# v3_rows_from_defs: tidy (treatment, att, se) rows from a run_v3_defs() result.
+v3_rows_from_defs <- function(defs) {
+  rows <- list(
+    if (!is.null(defs$nearest)) tibble(treatment = "nearest upstream — 1-hop (headline)",
+                                       att = defs$nearest$overall$overall.att,
+                                       se  = defs$nearest$overall$overall.se),
+    tibble(treatment = "all-reachable upstream (robustness)",
+           att = defs$up$overall$overall.att, se = defs$up$overall$overall.se),
+    if (!is.null(defs$nearest_down)) tibble(treatment = "nearest downstream — 1-hop (placebo)",
+                                            att = defs$nearest_down$overall$overall.att,
+                                            se  = defs$nearest_down$overall$overall.se),
+    tibble(treatment = "all-reachable downstream (placebo)",
+           att = defs$down$overall$overall.att, se = defs$down$overall$overall.se)
+  )
+  bind_rows(Filter(Negate(is.null), rows))
+}
 ```
 
 ---
@@ -538,7 +652,13 @@ different vegetation.
 
 ---
 
-# Q1 — Upstream mining → downstream NDVI {.tabset}
+# Q1 — Upstream mining → downstream vegetation {.tabset}
+
+Every version below (V1 through V3b) is estimated **once per outcome** in `OUTCOMES` (defined in the
+`outcomes-setup` chunk above). `ndvi_modis` is kept as the **headline** — its plots/tables keep their
+original filenames, for continuity with the presentation deck — while the other outcomes (EVI, and
+the no-mine-crop / forest-crop variants of both) run inside the *same* code blocks as additional
+rows, columns, or facets, rather than a separate "robustness" section.
 
 ```{r q1-guard, results='asis'}
 if (!has_upstream)
@@ -558,21 +678,24 @@ check (dCDH) follows. The upstream-vs-downstream split is the directional placeb
 > recent components of the cumulative sum). The three specs below separate them to avoid this.
 
 ```{r q1-v1-prep, eval=has_upstream}
-# Build first-difference panels for all available stock dimensions.
-# across() creates lag_<col> columns for every stock column present in the data.
+# Build first-difference panels for all available stock dimensions AND all outcomes in `OUTCOMES`
+# (across() creates lag_<col> / d_<outcome> columns for every stock/outcome column present).
+# NOTE: no longer drops rows on !is.na(d_ndvi) globally -- outcomes differ in coverage (forest-crop
+# especially is sparse), so each feols() call below drops its own outcome's NA rows via its formula.
 make_dl <- function(df) {
-  stock_cols <- intersect(
+  stock_cols   <- intersect(
     c("up_stock_ha", "nearest_up_stock_ha", "adj_stock_ha",
       "lateral_stock_ha", "nearest_down_stock_ha", "down_stock_ha"),
     names(df)
   )
+  outcome_cols <- names(OUTCOMES)
   df |> arrange(hex_id, year) |> group_by(hex_id) |>
     mutate(
-      d_ndvi = ndvi_modis - dplyr::lag(ndvi_modis),
-      across(all_of(stock_cols), \(x) dplyr::lag(x), .names = "lag_{.col}")
+      across(all_of(outcome_cols), \(x) x - dplyr::lag(x), .names = "d_{.col}"),
+      across(all_of(stock_cols),   \(x) dplyr::lag(x),     .names = "lag_{.col}")
     ) |>
     ungroup() |>
-    filter(!is.na(lag_up_stock_ha), !is.na(lag_down_stock_ha), !is.na(d_ndvi))
+    filter(!is.na(lag_up_stock_ha), !is.na(lag_down_stock_ha))
 }
 dl          <- make_dl(panel)
 dl_censored <- make_dl(panel_censored)
@@ -589,19 +712,33 @@ flow_dims <- list(
   c("down_new_ha",          "downstream — all reachable (placebo)")
 )
 flow_ok <- Filter(\(d) d[1] %in% names(dl) && !all(is.na(dl[[d[1]]])), flow_dims)
+f_hdrs  <- sapply(flow_ok, `[`, 2)
 
-run_flow <- function(df)
+run_flow <- function(df, yvar)
   lapply(flow_ok, \(d)
-    feols(as.formula(paste0("d_ndvi ~ l(", d[1], ", 0:3) | hex_id + year")),
+    feols(as.formula(paste0("d_", yvar, " ~ l(", d[1], ", 0:3) | hex_id + year")),
           df, panel.id = ~hex_id + year, cluster = ~block_id))
-f_hdrs <- sapply(flow_ok, `[`, 2)
-m_flow_full <- run_flow(dl)
-m_flow_cens <- run_flow(dl_censored)
-etable(m_flow_full, headers = f_hdrs, title = "Flow lags — full panel")
-etable(m_flow_cens, headers = f_hdrs, title = "Flow lags — pre-own-entry censored")
 
-save_md(tidy_feols_md(m_flow_full, f_hdrs), "es_v1_flowlags_full.md")
-save_md(tidy_feols_md(m_flow_cens, f_hdrs), "es_v1_flowlags_censored.md")
+# One flow-lag model list per outcome x panel (full / pre-own-entry censored).
+m_flow_full <- imap(OUTCOMES, \(lab, yc) run_flow(dl,          yc))
+m_flow_cens <- imap(OUTCOMES, \(lab, yc) run_flow(dl_censored, yc))
+
+# Headline (NDVI) — identical display + filenames to the original single-outcome version.
+etable(m_flow_full[["ndvi_modis"]], headers = f_hdrs, title = "Flow lags — full panel (NDVI, headline)")
+etable(m_flow_cens[["ndvi_modis"]], headers = f_hdrs, title = "Flow lags — censored (NDVI, headline)")
+save_md(tidy_feols_md(m_flow_full[["ndvi_modis"]], f_hdrs), "es_v1_flowlags_full.md")
+save_md(tidy_feols_md(m_flow_cens[["ndvi_modis"]], f_hdrs), "es_v1_flowlags_censored.md")
+
+# All other outcomes: same display, one etable per outcome, plus their own markdown exports. print()
+# is required inside the for loop -- R does not auto-print statements inside control-flow blocks.
+for (oc in extra_outcomes) {
+  print(etable(m_flow_full[[oc]], headers = f_hdrs,
+               title = sprintf("Flow lags — full panel (%s)", OUTCOMES[[oc]])))
+  print(etable(m_flow_cens[[oc]], headers = f_hdrs,
+               title = sprintf("Flow lags — censored (%s)", OUTCOMES[[oc]])))
+  save_md(tidy_feols_md(m_flow_full[[oc]], f_hdrs), sprintf("es_v1_flowlags_full_%s.md", oc))
+  save_md(tidy_feols_md(m_flow_cens[[oc]], f_hdrs), sprintf("es_v1_flowlags_censored_%s.md", oc))
+}
 ```
 
 **1c — Joint spec** (flow lags + stock control; collinearity caveat applies; placebo symmetric):
@@ -618,25 +755,38 @@ joint_dims <- list(
 joint_ok <- Filter(\(d)
   d[1] %in% names(dl) && !all(is.na(dl[[d[1]]])) &&
   d[2] %in% names(dl) && !all(is.na(dl[[d[2]]])), joint_dims)
-
-run_joint <- function(df)
-  lapply(joint_ok, \(d)
-    feols(as.formula(paste0("d_ndvi ~ l(", d[1], ", 0:3) + poly(", d[2], ", 2) | hex_id + year")),
-          df, panel.id = ~hex_id + year, cluster = ~block_id))
 j_hdrs <- sapply(joint_ok, `[`, 3)
-m_joint_full <- run_joint(dl)
-m_joint_cens <- run_joint(dl_censored)
-etable(m_joint_full, headers = j_hdrs, title = "Joint spec — full panel")
-etable(m_joint_cens, headers = j_hdrs, title = "Joint spec — pre-own-entry censored")
 
-save_md(tidy_feols_md(m_joint_full, j_hdrs), "es_v1_joint_full.md")
-save_md(tidy_feols_md(m_joint_cens, j_hdrs), "es_v1_joint_censored.md")
+run_joint <- function(df, yvar)
+  lapply(joint_ok, \(d)
+    feols(as.formula(paste0("d_", yvar, " ~ l(", d[1], ", 0:3) + poly(", d[2], ", 2) | hex_id + year")),
+          df, panel.id = ~hex_id + year, cluster = ~block_id))
+
+m_joint_full <- imap(OUTCOMES, \(lab, yc) run_joint(dl,          yc))
+m_joint_cens <- imap(OUTCOMES, \(lab, yc) run_joint(dl_censored, yc))
+
+# Headline (NDVI) — identical display + filenames to the original single-outcome version.
+etable(m_joint_full[["ndvi_modis"]], headers = j_hdrs, title = "Joint spec — full panel (NDVI, headline)")
+etable(m_joint_cens[["ndvi_modis"]], headers = j_hdrs, title = "Joint spec — censored (NDVI, headline)")
+save_md(tidy_feols_md(m_joint_full[["ndvi_modis"]], j_hdrs), "es_v1_joint_full.md")
+save_md(tidy_feols_md(m_joint_cens[["ndvi_modis"]], j_hdrs), "es_v1_joint_censored.md")
+
+# All other outcomes: same display, one etable per outcome, plus their own markdown exports.
+for (oc in extra_outcomes) {
+  print(etable(m_joint_full[[oc]], headers = j_hdrs,
+               title = sprintf("Joint spec — full panel (%s)", OUTCOMES[[oc]])))
+  print(etable(m_joint_cens[[oc]], headers = j_hdrs,
+               title = sprintf("Joint spec — censored (%s)", OUTCOMES[[oc]])))
+  save_md(tidy_feols_md(m_joint_full[[oc]], j_hdrs), sprintf("es_v1_joint_full_%s.md", oc))
+  save_md(tidy_feols_md(m_joint_cens[[oc]], j_hdrs), sprintf("es_v1_joint_censored_%s.md", oc))
+}
 ```
 
 ```{r q1-v1-dcdh, eval=(has_upstream && HAS_DCDH)}
 # dCDH: heterogeneity-robust continuous-treatment estimator across all five stock dimensions.
-# Objects saved as dcdh_full[[label]] and dcdh_cens[[label]]; call summary() or plot() on any.
-# Adjacent excluded (same reason as V2): queen mixes treatment and placebo neighbours.
+# Objects saved as dcdh_full[[label]] / dcdh_cens[[label]] for the NDVI headline (unchanged from the
+# single-outcome version), and dcdh_extra_full[[outcome]][[label]] / dcdh_extra_cens[[...]] for the
+# other outcomes in OUTCOMES. Adjacent excluded (same reason as V2): queen mixes treatment/placebo.
 
 # DIDmultiplegtDYN 2.3.0 references polars' `pl` as a bare symbol without importing it, so polars
 # MUST be attached (not just available) or did_multiplegt_dyn errors with "object 'pl' not found".
@@ -652,14 +802,16 @@ dcdh_dims <- Filter(
   )
 )
 
-# Memory: did_multiplegt_dyn uses polars (Rust) and is heavy. Across the 10 runs (5 dims x 2 panels)
-# memory piles up and polars can fail to allocate (esp. at 2 km). So we keep ONLY $results (all the
-# plot and table chunks reference), discard the rest of the object, and gc() after each run so
-# polars releases its Rust-side memory before the next call — keeping peak memory down.
-run_dcdh <- function(df, col) {
+# Memory: did_multiplegt_dyn uses polars (Rust) and is heavy. Across the headline's 10 runs (5 dims
+# x 2 panels) memory already piles up and polars can fail to allocate (esp. at 2 km); looping this
+# over every outcome in OUTCOMES multiplies the run count ~6x (up to 60 runs total). We keep ONLY
+# $results (all the plot/table chunks reference), discard the rest of the object, and gc() after
+# each run so polars releases its Rust-side memory before the next call — keeping peak memory down.
+# Trim OUTCOMES (outcomes-setup chunk) if this is too slow/heavy to run in full.
+run_dcdh <- function(df, col, yname) {
   m <- DIDmultiplegtDYN::did_multiplegt_dyn(
     df        = as.data.frame(df),
-    outcome   = "ndvi_modis",
+    outcome   = yname,
     group     = "hex_id",
     time      = "year",
     treatment = col,
@@ -673,10 +825,19 @@ run_dcdh <- function(df, col) {
   res
 }
 
-dcdh_full <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel,          d[1])),
+# Headline (NDVI) — unchanged from the single-outcome version.
+dcdh_full <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel,          d[1], "ndvi_modis")),
                       sapply(dcdh_dims, `[`, 2))
-dcdh_cens <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel_censored, d[1])),
+dcdh_cens <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel_censored, d[1], "ndvi_modis")),
                       sapply(dcdh_dims, `[`, 2))
+
+# Other outcomes — nested outcome -> dim lists.
+dcdh_extra_full <- set_names(lapply(extra_outcomes, \(oc)
+  setNames(lapply(dcdh_dims, \(d) run_dcdh(panel, d[1], oc)), sapply(dcdh_dims, `[`, 2))
+), extra_outcomes)
+dcdh_extra_cens <- set_names(lapply(extra_outcomes, \(oc)
+  setNames(lapply(dcdh_dims, \(d) run_dcdh(panel_censored, d[1], oc)), sapply(dcdh_dims, `[`, 2))
+), extra_outcomes)
 ```
 
 ```{r q1-v1-dcdh-plot, eval=(has_upstream && HAS_DCDH), fig.height=4.2, results='asis'}
@@ -698,12 +859,12 @@ tidy_dcdh <- function(obj, panel_lab) {
 
 dcdh_cols <- c("Full panel" = "#2171B5", "Pre-own-entry censored" = "#E67E22")
 pd <- position_dodge(width = 0.25)
+slugify <- \(x) gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(x)))
 
-for (nm in names(dcdh_full)) {
-  d <- bind_rows(tidy_dcdh(dcdh_full[[nm]], "Full panel"),
-                 tidy_dcdh(dcdh_cens[[nm]], "Pre-own-entry censored")) |>
+dcdh_plot_one <- function(obj_full, obj_cens, dim_label, y_label, file) {
+  d <- bind_rows(tidy_dcdh(obj_full, "Full panel"),
+                 tidy_dcdh(obj_cens, "Pre-own-entry censored")) |>
     mutate(panel = factor(panel, levels = names(dcdh_cols)))
-
   p <- ggplot(d, aes(event_time, est, colour = panel, group = panel)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
     geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
@@ -712,15 +873,29 @@ for (nm in names(dcdh_full)) {
     geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.18, position = pd) +
     scale_colour_manual(values = dcdh_cols) +
     scale_x_continuous(breaks = sort(unique(d$event_time))) +
-    labs(title = paste0("dCDH — ", nm),
+    labs(title = paste0("dCDH — ", dim_label),
          subtitle = "de Chaisemartin–D'Haultfœuille continuous-dose (stock) estimator; 95% CI",
          x = "Event time (years relative to stock-dose change)",
-         y = "Effect on NDVI", colour = NULL) +
+         y = paste0("Effect on ", y_label), colour = NULL) +
     theme_bw(base_size = 11) +
     theme(legend.position = "bottom")
   print(p)
-  slug <- gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(nm)))   # trim edge underscores
-  save_es(p, paste0("es_v1_dcdh_", slug, ".png"), height = 4.2)
+  save_es(p, file, height = 4.2)
+}
+
+# Headline (NDVI) — identical filenames to the original single-outcome version.
+for (nm in names(dcdh_full)) {
+  dcdh_plot_one(dcdh_full[[nm]], dcdh_cens[[nm]], nm, "NDVI",
+               paste0("es_v1_dcdh_", slugify(nm), ".png"))
+}
+
+# Other outcomes — same plots, outcome-suffixed filenames, under a markdown subheader each.
+for (oc in extra_outcomes) {
+  cat(sprintf("\n\n### %s\n\n", OUTCOMES[[oc]]))
+  for (nm in names(dcdh_extra_full[[oc]])) {
+    dcdh_plot_one(dcdh_extra_full[[oc]][[nm]], dcdh_extra_cens[[oc]][[nm]], nm, OUTCOMES[[oc]],
+                 sprintf("es_v1_dcdh_%s_%s.png", slugify(nm), oc))
+  }
 }
 ```
 
@@ -761,23 +936,61 @@ save_md_grouped(dcdh_out |> select(treatment, panel, `ATE [95% CI]`, `p(pre-tren
 dcdh_out |>
   select(panel, `ATE [95% CI]`, `p(pre-trend)`, `p(effects)`, switchers) |>  # treatment shown via pack_rows
   kbl(caption = paste0(
-    "dCDH summary (continuous stock dose). ATE = average total effect on NDVI; ",
+    "dCDH summary (continuous stock dose), NDVI headline. ATE = average total effect on NDVI; ",
     "p(pre-trend) = joint placebo test (high = pre-trends flat, design credible); ",
     "p(effects) = joint test that dynamic effects are zero; Switchers = hexes identifying the ATE.")) |>
   kable_styling(full_width = FALSE) |>
   pack_rows(index = setNames(rep(2L, length(dcdh_full)), names(dcdh_full)))
 ```
 
+```{r q1-v1-dcdh-table-alloutcomes, eval=(has_upstream && HAS_DCDH)}
+# Same summary, extended across all outcomes in OUTCOMES beyond the NDVI headline above.
+dcdh_tab_extra <- imap_dfr(dcdh_extra_full, \(dim_list, oc)
+  imap_dfr(dim_list, \(obj, nm)
+    bind_rows(dcdh_summary(obj,                        "Full panel"),
+              dcdh_summary(dcdh_extra_cens[[oc]][[nm]], "Pre-own-entry censored")) |>
+      mutate(treatment = nm, .before = 1)) |>
+    mutate(outcome = OUTCOMES[[oc]], .before = 1))
+
+dcdh_out_extra <- dcdh_tab_extra |>
+  mutate(`ATE [95% CI]` = sprintf("%.4f [%.4f, %.4f]", ate, ci_lo, ci_hi),
+         `p(pre-trend)` = sprintf("%.3f", p_pre),
+         `p(effects)`   = sprintf("%.3f", p_effects),
+         group = paste0(outcome, " — ", treatment))
+
+save_md_grouped(dcdh_out_extra |> select(outcome, treatment, panel, `ATE [95% CI]`,
+                                         `p(pre-trend)`, `p(effects)`, switchers),
+                "es_v1_dcdh_summary_alloutcomes.md", group_col = "outcome")
+
+kbl_dcdh_extra <- dcdh_out_extra |>
+  select(panel, `ATE [95% CI]`, `p(pre-trend)`, `p(effects)`, switchers) |>
+  kbl(caption = paste0(
+    "dCDH summary (continuous stock dose), all non-headline outcomes. Rows grouped by outcome, ",
+    "sub-grouped by treatment dimension; each has a Full-panel and a Pre-own-entry-censored row.")) |>
+  kable_styling(full_width = FALSE)
+start <- 1L
+for (grp in unique(dcdh_out_extra$group)) {
+  n <- sum(dcdh_out_extra$group == grp)
+  kbl_dcdh_extra <- pack_rows(kbl_dcdh_extra, grp, start, start + n - 1L)
+  start <- start + n
+}
+kbl_dcdh_extra
+```
+
 ## Version 2 — absorbing treatment at a stock threshold (headline)
 
 Treatment = first year the mining stock in a given exposure dimension crosses $\bar m$. C&S,
-not-yet-treated controls, NDVI in levels. Five exposure dimensions (treatment → comparison → placebo):
+not-yet-treated controls, outcome in levels. Five exposure dimensions (treatment → comparison → placebo):
 
 - **Upstream all reachable / 1-hop** (treatment): waterborne contamination hypothesis
 - **Lateral** (comparison): queen neighbours that are NOT on the D8 flow path — pure land-use channel
 - **Downstream 1-hop / all reachable** (placebo): should be null if the channel is genuinely waterborne
 
-Adjacent (queen) is excluded because it aggregates upstream + lateral + downstream neighbours, confounding treatment and placebo signals. The $\bar m$ sweep across {0, 10, 25, 50} ha is the threshold-stability check.
+Adjacent (queen) is excluded because it aggregates upstream + lateral + downstream neighbours,
+confounding treatment and placebo signals. The $\bar m$ sweep across {0, 10, 25, 50} ha is the
+threshold-stability check, run for **every outcome in `OUTCOMES`** — `ndvi_modis` is the headline
+(plots/table below keep their original filenames); the rest are added as a combined comparison
+table plus an outcome-overlay plot at $\bar m = 25$ ha.
 
 ```{r q1-v2, eval=has_upstream}
 v2_up <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "up_stock_ha", mb), "ndvi_modis", "g_thr"))
@@ -828,6 +1041,70 @@ for (g in v2_rg) {
 kbl_v2
 ```
 
+```{r q1-v2-alloutcomes, eval=has_upstream}
+# Same 5-exposure x mbar_grid battery as above, for every OTHER outcome in OUTCOMES (NDVI headline
+# already computed above as v2_up/v2_near_up/v2_lat/v2_near_dn/v2_dn). Reuses run_v2_exposures() /
+# v2_rows_from_exposures() from the helpers chunk. Heavy: up to 5 exposures x 4 mbar x
+# length(extra_outcomes) additional att_gt() fits.
+v2_extra <- set_names(lapply(extra_outcomes, run_v2_exposures), extra_outcomes)
+
+v2_rows_headline <- v2_rows_from_exposures(list(
+  up      = v2_up,
+  near_up = if (has_near_flow && exists("v2_near_up")) v2_near_up else NULL,
+  lat     = if (has_lateral   && exists("v2_lat"))     v2_lat     else NULL,
+  near_dn = if (has_near_flow && exists("v2_near_dn")) v2_near_dn else NULL,
+  dn      = v2_dn
+)) |> mutate(outcome = OUTCOMES[["ndvi_modis"]], .before = 1)
+v2_rows_extra <- imap_dfr(v2_extra, \(exp_list, oc)
+  v2_rows_from_exposures(exp_list) |> mutate(outcome = OUTCOMES[[oc]], .before = 1))
+
+v2_all      <- bind_rows(v2_rows_headline, v2_rows_extra)
+v2_wide_all <- v2_all |>
+  mutate(cell = sprintf("%+.4f (%.4f)", att, se)) |>
+  select(outcome, exposure, mbar, cell) |>
+  pivot_wider(names_from = mbar, values_from = cell, names_prefix = "stock > ") |>
+  rename_with(~paste0(., " ha"), starts_with("stock > "))
+save_md_grouped(v2_wide_all, "es_v2_stability_table_alloutcomes.md", group_col = "outcome")
+
+kbl_v2_all <- v2_wide_all |>
+  kbl(caption = paste0("V2 overall ATT (SE) across all outcomes, exposures, and stock thresholds. ",
+      "Upstream negative + downstream ~0 across outcomes = the waterborne effect is robust to the ",
+      "vegetation-index / masking choice. NDVI vs EVI magnitudes are not directly comparable ",
+      "(different scales).")) |>
+  kable_styling(full_width = FALSE)
+start <- 1L
+for (oc_lab in unique(v2_wide_all$outcome)) {
+  n <- sum(v2_wide_all$outcome == oc_lab)
+  kbl_v2_all <- pack_rows(kbl_v2_all, oc_lab, start, start + n - 1L)
+  start <- start + n
+}
+kbl_v2_all
+```
+
+```{r q1-v2-outcome-plots, eval=has_upstream, fig.height=4.5}
+# Outcome-overlay view at a representative threshold (25 ha): does the upstream-vs-downstream
+# contrast hold across NDVI / EVI / no-mine-crop / forest-crop? One line per outcome.
+OUTCOME_MBAR <- 25L
+mb_key       <- paste0("mbar_", OUTCOME_MBAR)
+
+up_dyn_list <- c(list(ndvi_modis = v2_up[[mb_key]]$dynamic),
+                 lapply(v2_extra, \(e) e$up[[mb_key]]$dynamic))
+dn_dyn_list <- c(list(ndvi_modis = v2_dn[[mb_key]]$dynamic),
+                 lapply(v2_extra, \(e) e$dn[[mb_key]]$dynamic))
+out_labels  <- unname(OUTCOMES[names(up_dyn_list)])
+
+p_v2_out_up <- outcome_dynplot(up_dyn_list, out_labels,
+  sprintf("Q1/V2 upstream (all reachable, treatment) across outcomes — stock > %d ha", OUTCOME_MBAR),
+  "C&S dynamic ATT; one line per outcome; 95% CI ribbon")
+p_v2_out_dn <- outcome_dynplot(dn_dyn_list, out_labels,
+  sprintf("Q1/V2 downstream (all reachable, placebo) across outcomes — stock > %d ha", OUTCOME_MBAR),
+  "Should be ~flat/null for every outcome if the channel is genuinely waterborne")
+p_v2_out_up
+p_v2_out_dn
+save_es(p_v2_out_up, "es_v2_outcomes_upstream.png", height = 4.5)
+save_es(p_v2_out_dn, "es_v2_outcomes_downstream.png", height = 4.5)
+```
+
 ```{r q1-v2-plot-up, eval=has_upstream, fig.height=4.5}
 p_v2_up <- v2_dynplot(v2_up,
   "Q1/V2 upstream (all reachable) — NDVI vs upstream stock threshold",
@@ -875,7 +1152,9 @@ The clean waterborne test (tex V3 mechanism). Treatment clock is $T_i^{\text{UP}
 mining (onset, not a stock threshold). Each hex is censored at its own onset, so own land-clearing
 cannot drive the response. **Headline = nearest 1-hop upstream onset**; all-reachable upstream is a
 broader-exposure robustness check; **downstream onset (1-hop and all-reachable) = directional placebos**
-(should be null if the channel is genuinely waterborne).
+(should be null if the channel is genuinely waterborne). Run for **every outcome in `OUTCOMES`**;
+NDVI is the headline (plots below keep their original filenames), the rest are folded into a
+combined comparison table and plot set beneath.
 
 ```{r q1-v3-gap, eval=has_upstream, fig.height=3.5}
 # Headline clock = nearest 1-hop upstream onset. Show the T_own - T_nearest_up gap first: if there is
@@ -981,6 +1260,72 @@ p_v3_nearest_down
 save_es(p_v3_nearest_down, "es_v3_nearest_down_placebo.png", height = 4.5)
 ```
 
+```{r q1-v3-alloutcomes, eval=has_upstream}
+# Same 4 treatment definitions as above, for every OTHER outcome in OUTCOMES, on the same
+# pre-own-entry `censored` panel built in the q1-v3 chunk. Reuses run_v3_defs() / v3_rows_from_defs()
+# from the helpers chunk.
+v3_extra_defs <- set_names(
+  lapply(extra_outcomes, \(oc) run_v3_defs(censored, oc, has_nearest, has_nearest_down)),
+  extra_outcomes
+)
+
+v3_rows_headline <- v3_tbl |> select(treatment, att, se) |>
+  mutate(outcome = OUTCOMES[["ndvi_modis"]], .before = 1)
+v3_rows_extra <- imap_dfr(v3_extra_defs, \(defs, oc)
+  v3_rows_from_defs(defs) |> mutate(outcome = OUTCOMES[[oc]], .before = 1))
+
+v3_all <- bind_rows(v3_rows_headline, v3_rows_extra) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+save_md_grouped(v3_all, "es_v3_results_table_alloutcomes.md", group_col = "outcome")
+
+kbl_v3_all <- v3_all |>
+  kbl(digits = 4, caption = paste0("V3 (censored to pre-own-entry) overall ATT across all outcomes: ",
+      "nearest 1-hop upstream (headline treatment) vs all-reachable upstream (robustness) vs ",
+      "downstream placebos.")) |>
+  kable_styling(full_width = FALSE)
+start <- 1L
+for (oc_lab in unique(v3_all$outcome)) {
+  n <- sum(v3_all$outcome == oc_lab)
+  kbl_v3_all <- pack_rows(kbl_v3_all, oc_lab, start, start + n - 1L)
+  start <- start + n
+}
+kbl_v3_all
+```
+
+```{r q1-v3-alloutcomes-plots, eval=has_upstream, fig.height=4.5, results='asis'}
+# Same 3 plot types as the NDVI headline (nearest headline / all-reachable robustness / nearest-down
+# placebo), for every other outcome, saved with outcome-suffixed filenames under a subheader each.
+for (oc in extra_outcomes) {
+  defs <- v3_extra_defs[[oc]]
+  cat(sprintf("\n\n### %s\n\n", OUTCOMES[[oc]]))
+
+  if (!is.null(defs$nearest)) {
+    p <- did::ggdid(defs$nearest$dynamic) +
+      ggplot2::labs(
+        title    = sprintf("Q1/V3 headline — %s vs nearest 1-hop upstream onset (pre-own-entry)", OUTCOMES[[oc]]),
+        subtitle = "T_i^UP = onset of the immediate (1-hop) upstream neighbour — tex V3 mechanism")
+    print(p)
+    save_es(p, sprintf("es_v3_nearest_up_headline_%s.png", oc), height = 4.5)
+  }
+
+  p <- did::ggdid(defs$up$dynamic) +
+    ggplot2::labs(
+      title    = sprintf("Q1/V3 robustness — %s vs all-reachable upstream onset (pre-own-entry)", OUTCOMES[[oc]]),
+      subtitle = "Broader exposure: earliest onset among ALL reachable upstream hexes")
+  print(p)
+  save_es(p, sprintf("es_v3_upstream_all_robustness_%s.png", oc), height = 4.5)
+
+  if (!is.null(defs$nearest_down)) {
+    p <- did::ggdid(defs$nearest_down$dynamic) +
+      ggplot2::labs(
+        title    = sprintf("Q1/V3 placebo — %s vs nearest 1-hop downstream onset (pre-own-entry)", OUTCOMES[[oc]]),
+        subtitle = "Should be null: 1-hop downstream mining cannot cause upstream NDVI via water")
+    print(p)
+    save_es(p, sprintf("es_v3_nearest_down_placebo_%s.png", oc), height = 4.5)
+  }
+}
+```
+
 ## Version 3b — faithful two-clock TWFE (the exact tex V3 specification)
 
 Implements the tex V3 equation literally: a single two-way-FE regression on the **pre-own-entry**
@@ -995,9 +1340,10 @@ clocks jointly: $\beta_k\approx0,\ \delta_j<0$ = pure waterborne; $\beta_k<0,\ \
 $\beta_k<0,\ \delta_j\approx0$ = common pre-entry decline unrelated to upstream status.
 
 ```{r q1-v3b, eval=(has_upstream && has_nearest)}
-# Two-clock TWFE on the pre-own-entry sample (`censored`, from the V3 chunk). Event times binned to
-# [-5, 5]; never-treated hexes fold into the -1 reference of each clock. On this sample every hex is
-# pre-own-entry, so k_own is always < 0 (own clock is a pure pre-trend, as in the tex).
+# Two-clock TWFE on the pre-own-entry sample (`censored`, from the V3 chunk), for EVERY outcome in
+# OUTCOMES. Event times binned to [-5, 5]; never-treated hexes fold into the -1 reference of each
+# clock. On this sample every hex is pre-own-entry, so k_own is always < 0 (own clock is a pure
+# pre-trend, as in the tex).
 d3b <- censored |>
   mutate(
     k_own = if_else(!is.na(own_onset_year),
@@ -1006,26 +1352,33 @@ d3b <- censored |>
                     pmin(pmax(as.integer(year - nearest_up_onset_year), -5L), 5L), -1L)
   )
 
-m_v3b <- feols(ndvi_modis ~ i(k_own, ref = -1) + i(j_up, ref = -1) | hex_id + year,
-               data = d3b, cluster = ~ block_id)
-etable(m_v3b, title = "V3b — two-clock TWFE (own pre-entry clock + nearest-upstream clock)")
-
-# Tidy both clocks for a faceted event-study plot (+ the omitted -1 reference at 0).
-ct_v3b <- as.data.frame(fixest::coeftable(m_v3b))
-ct_v3b$term <- rownames(ct_v3b)
 lab_own <- "Own-entry clock β (pre-entry decline)"
 lab_up  <- "Nearest-upstream clock δ (waterborne)"
-v3b_coef <- ct_v3b |>
-  filter(grepl("^k_own::|^j_up::", term)) |>
-  transmute(clock      = ifelse(grepl("^k_own", term), lab_own, lab_up),
-            event_time = as.integer(sub(".*::", "", term)),
-            est        = .data[["Estimate"]],
-            se         = .data[["Std. Error"]]) |>
-  bind_rows(tibble(clock = c(lab_own, lab_up), event_time = -1L, est = 0, se = 0)) |>
-  mutate(ci_lo = est - 1.96 * se, ci_hi = est + 1.96 * se) |>
-  arrange(clock, event_time)
-save_md(v3b_coef |> transmute(clock, event_time,
-                              est = round(est, 4), se = round(se, 4)),
+
+fit_v3b <- function(yname) {
+  m <- feols(as.formula(paste0(yname, " ~ i(k_own, ref = -1) + i(j_up, ref = -1) | hex_id + year")),
+            data = d3b, cluster = ~ block_id)
+  ct <- as.data.frame(fixest::coeftable(m)); ct$term <- rownames(ct)
+  coef <- ct |>
+    filter(grepl("^k_own::|^j_up::", term)) |>
+    transmute(clock      = ifelse(grepl("^k_own", term), lab_own, lab_up),
+              event_time = as.integer(sub(".*::", "", term)),
+              est        = .data[["Estimate"]],
+              se         = .data[["Std. Error"]]) |>
+    bind_rows(tibble(clock = c(lab_own, lab_up), event_time = -1L, est = 0, se = 0)) |>
+    mutate(ci_lo = est - 1.96 * se, ci_hi = est + 1.96 * se) |>
+    arrange(clock, event_time)
+  list(model = m, coef = coef)
+}
+
+v3b_fits <- imap(OUTCOMES, \(lab, yc) fit_v3b(yc))
+
+# Headline (NDVI) — identical display, table export, and plot filename to the original
+# single-outcome version.
+m_v3b    <- v3b_fits[["ndvi_modis"]]$model
+v3b_coef <- v3b_fits[["ndvi_modis"]]$coef
+etable(m_v3b, title = "V3b — two-clock TWFE (own pre-entry clock + nearest-upstream clock), NDVI headline")
+save_md(v3b_coef |> transmute(clock, event_time, est = round(est, 4), se = round(se, 4)),
         "es_v3b_coefficients.md")
 
 p_v3b <- ggplot(v3b_coef, aes(event_time, est)) +
@@ -1035,12 +1388,37 @@ p_v3b <- ggplot(v3b_coef, aes(event_time, est)) +
               linewidth = 0.25, linetype = "dotted") +
   geom_line(colour = "#2171B5") + geom_point(colour = "#2171B5", size = 1.9) +
   facet_wrap(~clock, scales = "free_x") +
-  labs(title    = "V3b — faithful tex two-clock TWFE (pre-own-entry sample)",
+  labs(title    = "V3b — faithful tex two-clock TWFE (pre-own-entry sample, NDVI headline)",
        subtitle = "Joint feols: own-entry pre-period clock + nearest-upstream clock; ref = event time -1",
        x = "Event time (years)", y = "NDVI coefficient") +
   theme_bw(base_size = 11)
 p_v3b
 save_es(p_v3b, "es_v3b_twoclock.png", width = 10, height = 4.5)
+```
+
+```{r q1-v3b-alloutcomes, eval=(has_upstream && has_nearest), fig.width=10, fig.height=12}
+# All outcomes together, faceted by outcome (rows) x clock (columns) -- one integrated view of
+# whether the two-clock decomposition holds across NDVI/EVI/no-mine-crop/forest-crop. Cheap (feols,
+# not att_gt), so computed for every outcome without a separate reduced grid.
+v3b_all_coef <- imap_dfr(v3b_fits, \(fit, oc) fit$coef |> mutate(outcome = OUTCOMES[[oc]], .before = 1)) |>
+  mutate(outcome = factor(outcome, levels = unname(OUTCOMES)))
+
+save_md(v3b_all_coef |> transmute(outcome, clock, event_time, est = round(est, 4), se = round(se, 4)),
+        "es_v3b_coefficients_alloutcomes.md")
+
+p_v3b_all <- ggplot(v3b_all_coef, aes(event_time, est)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), fill = NA, colour = "grey60",
+              linewidth = 0.25, linetype = "dotted") +
+  geom_line(colour = "#2171B5") + geom_point(colour = "#2171B5", size = 1.5) +
+  facet_grid(rows = vars(outcome), cols = vars(clock), scales = "free_x") +
+  labs(title    = "V3b two-clock TWFE across all outcomes",
+       subtitle = "Rows = outcome, columns = clock (own pre-entry beta vs nearest-upstream delta); ref = event time -1",
+       x = "Event time (years)", y = "Coefficient") +
+  theme_bw(base_size = 10)
+p_v3b_all
+save_es(p_v3b_all, "es_v3b_twoclock_alloutcomes.png", width = 10, height = 12)
 ```
 
 ---
@@ -1161,4 +1539,11 @@ tibble(file = list.files(out_es, pattern = "\\.(png|md)$")) |>
 - **Cropland masking**: NDVI is an all-pixel hex mean; restrict to cropland pixels (Q1's
   *agricultural* channel) once a land-cover mask is available.
 - **dCDH** (`did_multiplegt_dyn`) runs only if `DIDmultiplegtDYN` is installed (`HAS_DCDH = `r HAS_DCDH`).
+- **Multi-outcome runtime.** Every Q1 design (V1 TWFE + dCDH, V2, V3, V3b) now loops over `OUTCOMES`
+  (NDVI/EVI x base/no-mine-crop/forest-crop; `outcomes-setup` chunk) rather than NDVI alone. This is
+  exploratory — expect a substantially longer knit (dCDH especially, up to ~60 runs across outcomes x
+  dims x panels) — and the forest-crop outcomes are the sparsest (see `d_05_ndvi.R`'s
+  forestcrop-missingness diagnostics), so their C&S fits may be underpowered or fail to converge on
+  small resolutions. Trim `OUTCOMES` for a faster or more reliable run. NDVI vs EVI ATT *magnitudes*
+  are not directly comparable (different index scales) — compare sign/significance/event-time shape.
 ```

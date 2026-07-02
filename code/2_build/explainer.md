@@ -105,7 +105,7 @@ R session can start from any stage by reading the prior stage's file from disk.
 ```
 b_03a  →  b_03b  →  b_03c  →  b_03d  →  b_03e
   ↑           ↑         ↑          ↑          ↑
-rasters   Barenblitt  MERIT    flow edges  anything
+rasters   Barenblitt  MERIT    flow edges  anything (a-d)
 change      change    updated   added/     changes
                                updated
 ```

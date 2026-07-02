@@ -327,3 +327,75 @@ ggplot(trend_anko, aes(year, pixels, colour = label)) +
        x = NULL, y = "Pixel count (500 m)") +
   theme_minimal(base_size = 11) +
   theme(legend.position = "bottom")
+
+# Forestcrop missingness — why are the *_forestcrop VI columns mostly NA? --------
+# The *_forestcrop columns of the event panel are built in 2_build/b_03a_vi_panel.R: each VI is masked
+# to IGBP class 2 (Evergreen Broadleaf Forest) pixels only, then averaged per hex. They are ~80% NA at
+# 5 km (and higher at 1/2 km). Two independent causes, quantified below:
+#   CAUSE 1 — temporal coverage. forestcrop needs a land-cover layer for that year; years with no
+#             layer are 100% NA regardless of geography.
+#   CAUSE 2 — spatial rarity. Class 2 is a small, shrinking share of the study area, so most hexes
+#             hold NO class-2 pixel in a given year -> the forest-masked hex mean is NaN -> NA.
+
+fc_cache <- here("data", "processed", "hex_5km_crosssection.rds")
+if (file.exists(fc_cache)) {
+
+  hexv   <- terra::vect(st_transform(readRDS(fc_cache)$hex_sf, 4326))
+  lc_st  <- terra::crop(lc_stack, terra::ext(hexv))       # bbox crop includes some sea (class 17 = water)
+  mod_t  <- terra::crop(modis_ndvi[[1]], terra::ext(hexv))
+  lc_res <- terra::resample(lc_st, mod_t, method = "near")  # onto the MODIS VI grid (matches *_modis_forestcrop)
+
+  # --- CAUSE 1: coverage gap between the VI span and the land-cover span ---
+  vi_span <- as.integer(stringr::str_extract(names(modis_ndvi), "\\d{4}"))
+  gap_yrs <- base::setdiff(min(vi_span):max(vi_span), lc_years)
+  message("\n=== Forestcrop CAUSE 1: temporal coverage ===")
+  message(sprintf("  Land cover available: %d-%d (%d layers)",
+                  min(lc_years), max(lc_years), length(lc_years)))
+  message(sprintf("  MODIS VI span: %d-%d", min(vi_span), max(vi_span)))
+  message(sprintf("  VI years with NO land-cover mask -> forestcrop 100%% NA: %s",
+                  paste(gap_yrs, collapse = ", ")))
+  message("  NOTE: the stack ends at ", max(lc_years),
+          " although d_01_download_gee.R requests LCOVER_YEARS = 2001:2024 — the ",
+          "2021-2024 land-cover layers appear to be missing from land_cover_ghana_stack.tif ",
+          "(re-download + re-stack in d_01 Sec 8 to recover those forestcrop years).")
+
+  # --- CAUSE 2: class-2 share of land pixels + % of hexes holding any class-2 pixel, by year ---
+  fc_diag <- purrr::map_dfr(seq_along(lc_years), function(i) {
+    cl2  <- terra::ifel(lc_res[[i]] == 2L, 1L, NA)
+    cnt  <- terra::extract(cl2, hexv, fun = sum, na.rm = TRUE, ID = FALSE)[[1]]  # NA for a hex with no class-2 pixel
+    land <- terra::freq(lc_res[[i]]); land <- land[!is.na(land$value) & land$value != 17L, ]
+    tibble(year                  = lc_years[i],
+           class2_pct_land       = round(100 * sum(land$count[land$value == 2]) / sum(land$count), 1),
+           hexes_with_forest_pct = round(100 * mean(!is.na(cnt) & cnt > 0), 1),
+           forestcrop_na_pct     = round(100 * mean(is.na(cnt) | cnt == 0), 1))
+  })
+  message("\n=== Forestcrop CAUSE 2: Evergreen Broadleaf Forest rarity (MODIS grid, 5 km hexes) ===")
+  print(as.data.frame(fc_diag), row.names = FALSE)
+  message(sprintf(
+    paste0("  Only ~%.0f%% of 5 km hexes contain any class-2 pixel (falling %.0f%% -> %.0f%% as forest ",
+           "is lost),\n  so ~%.0f%% of hex-years are NA even within the covered years — on top of the ",
+           "all-NA years above."),
+    mean(fc_diag$hexes_with_forest_pct), fc_diag$hexes_with_forest_pct[1],
+    fc_diag$hexes_with_forest_pct[nrow(fc_diag)], mean(fc_diag$forestcrop_na_pct)))
+
+  p_fc <- ggplot(fc_diag, aes(year)) +
+    geom_col(aes(y = hexes_with_forest_pct), fill = "#1a8a1a", alpha = 0.85) +
+    geom_line(aes(y = class2_pct_land), colour = "#c0392b", linewidth = 0.9) +
+    geom_point(aes(y = class2_pct_land), colour = "#c0392b", size = 1.6) +
+    labs(title    = "Why *_forestcrop is mostly NA: Evergreen Broadleaf Forest is rare and shrinking",
+         subtitle = sprintf(paste0("Green bars = %% of 5 km hexes with >=1 class-2 pixel (NA if none); ",
+                                    "red = class-2 %% of land pixels.\nOutside %d-%d every hex is NA ",
+                                    "(no land-cover mask)."), min(lc_years), max(lc_years)),
+         x = NULL, y = "%") +
+    theme_minimal(base_size = 11) +
+    theme(plot.title = element_text(face = "bold"))
+  print(p_fc)
+
+  dir.create(here("outputs", "figures", "ndvi"), recursive = TRUE, showWarnings = FALSE)
+  ggsave(here("outputs", "figures", "ndvi", "forestcrop_missingness.png"), p_fc,
+         width = 8, height = 5, dpi = 150)
+  message("Saved: outputs/figures/ndvi/forestcrop_missingness.png")
+
+} else {
+  message("Forestcrop diagnostics skipped — hex_5km_crosssection.rds not found (run b_01_cross_section.R).")
+}
