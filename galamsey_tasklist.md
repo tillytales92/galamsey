@@ -33,15 +33,34 @@ and candidate future sources are in `data_inventory.md`.
   MERIT Hydro (and at which `upa` threshold), or a remotely-sensed measure? See
   `code/0_data/rivers_exploration.Rmd` for the exploration, the small-stream-dilution vs.
   sample-loss trade-off, and the open questions for a geologist. **Blocked on:** geologist review.
-- [ ] **NDVI/EVI measurement choice outstanding.** Implement a robustness pipeline of land-use
-  masks and aggregation schemes for the vegetation-index outcome, following:
-  - **Digital Earth Africa (2022)** land-use masks
-  - **Vashold et al. (2026)** — aggregation-scheme robustness checks
-  - Use the **ESA CCI land cover product** (replacing/supplementing MODIS MCD12Q1 — see below)
-- [ ] **Switch land cover to ESA CCI.** MODIS MCD12Q1 under-detects forest in the study area
-  (~6–11% of land pixels classified as Evergreen Broadleaf Forest, driving ~80% NA in the
-  `*_forestcrop` VI columns) and the local stack currently stops at 2020. ESA CCI is a candidate
-  replacement (see `data_inventory.md` §7).
+- [ ] **NDVI/EVI measurement choice outstanding — rebuild as a "peak EVI" pipeline (Vashold et al.
+  2026 methodology).** The current pipeline exports an **annual mean** of MODIS 16-day composites
+  at the pixel level (GEE-side `.mean()`, `d_01_download_gee.R` Sec 5c, product **MOD13A2**, 1 km),
+  then takes a zonal mean per hex in `b_03a_vi_panel.R`. Replace with this 4-step construction:
+  1. **Source:** raw EVI (Didan 2015), 16-day composites, **250 m** — i.e. **MOD13Q1**
+     (`MODIS/061/MOD13Q1`), not MOD13A2 (1 km).
+  2. **QA/cloud filtering** on each 16-day composite (as now).
+  3. **Mask with yearly ESA CCI land cover** (Defourny et al. 2024, 300 m) to isolate the relevant
+     area for each outcome — replaces the current MODIS MCD12Q1 mask (see below).
+  4. **Aggregate to the MEAN EVI at 16-day intervals, per hex/basin** — i.e. do the spatial
+     (zonal-mean) reduction to hex level *at each 16-day step*, not after an annual pixel-level mean.
+  5. **Take the ANNUAL MAXIMUM** of that 16-day hex-level series — "peak EVI" — as the actual annual
+     outcome variable. **This is a max, not a mean**, and the order of operations matters: spatial
+     aggregation happens first (per 16-day period), annual aggregation second (by hex).
+  - Justification given: peak EVI correlates strongly with gross primary production (Shi et al. 2017)
+    and crop yields (Azzari et al. 2017; Johnson 2016).
+  - **Robustness checks to also implement:** alternative land-use masks (**Digital Earth Africa
+    2022**) and alternative aggregation schemes (e.g. mean vs. max, different windows).
+  - **Implementation note:** this restructures `b_03a_vi_panel.R` non-trivially — it currently just
+    extracts an already-annual, GEE-side-aggregated raster. The new pipeline needs either (a) 16-day
+    composites downloaded/exported from GEE and zonal-meaned per hex per 16-day period locally, then
+    maxed to annual; or (b) the per-16-day zonal mean done server-side in GEE before export. Scope
+    before implementing — also ripples into `b_03e_assemble_eventpanel.R`.
+- [ ] **Switch land cover to ESA CCI** (needed for step 3 of the peak-EVI pipeline above, not just
+  a `*_forestcrop` fix). MODIS MCD12Q1 under-detects forest in the study area (~6–11% of land pixels
+  classified as Evergreen Broadleaf Forest, driving ~80% NA in the `*_forestcrop` VI columns) and
+  the local stack currently stops at 2020. ESA CCI (Defourny et al. 2024, 300 m, yearly) is the
+  specified replacement (see `data_inventory.md` §7) — needs downloading, not yet in `d_01`.
 - [ ] Re-download / re-stack the missing 2021–2024 MODIS land-cover layers (`d_01_download_gee.R`
   Sec 8) — `LCOVER_YEARS = 2001:2024` is requested but `land_cover_ghana_stack.tif` only has
   2001–2020.
@@ -80,6 +99,20 @@ and candidate future sources are in `data_inventory.md`.
   `4_presentation/methodology_explainer.md` §9 for what each design shows.
 - [ ] Knit `a_05_event_study.Rmd` at least once with the current (pre-revision) outcomes — the
   multi-outcome integration is written but not yet executed (compute-heavy; deferred).
+- [ ] **Add Hansen Global Forest Change as an event-study outcome** (`UMD/hansen/global_forest_change`,
+  30 m, 2000–2023 — already listed as a candidate land-cover source in `data_inventory.md` §7, but
+  not yet used as an *outcome* in its own right). Distinct from the NDVI/EVI greenness proxies:
+  Hansen gives annual **forest loss** (and cover) directly, so it could serve as a more literal
+  "did the forest actually disappear near this mine" outcome alongside the vegetation-index measures.
+- [ ] **Add a simple "own-hex" event study as a sanity check**, before/alongside the
+  upstream/downstream designs (V1–V3b). Treatment = mining **within the focal hex itself**
+  (`own_onset_year`/`own_new_ha`, already in the panel — no new data needed), not anything
+  upstream/downstream. Question: is there a detectable NDVI/EVI (and Hansen forest-loss) effect in
+  the hex that is *actually mined*, full stop? This is the most basic version of the design — no
+  flow-graph, no directionality, no waterborne-mechanism story — so if it doesn't show an effect,
+  that is a strong signal something is wrong upstream of the fancier designs (panel construction,
+  outcome definition, event-time coding); if it does, it is the natural baseline the
+  upstream/downstream results should be read against.
 - [ ] Knit `a_03_firststage_diagnostics.Rmd` (needs `b_02_firststage_models.R` run first).
 - [ ] D3b, D3c, D4a, D5c, D6a–c remain blocked on the data items listed above.
 

@@ -1147,6 +1147,65 @@ if (file.exists(f)) knitr::include_graphics(f) else knitr::asis_output("*[pendin
 V1 dCDH continuous-dose — nearest-downstream-hex (1-hop) stock: placebo. [← back](#es-v1-hop)
 :::
 
+## Annex: What Is an Instrument, and Why Do We Need One Here? {#annex-iv-what}
+
+::: {style="font-size: 0.78em;"}
+**What an instrument does.** OLS of an outcome on mining is biased if mining is correlated with the
+error term — i.e. if the *same* unobserved factors that make a location attractive for mining also
+affect the outcome directly. An instrument $Z$ fixes this if it satisfies two conditions:
+
+- **Relevance** — $Z$ must actually predict mining ($\text{Cov}(Z, \text{mining}) \neq 0$).
+- **Exclusion** — $Z$ must affect the outcome **only through** mining, never directly
+  ($\text{Cov}(Z, \varepsilon) = 0$).
+
+2SLS then uses only the variation in mining that $Z$ explains — the part plausibly free of the
+confounding — to estimate the causal effect.
+:::
+
+::: {style="font-size: 0.72em;"}
+**Why we need one here.** Miners choose *where* to dig based on expected returns, which correlates
+with terrain, access, and local economic conditions — the same things that plausibly drive our
+outcomes (agricultural productivity, vegetation, labour). A raw comparison of mined vs. unmined
+hexes conflates "the effect of mining" with "why miners picked that spot in the first place." Since
+galamsey is **alluvial (placer)** mining — miners follow where eroded gold physically settles — the
+underlying **geomorphology** predicts mining location for reasons fixed by nature, long before any
+economic actor arrives. That is the candidate source of exogenous variation.
+:::
+
+## Annex: What Each Candidate Instrument Actually Captures {#annex-iv-detail}
+
+::: {.incremental style="font-size: 0.68em;"}
+- **Gold-suitable geology** (Girard) — a geological map of where gold-bearing bedrock exists at all.
+  Captures the *necessary precondition* for any gold mining (artisanal or industrial), independent of
+  terrain or local economics.
+- **HAND** (Height Above Nearest Drainage) — vertical drop to the nearest stream. Low HAND = active
+  floodplains and river terraces, where fast-moving water slows and heavy eroded particles (gold is
+  ~19× denser than water) settle out. Captures the *alluvial deposition* mechanism specifically —
+  should matter for galamsey far more than for hard-rock industrial mining.
+- **MRVBF** (valley-bottom flatness) — flags broad, flat valley floors across multiple spatial
+  scales. These are natural long-run sediment traps, so a high MRVBF score marks where eroded
+  material — gold included — has had geological time to accumulate.
+- **Stream Power Index** $=\ln(\text{catchment area}\times\tan\text{slope})$ — proxies the energy
+  available to move sediment. Low SPI *on an already-defined channel* means the flow has lost the
+  energy to keep carrying its load, so it drops what it's carrying there — a physical, energy-based
+  deposition signal.
+- **Stream Transport Index** — the same transport-capacity logic as SPI (from slope × upslope area),
+  a complementary formulation: where transport capacity falls to near zero, deposition follows.
+:::
+
+::: {style="font-size: 0.68em; color: grey;"}
+**Are these actually meaningful instruments for gold mining here?** Open questions, not settled:
+relevance — do HAND/MRVBF/SPI/STI predict *artisanal* mining specifically, or just where gold could
+occur geologically (which industrial extraction may target quite differently, e.g. via deep
+hard-rock mining that ignores surface deposition)? exclusion — valley bottoms and floodplains are
+also the *most fertile farmland*, so these variables may affect agricultural-productivity outcomes
+directly, not only via mining. independence — are the five candidates capturing genuinely different
+variation, or are they all just proxying "low, flat, wet terrain" (collinear, not five independent
+instruments)? scale — Girard geology is 1:10M; does it resolve enough at the 5 km hex grain to be
+informative at all? None of this is resolved — these remain candidates to test, not settled
+instruments.
+:::
+
 ```{=html}
 <script>
 window.addEventListener('load', function () {
