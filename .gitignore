@@ -5,6 +5,7 @@
 !/code/
 !/README.md
 !/.gitignore
+!/data_inventory.md
 
 # R / RStudio cruft (in case it appears under code/)
 .Rhistory
