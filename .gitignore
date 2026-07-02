@@ -6,6 +6,7 @@
 !/README.md
 !/.gitignore
 !/data_inventory.md
+!/galamsey_tasklist.md
 
 # R / RStudio cruft (in case it appears under code/)
 .Rhistory
