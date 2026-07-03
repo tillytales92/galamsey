@@ -3,6 +3,10 @@
 # no derived layers or per-hex extraction here — those live in d_0N_* siblings and
 # 2_build/b_02_hex_frame.R.
 #
+# EXPORT REGION: currently restricted to the Barenblitt study area (SW Ghana) + 25 km buffer
+# (Section 3), to keep the 30 m Landsat exports to one GeoTIFF per year. The full-Ghana region
+# is retained but commented out in Section 3 — set `export_region <- ghana_bounds` to scale up.
+#
 # NOTE: MERIT-DEM + MERIT Hydro GEE exports are handled in d_04_merit.R, not here.
 # That script immediately processes the exports into hydro-geomorphic layers (HAND,
 # flow direction, hex flow graph), so the download and compute are tightly coupled
@@ -16,10 +20,12 @@
 #                  → data/raw/landsat_vi/landsat_ndvi_ghana_{year}.tif + landsat_ndvi_ghana_stack.tif
 #   Landsat EVI  — LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI,  30 m, Ghana, 1995–2025
 #                  → data/raw/landsat_vi/landsat_evi_ghana_{year}.tif  + landsat_evi_ghana_stack.tif
-#   MODIS NDVI   — MOD13Q1 QA-filtered annual mean, 250 m, Ghana, 2000–2025
-#                  → data/raw/modis_vi/modis_ndvi_ghana_{year}.tif + modis_ndvi_ghana_stack.tif
-#   MODIS EVI    — MOD13Q1 QA-filtered annual mean, 250 m, Ghana, 2000–2025
-#                  → data/raw/modis_vi/modis_evi_ghana_{year}.tif  + modis_evi_ghana_stack.tif
+#   MODIS NDVI   — MOD13Q1 QA-filtered 16-day series, 250 m, Ghana, 2000–2025
+#                  → data/raw/modis_vi/modis_ndvi_16day_ghana_{year}.tif (~23 bands) → annual-mean
+#                    modis_ndvi_ghana_stack.tif (derived locally in Sec 9)
+#   MODIS EVI    — MOD13Q1 QA-filtered 16-day series, 250 m, Ghana, 2000–2025
+#                  → data/raw/modis_vi/modis_evi_16day_ghana_{year}.tif  (~23 bands) → annual-mean
+#                    modis_evi_ghana_stack.tif (derived locally in Sec 9)
 #   Land cover   — MCD12Q1 IGBP annual, 500 m, Ghana, 2001–2024
 #                  → data/raw/land_cover/modis_lc_ghana_{year}.tif + modis_lc_ghana_stack.tif
 #   CHIRPS       — Daily precipitation summed to annual totals (~5.5 km), Ghana, 1990–2025
@@ -57,25 +63,52 @@ ee_check()
 googledrive::drive_auth()
 
 ####3. Study Area ####
-gha_country <- st_read(
-  here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin0.shp"),
-  quiet = TRUE) |>
-  st_transform(4326)
+# Exports are restricted to the Barenblitt study area (SW Ghana) + buffer — same region logic as
+# d_04_merit.R. This keeps the 30 m Landsat exports small (the full-Ghana bbox at 30 m is ~1.6 GB
+# per year and tiles into several GeoTIFFs). The full-Ghana block below is retained but commented
+# out: to scale back up to national coverage, uncomment it and set `export_region <- ghana_bounds`.
+UTM30N    <- 32630
+BUFFER_KM <- 25          # buffer around the Barenblitt extent for the GEE export (km)
 
-# Bounding box used as the export region: simpler than a dissolved polygon and
-# avoids the sf_as_ee() date-column crash documented in CLAUDE.md.
-# Exported rasters cover the full Ghana bounding box; mask to country outline
-# in analysis scripts as needed.
-bbox_ghana <- st_bbox(gha_country)
-ghana_bounds <- ee$Geometry$Rectangle(
-  coords   = c(bbox_ghana[["xmin"]], bbox_ghana[["ymin"]],
-               bbox_ghana[["xmax"]], bbox_ghana[["ymax"]]),
+# A rectangle (not a dissolved polygon) avoids the sf_as_ee() date-column crash (CLAUDE.md).
+# bbox(union) == bbox(all features), so no st_union() needed — buffer the numeric bbox directly.
+barenblitt_path <- here("data", "raw", "barenblitt", "FullConversiontoMiningExtent2019.shp")
+utm_bbox <- st_read(barenblitt_path, quiet = TRUE) |>
+  st_transform(UTM30N) |>
+  st_bbox()
+buf_m <- BUFFER_KM * 1000
+utm_bbox[c("xmin", "ymin")] <- utm_bbox[c("xmin", "ymin")] - buf_m
+utm_bbox[c("xmax", "ymax")] <- utm_bbox[c("xmax", "ymax")] + buf_m
+study_bbox <- utm_bbox |>
+  st_as_sfc() |>
+  st_transform(4326) |>
+  st_bbox()
+study_bounds <- ee$Geometry$Rectangle(
+  coords   = c(study_bbox[["xmin"]], study_bbox[["ymin"]],
+               study_bbox[["xmax"]], study_bbox[["ymax"]]),
   proj     = "EPSG:4326",
   geodesic = FALSE)
+cat(sprintf("Study-area export bbox (Barenblitt +%g km): %.3f–%.3f degE, %.3f–%.3f degN\n",
+            BUFFER_KM, study_bbox[["xmin"]], study_bbox[["xmax"]],
+            study_bbox[["ymin"]], study_bbox[["ymax"]]))
 
-cat(sprintf("Ghana bounding box: %.3f°W – %.3f°E, %.3f°N – %.3f°N\n",
-            bbox_ghana[["xmin"]], bbox_ghana[["xmax"]],
-            bbox_ghana[["ymin"]], bbox_ghana[["ymax"]]))
+# --- Full-Ghana region (commented out — uncomment to scale up to national coverage) ---
+# gha_country <- st_read(
+#   here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin0.shp"),
+#   quiet = TRUE) |>
+#   st_transform(4326)
+# bbox_ghana <- st_bbox(gha_country)
+# ghana_bounds <- ee$Geometry$Rectangle(
+#   coords   = c(bbox_ghana[["xmin"]], bbox_ghana[["ymin"]],
+#                bbox_ghana[["xmax"]], bbox_ghana[["ymax"]]),
+#   proj     = "EPSG:4326",
+#   geodesic = FALSE)
+# cat(sprintf("Ghana bounding box: %.3f°W – %.3f°E, %.3f°N – %.3f°N\n",
+#             bbox_ghana[["xmin"]], bbox_ghana[["xmax"]],
+#             bbox_ghana[["ymin"]], bbox_ghana[["ymax"]]))
+
+# Active export region for all Section 5–7 tasks. Swap to ghana_bounds (above) to scale up.
+export_region <- study_bounds
 
 ####4. Parameters ####
 # All products export to one Drive folder; filenames are source-explicit
@@ -114,7 +147,7 @@ dir.create(out_land_cover, recursive = TRUE, showWarnings = FALSE)
 message("=== Submitting Landsat NDVI export tasks ===")
 ndvi_tasks <- map(NDVI_YEARS, \(yr) {
   annual_ndvi <- ee$ImageCollection("LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI")$
-    filterBounds(ghana_bounds)$
+    filterBounds(export_region)$
     filterDate(paste0(yr, "-01-01"), paste0(yr + 1L, "-01-01"))$
     select("NDVI")$
     first()$                   # one composite image per year
@@ -126,7 +159,7 @@ ndvi_tasks <- map(NDVI_YEARS, \(yr) {
     folder         = DRIVE_FOLDER,
     fileNamePrefix = paste0("landsat_ndvi_ghana_", yr),
     scale          = 30,
-    region         = ghana_bounds,
+    region         = export_region,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
@@ -155,7 +188,7 @@ message(sprintf("Submitted %d NDVI tasks to Drive folder '%s'.",
 message("\n=== Submitting Landsat EVI export tasks ===")
 evi_tasks <- map(NDVI_YEARS, \(yr) {
   annual_evi <- ee$ImageCollection("LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI")$
-    filterBounds(ghana_bounds)$
+    filterBounds(export_region)$
     filterDate(paste0(yr, "-01-01"), paste0(yr + 1L, "-01-01"))$
     select("EVI")$
     first()$
@@ -167,7 +200,7 @@ evi_tasks <- map(NDVI_YEARS, \(yr) {
     folder         = DRIVE_FOLDER,
     fileNamePrefix = paste0("landsat_evi_ghana_", yr),
     scale          = 30,
-    region         = ghana_bounds,
+    region         = export_region,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
@@ -185,57 +218,63 @@ message(sprintf("Submitted %d EVI tasks to Drive folder '%s'.",
 # Collection: MODIS/061/MOD13Q1
 # Bands:      NDVI, EVI — raw integer * 0.0001 → range [-0.2, 1.0]
 # QA:         SummaryQA: 0=good, 1=marginal, 2=snow/ice, 3=cloudy; keep ≤ 1.
-# Compositing: annual mean of QA-masked 16-day composites (23 per year).
-#   Mean preferred over max here: captures sustained greenness/degradation
-#   rather than peak-season values; consistent with the event-study outcome.
-# NDVI and EVI are exported as SEPARATE single-band files (modis_ndvi_ghana_ /
-#   modis_evi_ghana_) — source-explicit names, uniform with the Landsat exports,
-#   and simpler to stack (no band-splitting in Section 8). Two export tasks/year.
-# Resolution: 250 m (native MOD13Q1) — finer sibling of MOD13A2 (1 km); same
-#   band names, SummaryQA scheme, and 0.0001 scale factor.
+#
+# We export the FULL 16-day series — NOT a GEE-side annual mean. Each yearly file holds the ~23
+# QA-masked 16-day composites as separate bands (band name = composite date via toBands()). The
+# temporal reduction is deferred to LOCAL processing so the yearly ESA CCI land-use mask can be
+# applied to each 16-day step BEFORE any aggregation, then per-hex/basin means taken at 16-day
+# resolution, then the ANNUAL MAXIMUM ("peak EVI", Vashold et al. 2026). Doing the .mean() on GEE
+# (as before) would collapse the series and make that impossible.
+# Backward compatibility: Section 9 derives the annual-MEAN stacks (modis_{ndvi,evi}_ghana_stack.tif)
+# from these 16-day files, so the current annual-outcome scripts keep working; the raw 16-day files
+# (modis_ndvi_16day_ / modis_evi_16day_) stay on disk for the peak pipeline. Two files/year.
+# Resolution: 250 m (native MOD13Q1) — finer sibling of MOD13A2 (1 km).
 
-message("\n=== Submitting MODIS VI (MOD13Q1) export tasks ===")
+message("\n=== Submitting MODIS VI (MOD13Q1, full 16-day series) export tasks ===")
 modis_vi_tasks <- map(MODIS_VI_YEARS, \(yr) {
-  annual_vi <- ee$ImageCollection("MODIS/061/MOD13Q1")$
-    filterBounds(ghana_bounds)$
+  qa_masked <- ee$ImageCollection("MODIS/061/MOD13Q1")$
+    filterBounds(export_region)$
     filterDate(paste0(yr, "-01-01"), paste0(yr + 1L, "-01-01"))$
     map(function(img) {
       qa <- img$select("SummaryQA")
-      img$updateMask(qa$lte(1L))$select(list("NDVI", "EVI"))
-    })$
-    mean()$                        # annual mean of QA-filtered 16-day composites
-    multiply(0.0001)$              # apply MODIS scale factor → [-0.2, 1.0]
-    rename(list(paste0("ndvi_", yr), paste0("evi_", yr)))
+      img$updateMask(qa$lte(1L))$          # drop cloud (3) + snow/ice (2), keep good/marginal
+        select(list("NDVI", "EVI"))$
+        multiply(0.0001)                   # MODIS scale factor → [-0.2, 1.0]
+    })
+
+  # One multiband image per index: each band = one 16-day composite (named by its date).
+  ndvi_16day <- qa_masked$select("NDVI")$toBands()
+  evi_16day  <- qa_masked$select("EVI")$toBands()
 
   ndvi_task <- ee$batch$Export$image$toDrive(
-    image          = annual_vi$select(paste0("ndvi_", yr)),
-    description    = paste0("modis_ndvi_ghana_", yr),
+    image          = ndvi_16day,
+    description    = paste0("modis_ndvi_16day_ghana_", yr),
     folder         = DRIVE_FOLDER,
-    fileNamePrefix = paste0("modis_ndvi_ghana_", yr),
+    fileNamePrefix = paste0("modis_ndvi_16day_ghana_", yr),
     scale          = 250,
-    region         = ghana_bounds,
+    region         = export_region,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
   )
   evi_task <- ee$batch$Export$image$toDrive(
-    image          = annual_vi$select(paste0("evi_", yr)),
-    description    = paste0("modis_evi_ghana_", yr),
+    image          = evi_16day,
+    description    = paste0("modis_evi_16day_ghana_", yr),
     folder         = DRIVE_FOLDER,
-    fileNamePrefix = paste0("modis_evi_ghana_", yr),
+    fileNamePrefix = paste0("modis_evi_16day_ghana_", yr),
     scale          = 250,
-    region         = ghana_bounds,
+    region         = export_region,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
   )
   ndvi_task$start()
   evi_task$start()
-  message(sprintf("  Submitted: modis_ndvi_ghana_%d + modis_evi_ghana_%d", yr, yr))
+  message(sprintf("  Submitted: modis_{ndvi,evi}_16day_ghana_%d (16-day series)", yr))
   list(ndvi = ndvi_task, evi = evi_task)
 })
 
-message(sprintf("Submitted %d MODIS VI tasks (%d years × 2 indices) to Drive folder '%s'.",
+message(sprintf("Submitted %d MODIS VI tasks (%d years × 2 indices, 16-day series) to Drive folder '%s'.",
                 2L * length(modis_vi_tasks), length(modis_vi_tasks), DRIVE_FOLDER))
 
 ####6. Land Cover — MODIS MCD12Q1.061 Land Cover Type Yearly 500m ####
@@ -254,7 +293,7 @@ message(sprintf("Submitted %d MODIS VI tasks (%d years × 2 indices) to Drive fo
 message("\n=== Submitting MODIS Land Cover (MCD12Q1) export tasks ===")
 lc_tasks <- map(LCOVER_YEARS, \(yr) {
   annual_lc <- ee$ImageCollection("MODIS/061/MCD12Q1")$
-    filterBounds(ghana_bounds)$
+    filterBounds(export_region)$
     filterDate(paste0(yr, "-01-01"), paste0(yr + 1L, "-01-01"))$
     select("LC_Type1")$
     first()$
@@ -266,7 +305,7 @@ lc_tasks <- map(LCOVER_YEARS, \(yr) {
     folder         = DRIVE_FOLDER,
     fileNamePrefix = paste0("modis_lc_ghana_", yr),
     scale          = 500,
-    region         = ghana_bounds,
+    region         = export_region,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
@@ -291,7 +330,7 @@ message(sprintf("Submitted %d MODIS Land Cover tasks to Drive folder '%s'.",
 message("\n=== Submitting CHIRPS export tasks ===")
 chirps_tasks <- map(CHIRPS_YEARS, \(yr) {
   annual_sum <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
-    filterBounds(ghana_bounds)$
+    filterBounds(export_region)$
     filterDate(paste0(yr, "-01-01"), paste0(yr, "-12-31"))$
     select("precipitation")$
     sum()$                     # annual total in mm
@@ -303,7 +342,7 @@ chirps_tasks <- map(CHIRPS_YEARS, \(yr) {
     folder         = DRIVE_FOLDER,
     fileNamePrefix = paste0("chirps_ghana_", yr),
     scale          = 5566,
-    region         = ghana_bounds,
+    region         = export_region,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
@@ -370,8 +409,8 @@ download_from_drive <- function(drive_folder, prefix, local_dir) {
 # -- Uncomment once GEE tasks complete ----------------------------------------
 # download_from_drive(DRIVE_FOLDER, "landsat_ndvi_ghana_", out_landsat_vi)
 # download_from_drive(DRIVE_FOLDER, "landsat_evi_ghana_",  out_landsat_vi)
-# download_from_drive(DRIVE_FOLDER, "modis_ndvi_ghana_",   out_modis_vi)
-# download_from_drive(DRIVE_FOLDER, "modis_evi_ghana_",    out_modis_vi)
+download_from_drive(DRIVE_FOLDER, "modis_ndvi_16day_ghana_", out_modis_vi)
+download_from_drive(DRIVE_FOLDER, "modis_evi_16day_ghana_",  out_modis_vi)
 # download_from_drive(DRIVE_FOLDER, "modis_lc_ghana_",     out_land_cover)
 # download_from_drive(DRIVE_FOLDER, "chirps_ghana_",       out_chirps)
 
@@ -383,7 +422,7 @@ message(sprintf(
   "  Landsat EVI  (30 m):  %d tasks (landsat_evi_ghana_1995  … 2025)", length(evi_tasks)
 ))
 message(sprintf(
-  "  MODIS VI (250 m):     %d tasks (modis_{ndvi,evi}_ghana_2000 … 2025, %d yrs × 2)",
+  "  MODIS VI (250 m):     %d tasks (modis_{ndvi,evi}_16day_ghana_2000 … 2025, %d yrs × 2, 16-day series)",
   2L * length(modis_vi_tasks), length(modis_vi_tasks)
 ))
 message(sprintf(
@@ -436,9 +475,34 @@ evi_stack  <- stack_from_dir(out_landsat_vi, "^landsat_evi_ghana_\\d{4}\\.tif$",
 save_stack(ndvi_stack, out_landsat_vi, "landsat_ndvi_ghana_stack.tif")
 save_stack(evi_stack,  out_landsat_vi, "landsat_evi_ghana_stack.tif")
 
-# MODIS VI: NDVI and EVI are now separate single-band files — stack each directly.
-modis_ndvi_stk <- stack_from_dir(out_modis_vi, "^modis_ndvi_ghana_\\d{4}\\.tif$", "ndvi")
-modis_evi_stk  <- stack_from_dir(out_modis_vi, "^modis_evi_ghana_\\d{4}\\.tif$",  "evi")
+# MODIS VI: each yearly file holds the ~23 QA-masked 16-day composites (band = date). Derive the
+# per-pixel ANNUAL MEAN per year → annual stack, reproducing the old GEE-side annual-mean product so
+# the current annual-outcome scripts (b_03a, d_05, a_05) keep working. The raw 16-day files stay on
+# disk untouched for the peak-EVI (ESA-CCI-masked, annual-max) pipeline.
+annual_mean_stack <- function(dir, file_prefix, layer_prefix) {
+  # Match all files for this product, incl. any GEE tile shards (<prefix><yr>-0000...-0000...tif).
+  files <- list.files(dir, pattern = paste0("^", file_prefix, ".*\\.tif$"), full.names = TRUE)
+  if (length(files) == 0) {
+    message(sprintf("No %s files found in %s — run Section 8 first.", file_prefix, dir)); return(NULL)
+  }
+  years <- as.integer(stringr::str_extract(basename(files), "\\d{4}"))
+  yrs   <- sort(unique(years))
+  # Per year: mosaic any tiles into one ~23-band image, then per-pixel MEAN over the 16-day bands
+  # (masked/NA composites dropped). Reproduces the old GEE-side annual mean.
+  layers <- lapply(yrs, function(y) {
+    yf <- files[years == y]
+    r  <- if (length(yf) == 1L) terra::rast(yf) else terra::vrt(yf, overwrite = TRUE)
+    terra::mean(r, na.rm = TRUE)
+  })
+  stk <- terra::rast(layers)
+  names(stk) <- paste0(layer_prefix, "_", yrs)
+  message(sprintf("%s annual-mean stack: %d layers (%d–%d), %.0f m res, CRS EPSG:4326",
+                  toupper(layer_prefix), terra::nlyr(stk), min(yrs), max(yrs),
+                  mean(terra::res(stk)) * 111320))
+  stk
+}
+modis_ndvi_stk <- annual_mean_stack(out_modis_vi, "modis_ndvi_16day_ghana_", "ndvi")
+modis_evi_stk  <- annual_mean_stack(out_modis_vi, "modis_evi_16day_ghana_",  "evi")
 save_stack(modis_ndvi_stk, out_modis_vi, "modis_ndvi_ghana_stack.tif")
 save_stack(modis_evi_stk,  out_modis_vi, "modis_evi_ghana_stack.tif")
 

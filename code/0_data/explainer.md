@@ -32,7 +32,7 @@ they are tightly coupled to their processing.)
 |---------|-------------------|------|-------|--------|
 | Landsat NDVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` | 30 m | 1995–2025 | `data/raw/landsat_vi/landsat_ndvi_ghana_{year}.tif` + `landsat_ndvi_ghana_stack.tif` |
 | Landsat EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | 30 m | 1995–2025 | `data/raw/landsat_vi/landsat_evi_ghana_{year}.tif` + `landsat_evi_ghana_stack.tif` |
-| MODIS VI | `MODIS/061/MOD13Q1` (NDVI+EVI separate, QA-filtered annual mean) | 250 m | 2000–2025 | `data/raw/modis_vi/modis_{ndvi,evi}_ghana_stack.tif` |
+| MODIS VI | `MODIS/061/MOD13Q1` (NDVI+EVI, QA-filtered 16-day series → local annual mean) | 250 m | 2000–2025 | `data/raw/modis_vi/modis_{ndvi,evi}_16day_ghana_{year}.tif` → `modis_{ndvi,evi}_ghana_stack.tif` |
 | MODIS land cover | `MODIS/061/MCD12Q1` (IGBP `LC_Type1`) | 500 m | 2001–2024 | `data/raw/land_cover/modis_lc_ghana_stack.tif` |
 | CHIRPS precip | `UCSB-CHG/CHIRPS/DAILY` summed to annual mm | ~5.5 km | 1990–2025 | `data/raw/chirps/chirps_ghana_{year}.tif` |
 

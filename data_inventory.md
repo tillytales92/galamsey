@@ -131,7 +131,7 @@ descriptives.
 |---------|-------------------------|----------|-------|-----------|--------|-----|--------|
 | Landsat annual NDVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
 | Landsat annual EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
-| MODIS VI (NDVI + EVI) | `MODIS/061/MOD13Q1` (QA-filtered annual mean) | All Ghana | 2000–2025 | 250 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
+| MODIS VI (NDVI + EVI) | `MODIS/061/MOD13Q1` (QA-filtered 16-day series; annual mean derived locally) | All Ghana | 2000–2025 | 250 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
 
 **Why both sensors:** **Landsat** is finer (30 m, back to 1995) but ~30–36% NA/year (cloud);
 **MODIS** (`MOD13Q1`, 250 m, from 2000) is coarser than Landsat but QA-filtered to ~16% NA, so it
@@ -140,6 +140,19 @@ is far more complete year-to-year. The event study uses `ndvi_modis` as the head
 Landsat is the finer-grained, longer-history alternative. Missingness diagnostics:
 `0_data/d_05_ndvi.R`. *(MODIS VI upgraded from the 1 km `MOD13A2` to the 250 m `MOD13Q1` on
 2026-07-03 — same bands, `SummaryQA` scheme and scale factor; needs re-export.)*
+
+**Export region (2026-07-03):** `d_01` now restricts **all** its GEE exports to the Barenblitt study
+area (SW Ghana + 25 km buffer) via a single `export_region` variable — the full-Ghana 30 m Landsat
+export tiled into multiple GeoTIFFs, and the study area is all the analysis needs. The full-Ghana
+region is retained but commented out (one-line scale-up). The existing land-cover / CHIRPS files on
+disk are still national (not re-exported, since their data is unchanged); re-running those sections
+would produce study-area versions.
+
+**MODIS VI is now downloaded as the full QA-masked 16-day series** (`modis_{ndvi,evi}_16day_ghana_{yr}.tif`,
+~23 bands/yr), not a GEE-side annual mean — this is what the peak-EVI outcome (ESA CCI mask per
+16-day step → per-hex mean → annual max) requires. `d_01` Section 9 derives the annual-mean stacks
+(`modis_{ndvi,evi}_ghana_stack.tif`) from them locally, so the current annual-outcome scripts are
+unaffected.
 
 ---
 

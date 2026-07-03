@@ -14,11 +14,10 @@
 # Collection: MODIS/061/MOD13Q1
 # Bands:      NDVI, EVI — raw integer * 0.0001 → range [-0.2, 1.0]
 # QA:         SummaryQA: 0=good, 1=marginal, 2=snow/ice, 3=cloudy; keep ≤ 1.
-# Compositing: annual mean of QA-masked 16-day composites (23 per year).
-#   Mean preferred over max here: captures sustained greenness/degradation
-#   rather than peak-season values; consistent with the event-study outcome.
-# NDVI and EVI are exported as separate single-band files per year
-# (modis_ndvi_ghana_ / modis_evi_ghana_), stacked independently in d_01 Section 9.
+# Compositing: d_01 exports the FULL QA-masked 16-day series (modis_{ndvi,evi}_16day_ghana_{yr}.tif,
+#   ~23 bands/yr); d_01 Section 9 derives the annual-MEAN stacks read here
+#   (modis_{ndvi,evi}_ghana_stack.tif). The 16-day files also feed the peak-EVI pipeline (ESA CCI
+#   land-use mask applied per 16-day step → per-hex mean → annual MAX).
 # Resolution: 250 m (native MOD13Q1) — finer sibling of MOD13A2 (1 km).
 
 #the third data source is MODIS LandCover
@@ -71,8 +70,8 @@ na_by_year <- function(stk, label) {
 }
 
 na_all <- bind_rows(
-  na_by_year(ndvi,       "Landsat NDVI (250 m)"),
-  na_by_year(evi,        "Landsat EVI (250 m)"),
+  #na_by_year(ndvi,       "Landsat NDVI (250 m)"),
+  #na_by_year(evi,        "Landsat EVI (250 m)"),
   na_by_year(modis_ndvi, "MODIS NDVI (250 m)"),
   na_by_year(modis_evi,  "MODIS EVI (250 m)")
 )
