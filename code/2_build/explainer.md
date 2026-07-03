@@ -118,11 +118,11 @@ change      change    updated   added/     changes
 MODIS raster stacks. The slowest step (~4–5 hours at 1 km); only re-run if rasters change.
 
 **Inputs:**
-- `data/raw/ndvi/ndvi_ghana_stack.tif` — Landsat NDVI annual composites (1995–2025, 250 m)
-- `data/raw/evi/evi_ghana_stack.tif` — Landsat EVI
-- `data/raw/modis_vi/modis_ndvi_ghana_stack.tif` — MODIS MOD13A2 NDVI (2000–2025, 1 km)
+- `data/raw/landsat_vi/landsat_ndvi_ghana_stack.tif` — Landsat NDVI annual composites (1995–2025, 30 m)
+- `data/raw/landsat_vi/landsat_evi_ghana_stack.tif` — Landsat EVI
+- `data/raw/modis_vi/modis_ndvi_ghana_stack.tif` — MODIS MOD13Q1 NDVI (2000–2025, 250 m)
 - `data/raw/modis_vi/modis_evi_ghana_stack.tif` — MODIS EVI
-- `data/raw/land_cover/land_cover_ghana_stack.tif` — MODIS MCD12Q1 IGBP land cover (2001–2024)
+- `data/raw/land_cover/modis_lc_ghana_stack.tif` — MODIS MCD12Q1 IGBP land cover (2001–2024)
 - `data/raw/barenblitt/` — both shapefiles (for the no-mine mask)
 - `hex_{N}km_crosssection.rds` — for hex geometries and study extent
 

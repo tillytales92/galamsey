@@ -31,8 +31,8 @@ barenblitt_2019_path <- here("data", "raw", "barenblitt",
                               "FullConversiontoMiningExtent2019.shp")
 admin2_path          <- here("data", "raw", "shapefiles", "hdx_gh_admin",
                               "gha_admin2.shp")
-ndvi_stack_path      <- here("data", "raw", "ndvi", "ndvi_ghana_stack.tif")
-evi_stack_path       <- here("data", "raw", "evi",  "evi_ghana_stack.tif")
+ndvi_stack_path      <- here("data", "raw", "landsat_vi", "landsat_ndvi_ghana_stack.tif")
+evi_stack_path       <- here("data", "raw", "landsat_vi", "landsat_evi_ghana_stack.tif")
 # Landsat annual NDVI/EVI stacks (250 m, EPSG:4326, layers named ndvi_YYYY / evi_YYYY).
 # Built by d_01_download_gee.R Sections 7–8. Source that script first if files are absent.
 

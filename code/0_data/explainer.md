@@ -30,15 +30,16 @@ they are tightly coupled to their processing.)
 
 | Product | Source collection | Res. | Years | Output |
 |---------|-------------------|------|-------|--------|
-| Landsat NDVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` | 250 m | 1995–2025 | `data/raw/ndvi/ndvi_ghana_{year}.tif` + `ndvi_ghana_stack.tif` |
-| Landsat EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | 250 m | 1995–2025 | `data/raw/evi/evi_ghana_{year}.tif` + `evi_ghana_stack.tif` |
-| MODIS VI | `MODIS/061/MOD13A2` (NDVI+EVI, QA-filtered annual mean) | 1 km | 2000–2025 | `data/raw/modis_vi/modis_{ndvi,evi}_ghana_stack.tif` |
-| MODIS land cover | `MODIS/061/MCD12Q1` (IGBP `LC_Type1`) | 500 m | 2001–2024 | `data/raw/land_cover/land_cover_ghana_stack.tif` |
+| Landsat NDVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` | 30 m | 1995–2025 | `data/raw/landsat_vi/landsat_ndvi_ghana_{year}.tif` + `landsat_ndvi_ghana_stack.tif` |
+| Landsat EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | 30 m | 1995–2025 | `data/raw/landsat_vi/landsat_evi_ghana_{year}.tif` + `landsat_evi_ghana_stack.tif` |
+| MODIS VI | `MODIS/061/MOD13Q1` (NDVI+EVI separate, QA-filtered annual mean) | 250 m | 2000–2025 | `data/raw/modis_vi/modis_{ndvi,evi}_ghana_stack.tif` |
+| MODIS land cover | `MODIS/061/MCD12Q1` (IGBP `LC_Type1`) | 500 m | 2001–2024 | `data/raw/land_cover/modis_lc_ghana_stack.tif` |
 | CHIRPS precip | `UCSB-CHG/CHIRPS/DAILY` summed to annual mm | ~5.5 km | 1990–2025 | `data/raw/chirps/chirps_ghana_{year}.tif` |
 
-**Workflow (numbered sections in the script):** Secs 1–6 submit all export tasks; Sec 6b is an
-optional blocking monitor; Sec 7 downloads completed exports from Drive (uncomment once the EE
-Tasks tab shows COMPLETED); Sec 8 stacks the downloaded TIFs into multi-layer GeoTIFFs.
+**Workflow (numbered sections in the script):** Secs 1–7 submit all export tasks (5 = Landsat +
+MODIS vegetation indices, 6 = land cover, 7 = CHIRPS); Sec 7b is an optional blocking monitor;
+Sec 8 downloads completed exports from Drive (uncomment once the EE Tasks tab shows COMPLETED);
+Sec 9 stacks the downloaded TIFs into multi-layer GeoTIFFs.
 
 **Re-run when:** the VI/land-cover/precip window needs extending, or a collection is updated.
 

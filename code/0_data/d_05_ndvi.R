@@ -2,24 +2,24 @@
 #Look at NDVI/EVI data — missing value diagnostics
 #NDVI data comes from two sources:
 #1. Landsat
-#   NDVI   — Landsat C02 T1 L2 Annual NDVI composite, 250 m, Ghana, 1995–2025
+#   NDVI   — Landsat C02 T1 L2 Annual NDVI composite, 30 m, Ghana, 1995–2025
 #            Collection: LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI
-#            → data/raw/ndvi/ndvi_ghana_{year}.tif
-#   EVI    — Landsat C02 T1 L2 Annual EVI composite, 250 m, Ghana, 1995–2025
+#            → data/raw/landsat_vi/landsat_ndvi_ghana_{year}.tif
+#   EVI    — Landsat C02 T1 L2 Annual EVI composite, 30 m, Ghana, 1995–2025
 #            Collection: LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI
-#            → data/raw/evi/evi_ghana_{year}.tif
+#            → data/raw/landsat_vi/landsat_evi_ghana_{year}.tif
 #2. MODIS
-#5c. MODIS VI — MOD13A2.061 Terra Vegetation Indices 16-Day 1km
+#5c. MODIS VI — MOD13Q1.061 Terra Vegetation Indices 16-Day 250m
 #
-# Collection: MODIS/061/MOD13A2
+# Collection: MODIS/061/MOD13Q1
 # Bands:      NDVI, EVI — raw integer * 0.0001 → range [-0.2, 1.0]
 # QA:         SummaryQA: 0=good, 1=marginal, 2=snow/ice, 3=cloudy; keep ≤ 1.
 # Compositing: annual mean of QA-masked 16-day composites (23 per year).
 #   Mean preferred over max here: captures sustained greenness/degradation
 #   rather than peak-season values; consistent with the event-study outcome.
-# Both NDVI and EVI are exported in a single 2-band file per year to halve
-# the task count; Section 8 splits them into separate stacks on download.
-# Resolution: 1000 m (native MOD13A2).
+# NDVI and EVI are exported as separate single-band files per year
+# (modis_ndvi_ghana_ / modis_evi_ghana_), stacked independently in d_01 Section 9.
+# Resolution: 250 m (native MOD13Q1) — finer sibling of MOD13A2 (1 km).
 
 #the third data source is MODIS LandCover
 #MODIS Land Cover — MCD12Q1.061 Land Cover Type Yearly 500m
@@ -44,10 +44,10 @@ conflicts_prefer(
 )
 
 # Data --------------------------------------------------------------------
-ndvi_stack_path       <- here("data", "raw", "ndvi",     "ndvi_ghana_stack.tif")
-evi_stack_path        <- here("data", "raw", "evi",      "evi_ghana_stack.tif")
-modis_ndvi_stack_path <- here("data", "raw", "modis_vi", "modis_ndvi_ghana_stack.tif")
-modis_evi_stack_path  <- here("data", "raw", "modis_vi", "modis_evi_ghana_stack.tif")
+ndvi_stack_path       <- here("data", "raw", "landsat_vi", "landsat_ndvi_ghana_stack.tif")
+evi_stack_path        <- here("data", "raw", "landsat_vi", "landsat_evi_ghana_stack.tif")
+modis_ndvi_stack_path <- here("data", "raw", "modis_vi",   "modis_ndvi_ghana_stack.tif")
+modis_evi_stack_path  <- here("data", "raw", "modis_vi",   "modis_evi_ghana_stack.tif")
 
 ndvi       <- terra::rast(ndvi_stack_path)
 evi        <- terra::rast(evi_stack_path)
@@ -73,8 +73,8 @@ na_by_year <- function(stk, label) {
 na_all <- bind_rows(
   na_by_year(ndvi,       "Landsat NDVI (250 m)"),
   na_by_year(evi,        "Landsat EVI (250 m)"),
-  na_by_year(modis_ndvi, "MODIS NDVI (1 km)"),
-  na_by_year(modis_evi,  "MODIS EVI (1 km)")
+  na_by_year(modis_ndvi, "MODIS NDVI (250 m)"),
+  na_by_year(modis_evi,  "MODIS EVI (250 m)")
 )
 
 print(na_all |> select(product, year, na_count, total, pct_na), n = Inf)
@@ -86,8 +86,8 @@ ggplot(na_all, aes(year, pct_na, colour = product)) +
   scale_colour_manual(values = c(
     "Landsat NDVI (250 m)" = "#1b7837",
     "Landsat EVI (250 m)"  = "#762a83",
-    "MODIS NDVI (1 km)"    = "#74c476",
-    "MODIS EVI (1 km)"     = "#c994c7"
+    "MODIS NDVI (250 m)"   = "#74c476",
+    "MODIS EVI (250 m)"    = "#c994c7"
   )) +
   labs(title = "Missing pixels by year — Landsat & MODIS NDVI / EVI",
        x = NULL, y = "% NA cells", colour = NULL) +
@@ -105,7 +105,7 @@ plot(terra::app(is.na(modis_evi),  sum), main = sprintf("MODIS EVI: years with N
 
 # MODIS Land Cover (MCD12Q1) ------------------------------------------------
 
-lc_stack_path <- here("data", "raw", "land_cover", "land_cover_ghana_stack.tif")
+lc_stack_path <- here("data", "raw", "land_cover", "modis_lc_ghana_stack.tif")
 lc_stack      <- terra::rast(lc_stack_path)
 lc_years      <- as.integer(stringr::str_extract(names(lc_stack), "\\d{4}"))
 message(sprintf("Land cover stack: %d layers (%d–%d)", terra::nlyr(lc_stack), min(lc_years), max(lc_years)))
@@ -356,7 +356,7 @@ if (file.exists(fc_cache)) {
                   paste(gap_yrs, collapse = ", ")))
   message("  NOTE: the stack ends at ", max(lc_years),
           " although d_01_download_gee.R requests LCOVER_YEARS = 2001:2024 — the ",
-          "2021-2024 land-cover layers appear to be missing from land_cover_ghana_stack.tif ",
+          "2021-2024 land-cover layers appear to be missing from modis_lc_ghana_stack.tif ",
           "(re-download + re-stack in d_01 Sec 8 to recover those forestcrop years).")
 
   # --- CAUSE 2: class-2 share of land pixels + % of hexes holding any class-2 pixel, by year ---
@@ -398,4 +398,83 @@ if (file.exists(fc_cache)) {
 
 } else {
   message("Forestcrop diagnostics skipped — hex_5km_crosssection.rds not found (run b_01_cross_section.R).")
+}
+
+# Forestcrop mask-definition comparison — Ankobra basin only --------------------
+# The event-panel *_forestcrop columns (b_03a_vi_panel.R) mask each VI layer to a SINGLE IGBP
+# class — class 2, Evergreen Broadleaf Forest — before averaging per hex. A hex is NA in a year
+# unless it holds >=1 pixel of the mask class, so the narrow class-2 definition drives most of the
+# missingness (CAUSE 2 above). Here we test, for the Ankobra basin's 5 km hexes, how the hex-year
+# NA rate would change under broader outcome-mask definitions we are considering:
+#   forest      = IGBP 1-5   (all forest types, not just evergreen broadleaf)
+#   cropland    = IGBP 12,14 (cropland + cropland/natural-vegetation mosaic)
+#   forest+crop = union of the two
+# each compared against the current class-2-only baseline. Same machinery as fc_diag: mask VI to
+# the class set, a hex with no in-mask pixel -> forest-masked mean is NaN -> NA.
+
+mask_defs <- list(
+  "class2 (current)"        = 2L,
+  "forest (1-5)"            = 1:5,
+  "cropland (12,14)"        = c(12L, 14L),
+  "forest+crop (1-5,12,14)" = c(1:5, 12L, 14L)
+)
+
+fc_hex_cache <- here("data", "processed", "hex_5km_crosssection.rds")
+if (file.exists(fc_hex_cache) && exists("ankobra_basin")) {
+
+  # 5 km hexes intersecting the Ankobra basin polygon
+  hex_anko_sf <- st_transform(readRDS(fc_hex_cache)$hex_sf, 4326)
+  hex_anko_sf <- hex_anko_sf[st_intersects(hex_anko_sf, ankobra_basin, sparse = FALSE)[, 1], ]
+  hex_anko_v  <- terra::vect(hex_anko_sf)
+  message(sprintf("\n=== Ankobra basin forestcrop mask comparison: %d of the 5 km hexes intersect the basin ===",
+                  nrow(hex_anko_sf)))
+
+  # LC resampled onto the MODIS VI grid over the basin (matches *_modis_forestcrop build)
+  vi_tmpl_anko <- terra::crop(modis_ndvi[[1]], terra::ext(hex_anko_v))
+  lc_anko_res  <- terra::resample(terra::crop(lc_stack, terra::ext(hex_anko_v)),
+                                  vi_tmpl_anko, method = "near")
+
+  # Per definition x year: % of basin hexes with NO in-mask pixel -> forestcrop VI is NA
+  na_rate_hex <- function(classes) {
+    purrr::map_dfr(seq_along(lc_years), function(i) {
+      m   <- terra::ifel(lc_anko_res[[i]] %in% classes, 1L, NA)
+      cnt <- terra::extract(m, hex_anko_v, fun = sum, na.rm = TRUE, ID = FALSE)[[1]]  # NA/0 = no in-mask pixel
+      tibble(year = lc_years[i], na_pct = round(100 * mean(is.na(cnt) | cnt == 0), 1))
+    })
+  }
+
+  fc_defs <- purrr::imap_dfr(mask_defs, \(cls, nm) na_rate_hex(cls) |> mutate(definition = nm)) |>
+    mutate(definition = factor(definition, levels = names(mask_defs)))
+
+  # Summary: mean / range of the hex-year NA rate across covered years, per definition
+  fc_defs_summary <- fc_defs |>
+    group_by(definition) |>
+    summarise(mean_na_pct = round(mean(na_pct), 1),
+              min_na_pct  = min(na_pct),
+              max_na_pct  = max(na_pct), .groups = "drop")
+  message("Hex-year NA rate by mask definition (covered LC years only; excludes 100%-NA gap years):")
+  print(as.data.frame(fc_defs_summary), row.names = FALSE)
+
+  p_fc_defs <- ggplot(fc_defs, aes(year, na_pct, colour = definition)) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 1.4) +
+    scale_colour_manual(values = c(
+      "class2 (current)"        = "#c0392b",
+      "forest (1-5)"            = "#1a8a1a",
+      "cropland (12,14)"        = "#d95f02",
+      "forest+crop (1-5,12,14)" = "#6a51a3")) +
+    labs(title    = "Ankobra basin: forestcrop NA rate shrinks as the land-cover mask broadens",
+         subtitle = "% of basin 5 km hexes with no in-mask pixel in that year (=> forestcrop VI is NA)",
+         x = NULL, y = "% hex-years NA", colour = "mask definition") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+  print(p_fc_defs)
+
+  dir.create(here("outputs", "figures", "ndvi"), recursive = TRUE, showWarnings = FALSE)
+  ggsave(here("outputs", "figures", "ndvi", "forestcrop_maskdefs_ankobra.png"),
+         p_fc_defs, width = 8, height = 5, dpi = 150)
+  message("Saved: outputs/figures/ndvi/forestcrop_maskdefs_ankobra.png")
+
+} else {
+  message("Ankobra mask-definition diagnostics skipped — need hex_5km_crosssection.rds and the ankobra_basin object.")
 }

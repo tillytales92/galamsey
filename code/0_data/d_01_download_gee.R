@@ -8,24 +8,31 @@
 # flow direction, hex flow graph), so the download and compute are tightly coupled
 # and cannot sensibly be separated.
 #
+# Filenames are source-explicit ({source}_{product}_ghana_{year}) so that additional
+# products (e.g. a second land-cover source) can be added without collisions.
+#
 # Downloads:
-#   NDVI       — Landsat C02 T1 L2 Annual composite, 250 m, Ghana, 1995–2025
-#                → data/raw/ndvi/ndvi_ghana_{year}.tif + ndvi_ghana_stack.tif
-#   EVI        — Landsat C02 T1 L2 Annual composite, 250 m, Ghana, 1995–2025
-#                → data/raw/evi/evi_ghana_{year}.tif  + evi_ghana_stack.tif
-#   MODIS VI   — MOD13A2 QA-filtered annual mean, 1 km, Ghana, 2000–2025 (NDVI + EVI)
-#                → data/raw/modis_vi/modis_vi_ghana_{year}.tif (2 bands per file)
-#                  stacked into modis_ndvi_ghana_stack.tif + modis_evi_ghana_stack.tif
-#   Land cover — MCD12Q1 IGBP annual, 500 m, Ghana, 2001–2024
-#                → data/raw/land_cover/land_cover_ghana_{year}.tif + *_stack.tif
-#   CHIRPS     — Daily precipitation summed to annual totals (~5.5 km), Ghana, 1990–2025
-#                → data/raw/chirps/chirps_ghana_{year}.tif
+#   Landsat NDVI — LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI, 30 m, Ghana, 1995–2025
+#                  → data/raw/landsat_vi/landsat_ndvi_ghana_{year}.tif + landsat_ndvi_ghana_stack.tif
+#   Landsat EVI  — LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI,  30 m, Ghana, 1995–2025
+#                  → data/raw/landsat_vi/landsat_evi_ghana_{year}.tif  + landsat_evi_ghana_stack.tif
+#   MODIS NDVI   — MOD13Q1 QA-filtered annual mean, 250 m, Ghana, 2000–2025
+#                  → data/raw/modis_vi/modis_ndvi_ghana_{year}.tif + modis_ndvi_ghana_stack.tif
+#   MODIS EVI    — MOD13Q1 QA-filtered annual mean, 250 m, Ghana, 2000–2025
+#                  → data/raw/modis_vi/modis_evi_ghana_{year}.tif  + modis_evi_ghana_stack.tif
+#   Land cover   — MCD12Q1 IGBP annual, 500 m, Ghana, 2001–2024
+#                  → data/raw/land_cover/modis_lc_ghana_{year}.tif + modis_lc_ghana_stack.tif
+#   CHIRPS       — Daily precipitation summed to annual totals (~5.5 km), Ghana, 1990–2025
+#                  → data/raw/chirps/chirps_ghana_{year}.tif
+#
+# Drive layout: all products export to one Drive folder (ghana_mining_gee_exports);
+# the source-explicit filenames keep them unambiguous within it.
 #
 # Workflow:
-#   Secs 1–6  submit all GEE export tasks to Google Drive.
-#   Sec 6b    optional blocking monitor (uncomment to poll task completion).
-#   Sec 7     download completed exports from Drive (uncomment once tasks show COMPLETED).
-#   Sec 8     stack downloaded TIFs into multi-layer GeoTIFFs for fast loading.
+#   Secs 1–7  submit all GEE export tasks to Google Drive (5 VIs, 6 land cover, 7 CHIRPS).
+#   Sec 7b    optional blocking monitor (uncomment to poll task completion).
+#   Sec 8     download completed exports from Drive (uncomment once tasks show COMPLETED).
+#   Sec 9     stack downloaded TIFs into multi-layer GeoTIFFs for fast loading.
 #
 # Run ee_Authenticate() / ee_Initialize(drive = TRUE) interactively —
 # they open browser windows and cannot run unattended.
@@ -71,17 +78,20 @@ cat(sprintf("Ghana bounding box: %.3f°W – %.3f°E, %.3f°N – %.3f°N\n",
             bbox_ghana[["ymin"]], bbox_ghana[["ymax"]]))
 
 ####4. Parameters ####
+# All products export to one Drive folder; filenames are source-explicit
+# ({source}_{product}_ghana_{year}) so they never collide within it.
 DRIVE_FOLDER <- "ghana_mining_gee_exports"  # top-level Google Drive folder
 
 NDVI_YEARS   <- 1995:2025  # Landsat composite available from 1984; 1995 aligns with RS pipeline
 CHIRPS_YEARS <- 1990:2025  # CHIRPS daily starts 1981-01-01
 
-out_ndvi   <- here("data", "raw", "ndvi")
-out_chirps <- here("data", "raw", "chirps")
-dir.create(out_ndvi,   recursive = TRUE, showWarnings = FALSE)
-dir.create(out_chirps, recursive = TRUE, showWarnings = FALSE)
+# Landsat NDVI + EVI share one local folder (distinguished by the landsat_ndvi_ / landsat_evi_ prefix)
+out_landsat_vi <- here("data", "raw", "landsat_vi")
+out_chirps     <- here("data", "raw", "chirps")
+dir.create(out_landsat_vi, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_chirps,     recursive = TRUE, showWarnings = FALSE)
 
-MODIS_VI_YEARS <- 2000:2025   # MOD13A2 starts 2000-02-18; covers Barenblitt window + margin
+MODIS_VI_YEARS <- 2000:2025   # MOD13Q1 starts 2000-02-18; covers Barenblitt window + margin
 LCOVER_YEARS   <- 2001:2024   # MCD12Q1 starts 2001; ~1 yr processing lag → 2024 is safe
 
 out_modis_vi   <- here("data", "raw", "modis_vi")
@@ -89,7 +99,7 @@ out_land_cover <- here("data", "raw", "land_cover")
 dir.create(out_modis_vi,   recursive = TRUE, showWarnings = FALSE)
 dir.create(out_land_cover, recursive = TRUE, showWarnings = FALSE)
 
-####5. NDVI — Landsat C02 T1 L2 Annual Composite (30 m) ####
+####5. Landsat NDVI — C02 T1 L2 Annual Composite (30 m) ####
 #
 # Collection: LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI
 # Band:       NDVI, float, already scaled to [-1, 1] — no scaling factor needed.
@@ -101,7 +111,7 @@ dir.create(out_land_cover, recursive = TRUE, showWarnings = FALSE)
 # No further QA masking needed — use first() to retrieve the single annual image.
 # Resolution: 30 m (Landsat native); export at 30 m.
 
-message("=== Submitting NDVI export tasks ===")
+message("=== Submitting Landsat NDVI export tasks ===")
 ndvi_tasks <- map(NDVI_YEARS, \(yr) {
   annual_ndvi <- ee$ImageCollection("LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI")$
     filterBounds(ghana_bounds)$
@@ -112,24 +122,24 @@ ndvi_tasks <- map(NDVI_YEARS, \(yr) {
 
   task <- ee$batch$Export$image$toDrive(
     image          = annual_ndvi,
-    description    = paste0("ndvi_ghana_", yr),
+    description    = paste0("landsat_ndvi_ghana_", yr),
     folder         = DRIVE_FOLDER,
-    fileNamePrefix = paste0("ndvi_ghana_", yr),
-    scale          = 250,
+    fileNamePrefix = paste0("landsat_ndvi_ghana_", yr),
+    scale          = 30,
     region         = ghana_bounds,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
   )
   task$start()
-  message(sprintf("  Submitted: ndvi_ghana_%d", yr))
+  message(sprintf("  Submitted: landsat_ndvi_ghana_%d", yr))
   task
 })
 
 message(sprintf("Submitted %d NDVI tasks to Drive folder '%s'.",
                 length(ndvi_tasks), DRIVE_FOLDER))
 
-####5b. EVI — Landsat C02 T1 L2 Annual Composite (250 m) ####
+####5b. Landsat EVI — C02 T1 L2 Annual Composite (30 m) ####
 #
 # Collection: LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI
 # Band:       EVI, float, already scaled to [-1, 1].
@@ -140,10 +150,9 @@ message(sprintf("Submitted %d NDVI tasks to Drive folder '%s'.",
 # EVI adds a canopy background correction and uses the blue band to reduce
 # aerosol influence — more informative than NDVI in densely vegetated areas.
 
-out_evi <- here("data", "raw", "evi")
-dir.create(out_evi, recursive = TRUE, showWarnings = FALSE)
+# EVI shares the out_landsat_vi folder created in Section 4 (no separate dir needed).
 
-message("\n=== Submitting EVI export tasks ===")
+message("\n=== Submitting Landsat EVI export tasks ===")
 evi_tasks <- map(NDVI_YEARS, \(yr) {
   annual_evi <- ee$ImageCollection("LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI")$
     filterBounds(ghana_bounds)$
@@ -154,38 +163,40 @@ evi_tasks <- map(NDVI_YEARS, \(yr) {
 
   task <- ee$batch$Export$image$toDrive(
     image          = annual_evi,
-    description    = paste0("evi_ghana_", yr),
+    description    = paste0("landsat_evi_ghana_", yr),
     folder         = DRIVE_FOLDER,
-    fileNamePrefix = paste0("evi_ghana_", yr),
-    scale          = 250,
+    fileNamePrefix = paste0("landsat_evi_ghana_", yr),
+    scale          = 30,
     region         = ghana_bounds,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
   )
   task$start()
-  message(sprintf("  Submitted: evi_ghana_%d", yr))
+  message(sprintf("  Submitted: landsat_evi_ghana_%d", yr))
   task
 })
 
 message(sprintf("Submitted %d EVI tasks to Drive folder '%s'.",
                 length(evi_tasks), DRIVE_FOLDER))
 
-####5c. MODIS VI — MOD13A2.061 Terra Vegetation Indices 16-Day 1km ####
+####5c. MODIS VI — MOD13Q1.061 Terra Vegetation Indices 16-Day 250m ####
 #
-# Collection: MODIS/061/MOD13A2
+# Collection: MODIS/061/MOD13Q1
 # Bands:      NDVI, EVI — raw integer * 0.0001 → range [-0.2, 1.0]
 # QA:         SummaryQA: 0=good, 1=marginal, 2=snow/ice, 3=cloudy; keep ≤ 1.
 # Compositing: annual mean of QA-masked 16-day composites (23 per year).
 #   Mean preferred over max here: captures sustained greenness/degradation
 #   rather than peak-season values; consistent with the event-study outcome.
-# Both NDVI and EVI are exported in a single 2-band file per year to halve
-# the task count; Section 8 splits them into separate stacks on download.
-# Resolution: 1000 m (native MOD13A2).
+# NDVI and EVI are exported as SEPARATE single-band files (modis_ndvi_ghana_ /
+#   modis_evi_ghana_) — source-explicit names, uniform with the Landsat exports,
+#   and simpler to stack (no band-splitting in Section 8). Two export tasks/year.
+# Resolution: 250 m (native MOD13Q1) — finer sibling of MOD13A2 (1 km); same
+#   band names, SummaryQA scheme, and 0.0001 scale factor.
 
-message("\n=== Submitting MODIS VI (MOD13A2) export tasks ===")
+message("\n=== Submitting MODIS VI (MOD13Q1) export tasks ===")
 modis_vi_tasks <- map(MODIS_VI_YEARS, \(yr) {
-  annual_vi <- ee$ImageCollection("MODIS/061/MOD13A2")$
+  annual_vi <- ee$ImageCollection("MODIS/061/MOD13Q1")$
     filterBounds(ghana_bounds)$
     filterDate(paste0(yr, "-01-01"), paste0(yr + 1L, "-01-01"))$
     map(function(img) {
@@ -196,26 +207,40 @@ modis_vi_tasks <- map(MODIS_VI_YEARS, \(yr) {
     multiply(0.0001)$              # apply MODIS scale factor → [-0.2, 1.0]
     rename(list(paste0("ndvi_", yr), paste0("evi_", yr)))
 
-  task <- ee$batch$Export$image$toDrive(
-    image          = annual_vi,
-    description    = paste0("modis_vi_ghana_", yr),
+  ndvi_task <- ee$batch$Export$image$toDrive(
+    image          = annual_vi$select(paste0("ndvi_", yr)),
+    description    = paste0("modis_ndvi_ghana_", yr),
     folder         = DRIVE_FOLDER,
-    fileNamePrefix = paste0("modis_vi_ghana_", yr),
-    scale          = 1000,
+    fileNamePrefix = paste0("modis_ndvi_ghana_", yr),
+    scale          = 250,
     region         = ghana_bounds,
     crs            = "EPSG:4326",
     maxPixels      = 1e10,
     fileFormat     = "GeoTIFF"
   )
-  task$start()
-  message(sprintf("  Submitted: modis_vi_ghana_%d", yr))
-  task
+  evi_task <- ee$batch$Export$image$toDrive(
+    image          = annual_vi$select(paste0("evi_", yr)),
+    description    = paste0("modis_evi_ghana_", yr),
+    folder         = DRIVE_FOLDER,
+    fileNamePrefix = paste0("modis_evi_ghana_", yr),
+    scale          = 250,
+    region         = ghana_bounds,
+    crs            = "EPSG:4326",
+    maxPixels      = 1e10,
+    fileFormat     = "GeoTIFF"
+  )
+  ndvi_task$start()
+  evi_task$start()
+  message(sprintf("  Submitted: modis_ndvi_ghana_%d + modis_evi_ghana_%d", yr, yr))
+  list(ndvi = ndvi_task, evi = evi_task)
 })
 
-message(sprintf("Submitted %d MODIS VI tasks to Drive folder '%s'.",
-                length(modis_vi_tasks), DRIVE_FOLDER))
+message(sprintf("Submitted %d MODIS VI tasks (%d years × 2 indices) to Drive folder '%s'.",
+                2L * length(modis_vi_tasks), length(modis_vi_tasks), DRIVE_FOLDER))
 
-####5d. MODIS Land Cover — MCD12Q1.061 Land Cover Type Yearly 500m ####
+####6. Land Cover — MODIS MCD12Q1.061 Land Cover Type Yearly 500m ####
+# Kept in its own section (separate from the Section 5 vegetation indices); the
+# modis_lc_ prefix leaves room for a second land-cover product (e.g. ESA CCI) later.
 #
 # Collection: MODIS/061/MCD12Q1
 # Band:       LC_Type1 — IGBP classification, 17 classes (uint8, no scale factor).
@@ -237,9 +262,9 @@ lc_tasks <- map(LCOVER_YEARS, \(yr) {
 
   task <- ee$batch$Export$image$toDrive(
     image          = annual_lc,
-    description    = paste0("land_cover_ghana_", yr),
+    description    = paste0("modis_lc_ghana_", yr),
     folder         = DRIVE_FOLDER,
-    fileNamePrefix = paste0("land_cover_ghana_", yr),
+    fileNamePrefix = paste0("modis_lc_ghana_", yr),
     scale          = 500,
     region         = ghana_bounds,
     crs            = "EPSG:4326",
@@ -247,14 +272,14 @@ lc_tasks <- map(LCOVER_YEARS, \(yr) {
     fileFormat     = "GeoTIFF"
   )
   task$start()
-  message(sprintf("  Submitted: land_cover_ghana_%d", yr))
+  message(sprintf("  Submitted: modis_lc_ghana_%d", yr))
   task
 })
 
 message(sprintf("Submitted %d MODIS Land Cover tasks to Drive folder '%s'.",
                 length(lc_tasks), DRIVE_FOLDER))
 
-####6. CHIRPS — Daily Precipitation → Annual Totals ####
+####7. CHIRPS — Daily Precipitation → Annual Totals ####
 #
 # Collection: UCSB-CHG/CHIRPS/DAILY (Climate Hazards Group InfraRed Precipitation
 #             with Station data, v2.0)
@@ -291,17 +316,18 @@ chirps_tasks <- map(CHIRPS_YEARS, \(yr) {
 message(sprintf("Submitted %d CHIRPS tasks to Drive folder '%s'.",
                 length(chirps_tasks), DRIVE_FOLDER))
 
-####6b. Monitor tasks (optional — blocks R until all complete) ####
+####7b. Monitor tasks (optional — blocks R until all complete) ####
 # Uncomment to poll GEE for task completion. Each task typically takes
 # 5–20 min. With many tasks, check the Tasks tab rather than blocking R.
+# NOTE: modis_vi_tasks is a list of per-year list(ndvi=, evi=) pairs, so flatten first.
 #
-# walk(ndvi_tasks,       ee_monitoring)
-# walk(evi_tasks,        ee_monitoring)
-# walk(modis_vi_tasks,   ee_monitoring)
-# walk(lc_tasks,         ee_monitoring)
-# walk(chirps_tasks,     ee_monitoring)
+# walk(ndvi_tasks,                      ee_monitoring)
+# walk(evi_tasks,                       ee_monitoring)
+# walk(purrr::flatten(modis_vi_tasks),  ee_monitoring)
+# walk(lc_tasks,                        ee_monitoring)
+# walk(chirps_tasks,                    ee_monitoring)
 
-####7. Download from Google Drive ####
+####8. Download from Google Drive ####
 # Run AFTER all GEE tasks show "COMPLETED" in the Tasks tab.
 # Skips files already present locally (overwrite = FALSE).
 
@@ -342,33 +368,35 @@ download_from_drive <- function(drive_folder, prefix, local_dir) {
 }
 
 # -- Uncomment once GEE tasks complete ----------------------------------------
-# download_from_drive(DRIVE_FOLDER, "ndvi_ghana_",       out_ndvi)
-# download_from_drive(DRIVE_FOLDER, "evi_ghana_",        out_evi)
-#download_from_drive(DRIVE_FOLDER, "modis_vi_ghana_",   out_modis_vi)
-#download_from_drive(DRIVE_FOLDER, "land_cover_ghana_", out_land_cover)
-# download_from_drive(DRIVE_FOLDER, "chirps_ghana_",     out_chirps)
+# download_from_drive(DRIVE_FOLDER, "landsat_ndvi_ghana_", out_landsat_vi)
+# download_from_drive(DRIVE_FOLDER, "landsat_evi_ghana_",  out_landsat_vi)
+# download_from_drive(DRIVE_FOLDER, "modis_ndvi_ghana_",   out_modis_vi)
+# download_from_drive(DRIVE_FOLDER, "modis_evi_ghana_",    out_modis_vi)
+# download_from_drive(DRIVE_FOLDER, "modis_lc_ghana_",     out_land_cover)
+# download_from_drive(DRIVE_FOLDER, "chirps_ghana_",       out_chirps)
 
 message("\n=== d_01_download.R: export tasks submitted ===")
 message(sprintf(
-  "  NDVI (Landsat):     %d tasks (ndvi_ghana_1995 … 2025, 250 m)", length(ndvi_tasks)
+  "  Landsat NDVI (30 m):  %d tasks (landsat_ndvi_ghana_1995 … 2025)", length(ndvi_tasks)
 ))
 message(sprintf(
-  "  EVI  (Landsat):     %d tasks (evi_ghana_1995  … 2025, 250 m)", length(evi_tasks)
+  "  Landsat EVI  (30 m):  %d tasks (landsat_evi_ghana_1995  … 2025)", length(evi_tasks)
 ))
 message(sprintf(
-  "  MODIS VI (1 km):    %d tasks (modis_vi_ghana_2000 … 2025, NDVI+EVI)", length(modis_vi_tasks)
+  "  MODIS VI (250 m):     %d tasks (modis_{ndvi,evi}_ghana_2000 … 2025, %d yrs × 2)",
+  2L * length(modis_vi_tasks), length(modis_vi_tasks)
 ))
 message(sprintf(
-  "  Land cover (500 m): %d tasks (land_cover_ghana_2001 … 2024, IGBP LC_Type1)", length(lc_tasks)
+  "  Land cover (500 m):   %d tasks (modis_lc_ghana_2001 … 2024, IGBP LC_Type1)", length(lc_tasks)
 ))
 message(sprintf(
-  "  CHIRPS:             %d tasks (chirps_ghana_1990 … 2025)", length(chirps_tasks)
+  "  CHIRPS:               %d tasks (chirps_ghana_1990 … 2025)", length(chirps_tasks)
 ))
 message("  Monitor: code.earthengine.google.com → Tasks tab")
-message("  Download: uncomment Section 7 once all tasks show COMPLETED")
+message("  Download: uncomment Section 8 once all tasks show COMPLETED")
 
-####8. Load Downloaded TIFs into Raster Stacks ####
-# Run AFTER Section 7 has downloaded all files locally.
+####9. Load Downloaded TIFs into Raster Stacks ####
+# Run AFTER Section 8 has downloaded all files locally.
 # terra::rast() on a character vector reads and stacks all layers in one call.
 # Layers are named by year for easy subsetting: ndvi_stack[["ndvi_2010"]]
 # CRS is EPSG:4326 as exported; reproject to UTM30N (EPSG:32630) in analysis
@@ -377,7 +405,7 @@ message("  Download: uncomment Section 7 once all tasks show COMPLETED")
 stack_from_dir <- function(dir, pattern, prefix) {
   files <- sort(list.files(dir, pattern = pattern, full.names = TRUE))
   if (length(files) == 0) {
-    message(sprintf("No %s files found in %s — run Section 7 first.", prefix, dir))
+    message(sprintf("No %s files found in %s — run Section 8 first.", prefix, dir))
     return(NULL)
   }
   stk   <- terra::rast(files)
@@ -390,68 +418,30 @@ stack_from_dir <- function(dir, pattern, prefix) {
   stk
 }
 
-ndvi_stack <- stack_from_dir(out_ndvi, "^ndvi_ghana_\\d{4}\\.tif$", "ndvi")
-evi_stack  <- stack_from_dir(out_evi,  "^evi_ghana_\\d{4}\\.tif$",  "evi")
-
-# Save stacks as multi-layer GeoTIFFs in their respective raw data folders.
-# Skips the write if the stack could not be built (NULL) or if the file
-# already exists — re-run manually if you want to force an overwrite.
-if (!is.null(ndvi_stack)) {
-  ndvi_out <- file.path(out_ndvi, "ndvi_ghana_stack.tif")
-  if (!file.exists(ndvi_out)) {
-    terra::writeRaster(ndvi_stack, ndvi_out, overwrite = FALSE)
-    message(sprintf("Saved: %s", ndvi_out))
+# Small helper: write a stack to <dir>/<name>.tif, skipping NULL or existing files.
+save_stack <- function(stk, dir, name, ...) {
+  if (is.null(stk)) return(invisible(NULL))
+  out <- file.path(dir, name)
+  if (!file.exists(out)) {
+    terra::writeRaster(stk, out, overwrite = FALSE, ...)
+    message(sprintf("Saved: %s", out))
   } else {
-    message(sprintf("Skipping (already exists): %s", ndvi_out))
+    message(sprintf("Skipping (already exists): %s", out))
   }
 }
 
-if (!is.null(evi_stack)) {
-  evi_out <- file.path(out_evi, "evi_ghana_stack.tif")
-  if (!file.exists(evi_out)) {
-    terra::writeRaster(evi_stack, evi_out, overwrite = FALSE)
-    message(sprintf("Saved: %s", evi_out))
-  } else {
-    message(sprintf("Skipping (already exists): %s", evi_out))
-  }
-}
+# Landsat NDVI + EVI share out_landsat_vi; distinguished by the landsat_ndvi_ / landsat_evi_ prefix.
+ndvi_stack <- stack_from_dir(out_landsat_vi, "^landsat_ndvi_ghana_\\d{4}\\.tif$", "ndvi")
+evi_stack  <- stack_from_dir(out_landsat_vi, "^landsat_evi_ghana_\\d{4}\\.tif$",  "evi")
+save_stack(ndvi_stack, out_landsat_vi, "landsat_ndvi_ghana_stack.tif")
+save_stack(evi_stack,  out_landsat_vi, "landsat_evi_ghana_stack.tif")
 
-# MODIS VI: each year file has two bands (ndvi_{yr}, evi_{yr}); load full stack
-# and split by band prefix into separate NDVI and EVI stacks.
-modis_vi_files <- sort(list.files(out_modis_vi,
-                                  pattern    = "^modis_vi_ghana_\\d{4}\\.tif$",
-                                  full.names = TRUE))
-if (length(modis_vi_files) > 0) {
-  modis_vi_raw   <- terra::rast(modis_vi_files)
-  modis_ndvi_stk <- modis_vi_raw[[grep("^ndvi_", names(modis_vi_raw))]]
-  modis_evi_stk  <- modis_vi_raw[[grep("^evi_",  names(modis_vi_raw))]]
-
-  modis_ndvi_out <- file.path(out_modis_vi, "modis_ndvi_ghana_stack.tif")
-  modis_evi_out  <- file.path(out_modis_vi, "modis_evi_ghana_stack.tif")
-  if (!file.exists(modis_ndvi_out)) {
-    terra::writeRaster(modis_ndvi_stk, modis_ndvi_out, overwrite = FALSE)
-    message(sprintf("Saved: %s", modis_ndvi_out))
-  } else {
-    message(sprintf("Skipping (already exists): %s", modis_ndvi_out))
-  }
-  if (!file.exists(modis_evi_out)) {
-    terra::writeRaster(modis_evi_stk, modis_evi_out, overwrite = FALSE)
-    message(sprintf("Saved: %s", modis_evi_out))
-  } else {
-    message(sprintf("Skipping (already exists): %s", modis_evi_out))
-  }
-} else {
-  message("No MODIS VI files found in ", out_modis_vi, " — run Section 7 first.")
-}
+# MODIS VI: NDVI and EVI are now separate single-band files — stack each directly.
+modis_ndvi_stk <- stack_from_dir(out_modis_vi, "^modis_ndvi_ghana_\\d{4}\\.tif$", "ndvi")
+modis_evi_stk  <- stack_from_dir(out_modis_vi, "^modis_evi_ghana_\\d{4}\\.tif$",  "evi")
+save_stack(modis_ndvi_stk, out_modis_vi, "modis_ndvi_ghana_stack.tif")
+save_stack(modis_evi_stk,  out_modis_vi, "modis_evi_ghana_stack.tif")
 
 # Land cover: single-band integer files (LC_Type1 = IGBP class, uint8).
-lc_stack <- stack_from_dir(out_land_cover, "^land_cover_ghana_\\d{4}\\.tif$", "lc")
-if (!is.null(lc_stack)) {
-  lc_out <- file.path(out_land_cover, "land_cover_ghana_stack.tif")
-  if (!file.exists(lc_out)) {
-    terra::writeRaster(lc_stack, lc_out, datatype = "INT1U", overwrite = FALSE)
-    message(sprintf("Saved: %s", lc_out))
-  } else {
-    message(sprintf("Skipping (already exists): %s", lc_out))
-  }
-}
+lc_stack <- stack_from_dir(out_land_cover, "^modis_lc_ghana_\\d{4}\\.tif$", "lc")
+save_stack(lc_stack, out_land_cover, "modis_lc_ghana_stack.tif", datatype = "INT1U")

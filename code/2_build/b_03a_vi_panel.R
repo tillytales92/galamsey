@@ -22,11 +22,11 @@ conflicts_prefer(
 )
 UTM30N <- 32630
 
-ndvi_stack_path       <- here("data", "raw", "ndvi",       "ndvi_ghana_stack.tif")
-evi_stack_path        <- here("data", "raw", "evi",        "evi_ghana_stack.tif")
+ndvi_stack_path       <- here("data", "raw", "landsat_vi", "landsat_ndvi_ghana_stack.tif")
+evi_stack_path        <- here("data", "raw", "landsat_vi", "landsat_evi_ghana_stack.tif")
 modis_ndvi_stack_path <- here("data", "raw", "modis_vi",   "modis_ndvi_ghana_stack.tif")
 modis_evi_stack_path  <- here("data", "raw", "modis_vi",   "modis_evi_ghana_stack.tif")
-lc_stack_path         <- here("data", "raw", "land_cover", "land_cover_ghana_stack.tif")
+lc_stack_path         <- here("data", "raw", "land_cover", "modis_lc_ghana_stack.tif")
 barenblitt_ts         <- here("data", "raw", "barenblitt", "MiningConversion_2007-2017Vec.shp")
 barenblitt_2019       <- here("data", "raw", "barenblitt", "FullConversiontoMiningExtent2019.shp")
 
@@ -102,7 +102,7 @@ if (file.exists(lc_stack_path)) {
   }
   rm(lc_raw)
 } else {
-  message("  land_cover_ghana_stack.tif absent — forestcrop columns omitted.")
+  message("  modis_lc_ghana_stack.tif absent — forestcrop columns omitted.")
 }
 
 ####2. Helper functions ####
