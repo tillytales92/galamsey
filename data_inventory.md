@@ -245,6 +245,8 @@ and could substitute or complement the survey data.
 |---------|--------|----------|-------|--------|-----|--------|
 | Gold price | Yahoo Finance `GC=F` futures (via `quantmod`) | Global | 2007–2017 used (API back to 2000) | ✅ | Current | `a_01`, `a_04` |
 | COCOBOD cocoa yields | Ghana Cocoa Board (data request) | Districts (TBD) | TBD | ⬜ | Potential (D5c) | `a_04` |
+| AReNA DHS-GIS Database (incl. MapSPAM crop production + DHS NDVI) | IFPRI, via Harvard Dataverse (`doi:10.7910/DVN/OQIPRW`) | 60 countries incl. Ghana — DHS clusters | compiled 2020 (varies by layer) | ⬜ | Potential — VI-proxy validation | — |
+| MapSPAM 2020 v2.0 (crop production/yield/area) | IFPRI, via Harvard Dataverse (`doi:10.7910/DVN/SWPENT`) | Global (subset to Ghana) | 2020 | ⬜ | Potential — gridded agric.-productivity covariate | — |
 | Ghana census microdata | GSS / IPUMS International | All Ghana | 2000, 2010, 2021 | ⬜ | Potential (D6a–b) | `a_04` |
 | GLSS 7 (Living Standards Survey) | Ghana Statistical Service | All Ghana | 2016/17 | ⬜ | Potential (D6c) | `a_04` |
 | Nighttime lights | VIIRS `NOAA/VIIRS/DNB/MONTHLY_V1`, DMSP | All Ghana | 1992–present | ⬜ | Potential | — |
@@ -256,6 +258,26 @@ and could substitute or complement the survey data.
 miners sell at prices closely tied to the world spot price. Nightlights / WorldPop / RWI / DHS are
 open, gridded proxies for local economic activity, population exposure, and wealth — cheaper
 alternatives to the (blocked) survey microdata for the labour/welfare questions.
+
+**AReNA DHS-GIS (IFPRI, 2020)** links DHS clusters to >1,000 geo-referenced layers on agricultural
+production, agroecology, climate and infrastructure, split across 13 files. Two are directly relevant
+here: **DHS_SPAM** (MapSPAM crop production / yield / harvested-area, ~10 km grid) and **DHS_NDVI** —
+co-located at the same DHS clusters, so it offers an independent **agricultural-production benchmark
+for the NDVI/EVI proxy** (§6): where SPAM crop output/yield is high, the VI signal should track it.
+**Caveat:** the unit is the DHS *cluster* (point), not our hex grid, and Ghana clusters are jittered
+(±2–5 km) for confidentiality — so it validates the VI↔production relationship at cluster resolution
+rather than plugging into the hex panel directly. The underlying MapSPAM raster can be pulled
+separately if a gridded crop-production covariate is wanted. Ties into the existing DHS row above.
+
+**MapSPAM 2020 v2.0 Release 2 (IFPRI, `doi:10.7910/DVN/SWPENT`)** is that underlying raster, pulled
+directly rather than through the DHS-cluster link above: a cross-entropy allocation of national/
+sub-national crop statistics to a global **~5 arcmin (~10 km) grid**, for the **2020** crop year.
+Files (CSV + GeoTIFF) give **harvested area, physical area, production, and yield**, each split by
+farming technology (irrigated / rainfed high-input / rainfed low-input / rainfed subsistence, summed
+to "all technologies"). Because it is a native grid (not jittered DHS points), it can plug directly
+into the hex panel as a gridded agricultural-productivity covariate or outcome-validation layer for
+the NDVI/EVI proxy (§6) — unlike the AReNA row above, no DHS-cluster matching or jitter caveat
+applies. Single cross-section (2020 only), so it cannot itself provide a time series.
 
 ---
 

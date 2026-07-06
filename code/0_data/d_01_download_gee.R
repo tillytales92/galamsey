@@ -445,13 +445,13 @@ download_from_drive <- function(drive_folder, prefix, local_dir) {
 }
 
 # -- Uncomment once GEE tasks complete ----------------------------------------
-# download_from_drive(DRIVE_FOLDER, "landsat_ndvi_ghana_", out_landsat_vi)
-# download_from_drive(DRIVE_FOLDER, "landsat_evi_ghana_",  out_landsat_vi)
-download_from_drive(DRIVE_FOLDER, "modis_ndvi_16day_ghana_", out_modis_vi)
-download_from_drive(DRIVE_FOLDER, "modis_evi_16day_ghana_",  out_modis_vi)
-# download_from_drive(DRIVE_FOLDER, "modis_lc_ghana_",     out_land_cover)
-# download_from_drive(DRIVE_FOLDER, "chirps_ghana_",       out_chirps)
-# download_from_drive(DRIVE_FOLDER, "hydrobasins_hybas9_studyarea", out_hydrobasins)
+#download_from_drive(DRIVE_FOLDER, "landsat_ndvi_ghana_", out_landsat_vi)
+#download_from_drive(DRIVE_FOLDER, "landsat_evi_ghana_",  out_landsat_vi)
+#download_from_drive(DRIVE_FOLDER, "modis_ndvi_16day_ghana_", out_modis_vi)
+#download_from_drive(DRIVE_FOLDER, "modis_evi_16day_ghana_",  out_modis_vi)
+#download_from_drive(DRIVE_FOLDER, "modis_lc_ghana_",     out_land_cover)
+#download_from_drive(DRIVE_FOLDER, "chirps_ghana_",       out_chirps)
+#download_from_drive(DRIVE_FOLDER, "hydrobasins_hybas9_studyarea", out_hydrobasins)
 
 message("\n=== d_01_download.R: export tasks submitted ===")
 message(sprintf(

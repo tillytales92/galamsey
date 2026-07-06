@@ -8,6 +8,8 @@
 #   hex_{N}km_flow_exposure.rds        — up/down/near/lateral flow at ROUTE_KM2=10 (PRIMARY, from b_03d)
 #   hex_{N}km_flow_exposure_upa50.rds  — same, at ROUTE_KM2=50 (ALT robustness, from b_03d) — optional
 #   hex_{N}km_crosssection.rds         — hex_sf + covariates  (from b_01_cross_section.R)
+#   hydrobasins/hex_basin_{N}km.csv    — per-hex HydroBASINS level-9 sub-basin id (from d_07) — optional;
+#                                        the SE-clustering key (replaces the 25 km centroid-block stand-in)
 #
 # Outputs: data/processed/event_panel_{N}km.{csv,rds}
 #   Full hex x year panel with all VI, mining, exposure, and C&S event-time columns.
@@ -28,6 +30,9 @@
 #   <all of the above 15 up/down/lateral cols again with an "_upa50" suffix>  [ROUTE_KM2=50, robustness;
 #     present only when hex_{N}km_flow_exposure_upa50.rds exists]
 #   elev_mean, slope_mean, gold_suit_share, dist_river_km
+#   basin_id, main_basin, pfaf_id, basin_num   [SE-clustering keys; present only when
+#     hydrobasins/hex_basin_{N}km.csv exists. basin_num = compact 1..K factor of the level-9 HYBAS_ID
+#     for the did/polars backend; main_basin = coarser HydroBASINS main-basin id for a robustness cut]
 
 RESOLUTIONS <- c(1, 2, 5)
 
@@ -123,6 +128,8 @@ for (res_km in RESOLUTIONS) {
   flow_path     <- here("data", "processed", sprintf("hex_%dkm_flow_exposure.rds",       res_km))
   flow_path_50  <- here("data", "processed", sprintf("hex_%dkm_flow_exposure_upa50.rds", res_km))
   cross_path    <- here("data", "processed", sprintf("hex_%dkm_crosssection.rds",        res_km))
+  basin_path    <- here("data", "processed", "hydrobasins",
+                        sprintf("hex_basin_%dkm.csv", res_km))
   out_csv       <- here("data", "processed", sprintf("event_panel_%dkm.csv",             res_km))
   out_rds       <- here("data", "processed", sprintf("event_panel_%dkm.rds",             res_km))
 
@@ -147,6 +154,18 @@ for (res_km in RESOLUTIONS) {
   covars_r  <- cross_r$hex_analysis |>
     dplyr::select(hex_id, any_of(c("gold_suit_share", "dist_river_km",
                                     "elev_mean", "slope_mean")))
+
+  # Sub-basin clustering keys (optional, per resolution — d_07_hydrobasins.R currently builds 5 km
+  # only). Time-invariant per hex, so joined by hex_id. NULL when absent so the panel still builds.
+  basin_r <- if (file.exists(basin_path)) {
+    read_csv(basin_path, show_col_types = FALSE) |>
+      mutate(hex_id = as.character(hex_id)) |>
+      dplyr::select(hex_id,
+                    basin_id   = HYBAS_ID,
+                    main_basin = MAIN_BAS,
+                    pfaf_id    = PFAF_ID,
+                    basin_num)
+  } else NULL
 
   mining_years <- sort(unique(own_r$year))
   vi_years     <- sort(unique(vi_r$year))
@@ -224,6 +243,10 @@ for (res_km in RESOLUTIONS) {
       left_join(onset_cols_50, by = "hex_id")
   }
 
+  if (!is.null(basin_r)) {
+    panel_r <- panel_r |> left_join(basin_r, by = "hex_id")
+  }
+
   ####4. Final column order ####
 
   # The upa50 (ROUTE_KM2=50) robustness set mirrors the 15 primary up/down/lateral columns,
@@ -249,7 +272,8 @@ for (res_km in RESOLUTIONS) {
         any_of(c("nearest_down_new_ha", "nearest_down_stock_ha")),
       any_of(c("lateral_new_ha", "lateral_stock_ha", "lateral_onset_year")),
       any_of(upa50_cols),
-      any_of(c("elev_mean", "slope_mean", "gold_suit_share", "dist_river_km"))
+      any_of(c("elev_mean", "slope_mean", "gold_suit_share", "dist_river_km")),
+      any_of(c("basin_id", "main_basin", "pfaf_id", "basin_num"))
     )
 
   ####5. Diagnostics ####
@@ -272,6 +296,11 @@ for (res_km in RESOLUTIONS) {
               if (flow_primary$has_flow) "populated" else "NA (flow edges absent)"))
   cat(sprintf("  Upstream/downstream (ROUTE_KM2=50): %s\n",
               if (!is.null(year_cols_50)) "populated" else "absent — upa50 file not found"))
+  cat(sprintf("  Sub-basin SE clusters (HydroBASINS L9): %s\n",
+              if (!is.null(basin_r))
+                sprintf("%d basins / %d main-basins", n_distinct(basin_r$basin_id),
+                        n_distinct(basin_r$main_basin))
+              else "absent — hex_basin file not found (run d_07_hydrobasins.R)"))
   cat("  Onset-year distribution (own):\n")
   print(own_onset_r |> count(own_onset_year, name = "n_hexes"))
 
@@ -287,7 +316,7 @@ for (res_km in RESOLUTIONS) {
   message(sprintf("\nSaved: %s", out_csv))
   message(sprintf("Saved: %s",  out_rds))
 
-  rm(vi_r, own_r, flow_r, cross_r, hex_sf_r, covars_r, panel_r,
+  rm(vi_r, own_r, flow_r, cross_r, hex_sf_r, covars_r, basin_r, panel_r,
      own_onset_r, adj_onset_r, flow_primary, year_cols_50, onset_cols_50)
   suppressWarnings(rm(flow_r_50, flow_alt))
   gc()

@@ -139,37 +139,54 @@ reduce_peak <- function(vi_16, hex_vect) {
   list(mean = ann_mean, max = ann_max)
 }
 
-####3. Per-resolution loop ####
+####3. Hex grids for ALL resolutions, prepared upfront ####
 
-for (res_km in have_res) {
-  out_path <- here("data", "processed", sprintf("hex_%dkm_vi_panel.rds", res_km))
-  message(sprintf("\n%s\n=== VI extraction: %d km ===\n%s",
-                  strrep("=", 55), res_km, strrep("=", 55)))
+hex_info <- setNames(lapply(have_res, \(res_km) {
+  cache_r <- readRDS(here("data", "processed", sprintf("hex_%dkm_crosssection.rds", res_km)))
+  list(hex_vect = terra::vect(st_transform(cache_r$hex_sf, 4326)), hex_ids = cache_r$hex_sf$hex_id)
+}), as.character(have_res))
+for (res_km in have_res) message(sprintf("  %d km: %d hexes",
+                                          res_km, length(hex_info[[as.character(res_km)]]$hex_ids)))
+message(sprintf("  %d indices x %d masks x %d years x %d resolutions",
+                2L, length(MASK_ORDER), length(VI_YEARS), length(have_res)))
 
-  cache_r    <- readRDS(here("data", "processed", sprintf("hex_%dkm_crosssection.rds", res_km)))
-  hex_sf_r   <- cache_r$hex_sf
-  hex_vect_r <- terra::vect(st_transform(hex_sf_r, 4326))
-  hex_ids_r  <- hex_sf_r$hex_id
-  message(sprintf("  Hex grid: %d hexes | %d indices x %d masks x %d years",
-                  nrow(hex_sf_r), 2L, length(MASK_ORDER), length(VI_YEARS)))
-  rm(cache_r)
+####4. Single pass: read + CCI-mask ONCE per (index, year, mask); extract PER resolution ####
+# Reading/cropping the 16-day raster and applying each mask is resolution-independent — the ONLY
+# resolution-specific step is the final zonal extract. Doing the read+mask once per (index,year,mask)
+# and reusing that masked raster across every resolution's extract() avoids re-reading/re-masking the
+# same ~120 MB raster N_RES times over (previously: 3x redundant reads/masks per year).
 
-  long <- vector("list", 0L)
-  for (index in c("ndvi", "evi")) {
-    for (yr in VI_YEARS) {
-      vi_16 <- terra::crop(terra::rast(vi_file(index, yr)), study_ext)   # ~23 bands, read once/year
-      for (mask_key in MASK_ORDER) {
-        red <- reduce_peak(mask_vi_year(vi_16, mask_key, yr), hex_vect_r)
-        long[[length(long) + 1L]] <- tibble(
-          hex_id = hex_ids_r, year = yr, index = index, mask = mask_key,
+long <- setNames(lapply(have_res, \(x) vector("list", 0L)), as.character(have_res))
+
+for (index in c("ndvi", "evi")) {
+  for (yr in VI_YEARS) {
+    vi_16 <- terra::crop(terra::rast(vi_file(index, yr)), study_ext)   # ~20-23 bands, read once/year
+    for (mask_key in MASK_ORDER) {
+      masked <- mask_vi_year(vi_16, mask_key, yr)
+      for (res_km in have_res) {
+        key  <- as.character(res_km)
+        info <- hex_info[[key]]
+        red  <- reduce_peak(masked, info$hex_vect)
+        long[[key]][[length(long[[key]]) + 1L]] <- tibble(
+          hex_id = info$hex_ids, year = yr, index = index, mask = mask_key,
           mean = red$mean, max = red$max)
       }
-      message(sprintf("    %s %d done", toupper(index), yr))
     }
+    message(sprintf("    %s %d done (all resolutions)", toupper(index), yr))
   }
+}
+
+####5. Per resolution: long -> wide, add urban_share, save ####
+
+for (res_km in have_res) {
+  key      <- as.character(res_km)
+  info     <- hex_info[[key]]
+  out_path <- here("data", "processed", sprintf("hex_%dkm_vi_panel.rds", res_km))
+  message(sprintf("\n%s\n=== Assembling VI panel: %d km ===\n%s",
+                  strrep("=", 55), res_km, strrep("=", 55)))
 
   # Long -> wide: column name {index}_modis[_{mask}]_{stat} (overall has no mask suffix)
-  vi_r <- bind_rows(long) |>
+  vi_r <- bind_rows(long[[key]]) |>
     pivot_longer(c(mean, max), names_to = "stat", values_to = "val") |>
     mutate(col = if_else(mask == "overall",
                          paste0(index, "_modis_", stat),
@@ -181,9 +198,9 @@ for (res_km in have_res) {
   # Urban land share per hex per year: fraction of classified CCI pixels that are urban (class 190).
   # Index-independent -> computed once from the resampled CCI grid. Genuine CCI years only (NA where
   # no CCI layer covers that VI year, i.e. beyond 2022 — not clamped, unlike the VI masks).
-  urban_df <- as_tibble(terra::extract(cci_res == 190L, hex_vect_r,
+  urban_df <- as_tibble(terra::extract(cci_res == 190L, info$hex_vect,
                                        fun = mean, na.rm = TRUE, ID = FALSE)) |>
-    mutate(hex_id = hex_ids_r) |>
+    mutate(hex_id = info$hex_ids) |>
     pivot_longer(-hex_id, names_to = "layer", values_to = "urban_share") |>
     mutate(year = as.integer(str_extract(layer, "\\d{4}"))) |>
     dplyr::filter(!is.na(year), year %in% VI_YEARS) |>
@@ -198,8 +215,7 @@ for (res_km in have_res) {
   saveRDS(vi_r, out_path)
   message(sprintf("Saved: %s", out_path))
 
-  rm(hex_sf_r, hex_vect_r, hex_ids_r, vi_r, long)
-  gc()
+  rm(vi_r); gc()
 }
 
 message("\n=== b_03a_vi_panel.R complete ===")
