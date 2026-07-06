@@ -113,8 +113,15 @@ and candidate future sources are in `data_inventory.md`.
 
 - [ ] Run `b_03a_vi_panel.R` under the current modular pipeline structure (slow — ~4–5h at 1 km).
 - [ ] Extend the MERIT D8 hex flow graph beyond the current study-area clip to all of Ghana.
-- [ ] Replace the 25 km centroid-block SE-clustering stand-in with a real sub-basin ID
+- [~] Replace the 25 km centroid-block SE-clustering stand-in with a real sub-basin ID
   (HydroBASINS or MERIT `upa` pour-points) — flagged throughout `event_study_design.md`.
+  **2026-07-06: HydroBASINS download added** — `d_01_download_gee.R` Sec 6b now submits a table
+  export of `WWF/HydroSHEDS/v1/Basins/hybas_9` (level-9 sub-basins; NOTE: "hybas_9" = level 9, not
+  level 12 — the finest level GEE hosts as a ready FeatureCollection), filtered to `export_region`
+  → `data/raw/hydrobasins/hydrobasins_hybas9_studyarea.geojson`. **Remaining:** run the export +
+  download (Secs 6b/8 — task not yet submitted/run), then spatial-join each hex to its containing
+  sub-basin (`sub_basin_id`) and switch the event-study cluster variable from the current 25 km
+  centroid-block stand-in to this basin ID (`a_05_event_study.Rmd` / `event_study_design.md`).
 
 ### Analysis (`code/3_analysis/`)
 

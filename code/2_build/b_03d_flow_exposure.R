@@ -2,12 +2,15 @@
 # Propagate galamsey upstream and downstream over the MERIT D8 hex flow graph.
 # Part 3 of 4 in the modular event-panel build.
 #
-# Inputs:
-#   hex_{N}km_own_mining.rds                       — own_new_ha per hex x year (from b_03b)
-#   data/processed/merit/hex_flow_edges_{N}km.csv  — directed flow graph (from d_04_merit.R Sec 11)
-#   hex_{N}km_crosssection.rds                     — hex_sf for queen-adjacency (lateral only)
+# Runs once per ROUTE_KM2 threshold config (see b_03c_flow_graph.R): the PRIMARY (10 km²,
+# unsuffixed files) and ALT (50 km², "_upa50" files) flow graphs each get their own exposure cache.
 #
-# Outputs: data/processed/hex_{N}km_flow_exposure.rds
+# Inputs (per threshold suffix S in {"", "_upa50"}):
+#   hex_{N}km_own_mining.rds                          — own_new_ha per hex x year (from b_03b)
+#   data/processed/merit/hex_flow_edges_{N}km{S}.csv  — directed flow graph (from b_03c)
+#   hex_{N}km_crosssection.rds                        — hex_sf for queen-adjacency (lateral only)
+#
+# Outputs: data/processed/hex_{N}km_flow_exposure{S}.rds
 #   tibble(hex_id, year,
 #          up_new_ha, down_new_ha,                       — full-catchment flow
 #          nearest_up_new_ha, nearest_down_new_ha,       — 1-hop flow only
@@ -20,7 +23,8 @@
 #
 # Re-run when: flow edges file is added or updated for a given resolution.
 
-RESOLUTIONS <- c(1, 2, 5)
+RESOLUTIONS   <- c(1, 2, 5)
+ROUTE_SUFFIXES <- c("", "_upa50")   # must match ROUTE_CONFIGS suffixes in b_03c_flow_graph.R
 
 pacman::p_load(igraph, sf, spdep, tidyverse, conflicted, here)
 conflicts_prefer(
@@ -62,27 +66,31 @@ aggregate_1hop <- function(sets, own_wide, yrs) {
 }
 
 for (res_km in RESOLUTIONS) {
-  own_path  <- here("data", "processed", sprintf("hex_%dkm_own_mining.rds",  res_km))
-  flow_path <- here("data", "processed", "merit",
-                    sprintf("hex_flow_edges_%dkm.csv", res_km))
-  out_path  <- here("data", "processed", sprintf("hex_%dkm_flow_exposure.rds", res_km))
+  own_path <- here("data", "processed", sprintf("hex_%dkm_own_mining.rds",  res_km))
 
   if (!file.exists(own_path)) {
     message(sprintf("Skipping %d km: hex_%dkm_own_mining.rds not found — run b_03b first.",
                     res_km, res_km))
     next
   }
+  own_r_shared <- readRDS(own_path)
 
-  message(sprintf("\n%s\n=== Flow exposure: %d km ===\n%s",
-                  strrep("=", 55), res_km, strrep("=", 55)))
+  for (suffix in ROUTE_SUFFIXES) {
+  flow_path <- here("data", "processed", "merit",
+                    sprintf("hex_flow_edges_%dkm%s.csv", res_km, suffix))
+  out_path  <- here("data", "processed", sprintf("hex_%dkm_flow_exposure%s.rds", res_km, suffix))
 
-  own_r        <- readRDS(own_path)
+  message(sprintf("\n%s\n=== Flow exposure: %d km%s ===\n%s",
+                  strrep("=", 55), res_km,
+                  if (nzchar(suffix)) sprintf(" (%s)", suffix) else " (primary)", strrep("=", 55)))
+
+  own_r        <- own_r_shared
   all_hex_ids  <- unique(own_r$hex_id)
   mining_years <- sort(unique(own_r$year))
 
   # If flow edges absent, write NA stub so b_03d can always run
   if (!file.exists(flow_path)) {
-    message(sprintf("  hex_flow_edges_%dkm.csv not found — writing NA stub.", res_km))
+    message(sprintf("  %s not found — writing NA stub.", basename(flow_path)))
     stub <- expand_grid(hex_id = all_hex_ids, year = mining_years) |>
       mutate(up_new_ha = NA_real_, down_new_ha = NA_real_,
              nearest_up_onset_year = NA_real_, nearest_down_onset_year = NA_real_)
@@ -191,6 +199,10 @@ for (res_km in RESOLUTIONS) {
   rm(own_r, edges_r, own_wide_r, up_r, down_r, near_up_r, near_down_r, lateral_r,
      nearest_up_sets_r, nearest_down_sets_r,
      g_r, vn_r, own_onset_r, nearest_r, out_r)
+  gc()
+  }   # end ROUTE_SUFFIXES loop
+
+  rm(own_r_shared)
   gc()
 }
 

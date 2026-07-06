@@ -33,6 +33,9 @@
 #                  Sec 9 only STACKS it → cci_landcover_ghana_stack.tif)
 #   CHIRPS       — Daily precipitation summed to annual totals (~5.5 km), Ghana, 1990–2025
 #                  → data/raw/chirps/chirps_ghana_{year}.tif
+#   HydroBASINS  — WWF/HydroSHEDS/v1/Basins/hybas_9 (level-9 sub-basins), static, filtered to
+#                  export_region → data/raw/hydrobasins/hydrobasins_hybas9_studyarea.geojson
+#                  (table export, not a raster; intended sub-basin ID for event-study SE clustering)
 #
 # Drive layout: all products export to one Drive folder (ghana_mining_gee_exports);
 # the source-explicit filenames keep them unambiguous within it.
@@ -323,6 +326,35 @@ lc_tasks <- map(LCOVER_YEARS, \(yr) {
 message(sprintf("Submitted %d MODIS Land Cover tasks to Drive folder '%s'.",
                 length(lc_tasks), DRIVE_FOLDER))
 
+####6b. HydroBASINS — WWF/HydroSHEDS/v1/Basins/hybas_9 ####
+#
+# Collection: WWF/HydroSHEDS/v1/Basins/hybas_9 — HydroBASINS Pfafstetter LEVEL 9 sub-basins.
+#   NOTE: "hybas_9" is level 9, not level 12 — level 9 is the finest HydroBASINS level GEE hosts
+#   as a ready-made FeatureCollection (level 12 would need deriving from HydroSHEDS' raw,
+#   non-GEE shapefiles). Using hybas_9 as specified/available.
+# Static vector layer (no time dimension, unlike the annual rasters above) — one table export,
+# filtered to the study-area export_region so the file stays small.
+# Intended use: real sub-basin IDs for the event-study SE clustering, replacing the 25 km
+# centroid-block stand-in (see event_study_design.md, galamsey_tasklist.md, data_inventory.md §4).
+
+message("\n=== Submitting HydroBASINS (hybas_9) table export ===")
+out_hydrobasins <- here("data", "raw", "hydrobasins")
+dir.create(out_hydrobasins, recursive = TRUE, showWarnings = FALSE)
+
+# Load HydroSHEDS level-9 basins, filtered to the region
+basins <- ee$FeatureCollection("WWF/HydroSHEDS/v1/Basins/hybas_9")$
+  filterBounds(export_region)
+
+basins_task <- ee$batch$Export$table$toDrive(
+  collection     = basins,
+  description    = "hydrobasins_hybas9_studyarea",
+  folder         = DRIVE_FOLDER,
+  fileNamePrefix = "hydrobasins_hybas9_studyarea",
+  fileFormat     = "GeoJSON"
+)
+basins_task$start()
+message("  Submitted: hydrobasins_hybas9_studyarea (table export)")
+
 ####7. CHIRPS — Daily Precipitation → Annual Totals ####
 #
 # Collection: UCSB-CHG/CHIRPS/DAILY (Climate Hazards Group InfraRed Precipitation
@@ -370,6 +402,7 @@ message(sprintf("Submitted %d CHIRPS tasks to Drive folder '%s'.",
 # walk(purrr::flatten(modis_vi_tasks),  ee_monitoring)
 # walk(lc_tasks,                        ee_monitoring)
 # walk(chirps_tasks,                    ee_monitoring)
+# ee_monitoring(basins_task)
 
 ####8. Download from Google Drive ####
 # Run AFTER all GEE tasks show "COMPLETED" in the Tasks tab.
@@ -418,6 +451,7 @@ download_from_drive(DRIVE_FOLDER, "modis_ndvi_16day_ghana_", out_modis_vi)
 download_from_drive(DRIVE_FOLDER, "modis_evi_16day_ghana_",  out_modis_vi)
 # download_from_drive(DRIVE_FOLDER, "modis_lc_ghana_",     out_land_cover)
 # download_from_drive(DRIVE_FOLDER, "chirps_ghana_",       out_chirps)
+# download_from_drive(DRIVE_FOLDER, "hydrobasins_hybas9_studyarea", out_hydrobasins)
 
 message("\n=== d_01_download.R: export tasks submitted ===")
 message(sprintf(
@@ -436,6 +470,7 @@ message(sprintf(
 message(sprintf(
   "  CHIRPS:               %d tasks (chirps_ghana_1990 … 2025)", length(chirps_tasks)
 ))
+message("  HydroBASINS:          1 table export (hydrobasins_hybas9_studyarea, hybas_9 sub-basins)")
 message("  Monitor: code.earthengine.google.com → Tasks tab")
 message("  Download: uncomment Section 8 once all tasks show COMPLETED")
 
