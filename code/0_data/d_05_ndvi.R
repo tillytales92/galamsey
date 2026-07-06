@@ -35,7 +35,7 @@
 #we look at missingness patterns and then try to understand
 
 #Load packages
-pacman::p_load(here, elevatr, terra, sf, janitor, tidyverse, conflicted, patchwork)
+pacman::p_load(here, elevatr, terra, sf, janitor, tidyverse, conflicted, patchwork, leaflet)
 conflicts_prefer(
   dplyr::filter, dplyr::select, dplyr::mutate, dplyr::summarise,
   dplyr::rename, dplyr::arrange, dplyr::lag,
@@ -43,13 +43,13 @@ conflicts_prefer(
 )
 
 # Data --------------------------------------------------------------------
-ndvi_stack_path       <- here("data", "raw", "landsat_vi", "landsat_ndvi_ghana_stack.tif")
-evi_stack_path        <- here("data", "raw", "landsat_vi", "landsat_evi_ghana_stack.tif")
+# ndvi_stack_path       <- here("data", "raw", "landsat_vi", "landsat_ndvi_ghana_stack.tif")
+# evi_stack_path        <- here("data", "raw", "landsat_vi", "landsat_evi_ghana_stack.tif")
 modis_ndvi_stack_path <- here("data", "raw", "modis_vi",   "modis_ndvi_ghana_stack.tif")
 modis_evi_stack_path  <- here("data", "raw", "modis_vi",   "modis_evi_ghana_stack.tif")
 
-ndvi       <- terra::rast(ndvi_stack_path)
-evi        <- terra::rast(evi_stack_path)
+# ndvi       <- terra::rast(ndvi_stack_path)
+# evi        <- terra::rast(evi_stack_path)
 modis_ndvi <- terra::rast(modis_ndvi_stack_path)
 modis_evi  <- terra::rast(modis_evi_stack_path)
 
@@ -83,8 +83,8 @@ ggplot(na_all, aes(year, pct_na, colour = product)) +
   geom_line() +
   geom_point(size = 1.5) +
   scale_colour_manual(values = c(
-    "Landsat NDVI (250 m)" = "#1b7837",
-    "Landsat EVI (250 m)"  = "#762a83",
+    # "Landsat NDVI (250 m)" = "#1b7837",
+    # "Landsat EVI (250 m)"  = "#762a83",
     "MODIS NDVI (250 m)"   = "#74c476",
     "MODIS EVI (250 m)"    = "#c994c7"
   )) +
@@ -94,11 +94,11 @@ ggplot(na_all, aes(year, pct_na, colour = product)) +
   theme(legend.position = "bottom")
 
 # Spatial NA-frequency maps: how many years is each pixel missing?
-n_landsat <- terra::nlyr(ndvi)
+#n_landsat <- terra::nlyr(ndvi)
 n_modis   <- terra::nlyr(modis_ndvi)
 
-plot(terra::app(is.na(ndvi),       sum), main = sprintf("Landsat NDVI: years with NA (out of %d)", n_landsat))
-plot(terra::app(is.na(evi),        sum), main = sprintf("Landsat EVI: years with NA (out of %d)",  n_landsat))
+# plot(terra::app(is.na(ndvi),       sum), main = sprintf("Landsat NDVI: years with NA (out of %d)", n_landsat))
+# plot(terra::app(is.na(evi),        sum), main = sprintf("Landsat EVI: years with NA (out of %d)",  n_landsat))
 plot(terra::app(is.na(modis_ndvi), sum), main = sprintf("MODIS NDVI: years with NA (out of %d)",   n_modis))
 plot(terra::app(is.na(modis_evi),  sum), main = sprintf("MODIS EVI: years with NA (out of %d)",    n_modis))
 
@@ -160,16 +160,16 @@ for (yr in c(2010, max(lc_years))) {
 }
 
 # --- Bar chart: class composition 2019 ------------------------------------
-freq_2019 <- terra::freq(lc_stack[[which(lc_years == 2019)]]) |>
+freq_2020 <- terra::freq(lc_stack[[which(lc_years == 2020)]]) |>
   as_tibble() |>
   dplyr::filter(!is.na(value)) |>
   left_join(igbp, by = "value") |>
   mutate(label = fct_reorder(label, count))
 
-ggplot(freq_2019, aes(count, label, fill = colour)) +
+ggplot(freq_2020, aes(count, label, fill = colour)) +
   geom_col() +
   scale_fill_identity() +
-  labs(title = "Land cover composition — Ghana 2019 (IGBP LC_Type1)",
+  labs(title = "Land cover composition — Ghana 2020 (IGBP LC_Type1)",
        x = "Pixel count (500 m pixels)", y = NULL) +
   theme_minimal(base_size = 11)
 
@@ -476,4 +476,301 @@ if (file.exists(fc_hex_cache) && exists("ankobra_basin")) {
 
 } else {
   message("Ankobra mask-definition diagnostics skipped — need hex_5km_crosssection.rds and the ankobra_basin object.")
+}
+
+
+# ESA CCI Land Cover (Defourny et al. 2024) — parallel to the MODI --------
+# Fourth data product. ESA/C3S Climate Change Initiative annual land cover, 300 m, UN-LCCS legend
+# (codes 10–220), 1995–2022. Downloaded from Digital Earth Africa (DE Africa STAC) via
+# code/0_data/download_land_cover_ghana.ipynb and stacked in d_01 Sec 9 → cci_landcover_ghana_stack.tif.
+# We reproduce the MODIS-LC diagnostics here (national maps, composition, trends, Ankobra basin) to
+# understand the CCI classification before using it as the peak-EVI outcome mask in b_03a. Two things
+# to learn vs MODIS: (a) the finer 300 m grid and (b) the more granular forest/cropland split — CCI
+# separates evergreen (50) / deciduous (60/62) tree cover and rainfed cropland (10) from mosaics
+# (30/40), which is exactly what the forestcrop / cropland outcome masks need.
+
+cci_stack_path <- here("data", "raw", "land_cover", "esa", "cci_landcover_ghana_stack.tif")
+
+if (file.exists(cci_stack_path)) {
+
+  cci_stack <- terra::rast(cci_stack_path)
+  cci_years <- as.integer(stringr::str_extract(names(cci_stack), "\\d{4}"))
+  message(sprintf("\nESA CCI stack: %d layers (%d–%d), %.0f m res",
+                  terra::nlyr(cci_stack), min(cci_years), max(cci_years),
+                  mean(terra::res(cci_stack)) * 111320))
+
+  # Full UN-LCCS class table with the official ESA CCI colours (only Ghana-relevant rows plotted).
+  cci <- tribble(
+    ~value, ~label,                                ~colour,
+        10, "Cropland, rainfed",                   "#ffff64",
+        11, "Cropland, rainfed, herbaceous",       "#ffff64",
+        12, "Cropland, rainfed, tree/shrub",       "#ffff00",
+        20, "Cropland, irrigated",                 "#aaf0f0",
+        30, "Mosaic cropland >50% / nat. veg.",    "#dcf064",
+        40, "Mosaic nat. veg. >50% / cropland",    "#c8c864",
+        50, "Tree cover, broadleaf evergreen",     "#006400",
+        60, "Tree cover, broadleaf deciduous",     "#00a000",
+        61, "Tree cover, broadleaf decid. closed", "#00a000",
+        62, "Tree cover, broadleaf decid. open",   "#aac800",
+        70, "Tree cover, needleleaf evergreen",    "#003c00",
+        90, "Tree cover, mixed leaf",              "#788200",
+       100, "Mosaic tree & shrub >50% / herb.",    "#8ca000",
+       110, "Mosaic herbaceous >50% / tree-shrub", "#be9600",
+       120, "Shrubland",                           "#966400",
+       121, "Shrubland, evergreen",                "#964b00",
+       122, "Shrubland, deciduous",                "#966400",
+       130, "Grassland",                           "#ffb432",
+       140, "Lichens and mosses",                  "#ffdcd2",
+       150, "Sparse vegetation",                   "#ffebaf",
+       160, "Tree cover, flooded, fresh water",    "#00785a",
+       170, "Tree cover, flooded, saline water",   "#009678",
+       180, "Shrub / herbaceous, flooded",         "#00dc82",
+       190, "Urban areas",                         "#c31400",
+       200, "Bare areas",                          "#fff5d7",
+       201, "Consolidated bare areas",             "#dcdcdc",
+       202, "Unconsolidated bare areas",           "#fff5d7",
+       210, "Water bodies",                        "#0046c8",
+       220, "Permanent snow and ice",              "#ffffff"
+  )
+
+  # --- Categorical map: 2010 and most recent year (Ghana-wide) -----------------
+  # Reuses the generic plot_lc() defined for MODIS (takes any value/label/colour table).
+  for (yr in c(2010, max(cci_years))) {
+    plot_lc(cci_stack[[which(cci_years == yr)]], cci, gha_boundary,
+            sprintf("ESA CCI Land Cover %d — Ghana (UN-LCCS, 300 m)", yr))
+  }
+
+  # --- Bar chart: class composition 2020 --------------------------------------
+  freq_cci_2020 <- terra::freq(cci_stack[[which(cci_years == 2020)]]) |>
+    as_tibble() |>
+    dplyr::filter(!is.na(value)) |>
+    left_join(cci, by = "value") |>
+    mutate(label = fct_reorder(label, count))
+
+  print(
+    ggplot(freq_cci_2020, aes(count, label, fill = colour)) +
+      geom_col() +
+      scale_fill_identity() +
+      labs(title = "Land cover composition — Ghana 2020 (ESA CCI, UN-LCCS)",
+           x = "Pixel count (300 m pixels)", y = NULL) +
+      theme_minimal(base_size = 11)
+  )
+
+  # --- Time trend: aggregated CCI class groups (Ghana-wide) --------------------
+  # CCI splits forest and cropland finely; aggregate to comparable groups so the trend is legible.
+  cci_groups <- list(
+    "Cropland (10,11,20)"      = c(10L, 11L, 20L),
+    "Cropland mosaic (30,40)"  = c(30L, 40L),
+    "Forest (50,60,61,62)"     = c(50L, 60L, 61L, 62L),
+    "Shrubland (120,121,122)"  = c(120L, 121L, 122L)
+  )
+  cci_grp_cols <- c("Cropland (10,11,20)"     = "#d95f02",
+                    "Cropland mosaic (30,40)" = "#dcb064",
+                    "Forest (50,60,61,62)"    = "#1a8a1a",
+                    "Shrubland (120,121,122)" = "#966400")
+
+  trend_by_groups <- function(stk, yrs, groups) {
+    map_dfr(seq_along(yrs), \(i) {
+      f <- terra::freq(stk[[i]]) |> as_tibble(); f <- f[!is.na(f$value), ]
+      map_dfr(names(groups), \(nm)
+        tibble(year = yrs[i], group = nm,
+               pixels = sum(f$count[f$value %in% groups[[nm]]])))
+    })
+  }
+
+  cci_trend <- trend_by_groups(cci_stack, cci_years, cci_groups)
+  print(
+    ggplot(cci_trend, aes(year, pixels, colour = group)) +
+      geom_line() + geom_point(size = 1.4) +
+      scale_colour_manual(values = cci_grp_cols, name = NULL) +
+      labs(title = "Land cover over time — Ghana (ESA CCI, UN-LCCS)",
+           x = NULL, y = "Pixel count (300 m)") +
+      theme_minimal(base_size = 11) +
+      theme(legend.position = "bottom")
+  )
+
+  # --- ESA CCI — Ankobra basin ------------------------------------------------
+  # Reuses ankobra_basin / ankobra_river built in the MODIS-LC section above.
+  if (exists("ankobra_basin")) {
+    cci_anko <- terra::mask(
+      terra::crop(cci_stack, terra::vect(ankobra_basin)),
+      terra::vect(ankobra_basin)
+    )
+
+    # Shared legend across 2005 & 2020 (classes present in either year)
+    vals_union_cci <- base::union(
+      { f <- terra::freq(cci_anko[[which(cci_years == 2005)]]); f$value[!is.na(f$value)] },
+      { f <- terra::freq(cci_anko[[which(cci_years == 2020)]]); f$value[!is.na(f$value)] }
+    )
+    cci_sub <- cci[cci$value %in% vals_union_cci, ]
+    cci_sub <- cci_sub[order(cci_sub$value), ]
+    # map_lc_gg() (defined above) reads `col_scale` from the enclosing env — repoint it at the CCI legend.
+    col_scale <- scale_fill_manual(values = setNames(cci_sub$colour, cci_sub$label), name = NULL)
+
+    p_cci_2005 <- map_lc_gg(cci_anko[[which(cci_years == 2005)]], cci_sub,
+                            ankobra_river, ankobra_basin, "2005")
+    p_cci_2020 <- map_lc_gg(cci_anko[[which(cci_years == 2020)]], cci_sub,
+                            ankobra_river, ankobra_basin, "2020")
+    print(
+      (p_cci_2005 + p_cci_2020) +
+        plot_layout(guides = "collect") +
+        plot_annotation(
+          title = "ESA CCI Land Cover — Ankobra basin (UN-LCCS, 300 m)",
+          theme = theme(plot.title = element_text(size = 11, face = "bold"))
+        ) &
+        theme(legend.position = "bottom")
+    )
+
+    # Basin composition 2019
+    freq_cci_anko_2019 <- terra::freq(cci_anko[[which(cci_years == 2019)]]) |>
+      as_tibble() |>
+      dplyr::filter(!is.na(value)) |>
+      left_join(cci, by = "value") |>
+      mutate(label = fct_reorder(label, count))
+    print(
+      ggplot(freq_cci_anko_2019, aes(count, label, fill = colour)) +
+        geom_col() + scale_fill_identity() +
+        labs(title = "Land cover composition — Ankobra basin 2019 (ESA CCI)",
+             x = "Pixel count (300 m pixels)", y = NULL) +
+        theme_minimal(base_size = 11)
+    )
+
+    # Basin trend — same aggregated groups
+    cci_trend_anko <- trend_by_groups(cci_anko, cci_years, cci_groups)
+    print(
+      ggplot(cci_trend_anko, aes(year, pixels, colour = group)) +
+        geom_line() + geom_point(size = 1.4) +
+        scale_colour_manual(values = cci_grp_cols, name = NULL) +
+        labs(title = "Land cover trends — Ankobra basin (ESA CCI)",
+             x = NULL, y = "Pixel count (300 m)") +
+        theme_minimal(base_size = 11) +
+        theme(legend.position = "bottom")
+    )
+  } else {
+    message("ESA CCI Ankobra maps skipped — ankobra_basin not in scope (run the MODIS-LC section first).")
+  }
+
+  # --- Forest/cropland-mask coverage on the 5 km hex grid (CCI vs MODIS) -------
+  # The peak-EVI outcome masks each 16-day VI composite to CCI forest / cropland classes before the
+  # per-hex mean. As with MODIS *_forestcrop, a hex is NA in a year with no in-mask pixel. Quantify
+  # the hex-year NA rate under the candidate CCI mask definitions so we can see how much the finer
+  # 300 m CCI grid reduces the ~80% forestcrop missingness we get from MODIS class 2.
+  cci_mask_defs <- list(
+    "forest (50,60,61,62)"          = c(50L, 60L, 61L, 62L),
+    "cropland (10,11,20)"           = c(10L, 11L, 20L),
+    "cropland+mosaic (10,11,20,30)" = c(10L, 11L, 20L, 30L),
+    "forest+crop"                   = c(50L, 60L, 61L, 62L, 10L, 11L, 20L)
+  )
+  cci_hex_cache <- here("data", "processed", "hex_5km_crosssection.rds")
+  if (file.exists(cci_hex_cache)) {
+    hexv_cci <- terra::vect(st_transform(readRDS(cci_hex_cache)$hex_sf, 4326))
+    # CCI resampled onto the MODIS VI grid over the hex bbox (matches the b_03a mask build)
+    mod_t_cci  <- terra::crop(modis_ndvi[[1]], terra::ext(hexv_cci))
+    cci_res    <- terra::resample(terra::crop(cci_stack, terra::ext(hexv_cci)), mod_t_cci, method = "near")
+    cci_res_yr <- as.integer(stringr::str_extract(names(cci_res), "\\d{4}"))
+
+    na_rate_cci <- function(classes) {
+      map_dfr(seq_along(cci_res_yr), \(i) {
+        m   <- terra::ifel(cci_res[[i]] %in% classes, 1L, NA)
+        cnt <- terra::extract(m, hexv_cci, fun = sum, na.rm = TRUE, ID = FALSE)[[1]]
+        tibble(year = cci_res_yr[i], na_pct = round(100 * mean(is.na(cnt) | cnt == 0), 1))
+      })
+    }
+    cci_defs <- purrr::imap_dfr(cci_mask_defs, \(cls, nm) na_rate_cci(cls) |> mutate(definition = nm)) |>
+      mutate(definition = factor(definition, levels = names(cci_mask_defs)))
+    cci_defs_summary <- cci_defs |>
+      group_by(definition) |>
+      summarise(mean_na_pct = round(mean(na_pct), 1),
+                min_na_pct = min(na_pct), max_na_pct = max(na_pct), .groups = "drop")
+    message("\n=== ESA CCI mask coverage: hex-year NA rate by definition (5 km hexes, all Ghana) ===")
+    print(as.data.frame(cci_defs_summary), row.names = FALSE)
+
+    p_cci_defs <- ggplot(cci_defs, aes(year, na_pct, colour = definition)) +
+      geom_line(linewidth = 0.8) + geom_point(size = 1.3) +
+      labs(title    = "ESA CCI outcome-mask coverage on the 5 km hex grid",
+           subtitle = "% of 5 km hexes with no in-mask pixel that year (=> masked peak-VI would be NA)",
+           x = NULL, y = "% hex-years NA", colour = "mask definition") +
+      theme_minimal(base_size = 11) +
+      theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+    print(p_cci_defs)
+
+    dir.create(here("outputs", "figures", "ndvi"), recursive = TRUE, showWarnings = FALSE)
+    ggsave(here("outputs", "figures", "ndvi", "cci_maskdefs_hex5km.png"),
+           p_cci_defs, width = 8, height = 5, dpi = 150)
+    message("Saved: outputs/figures/ndvi/cci_maskdefs_hex5km.png")
+  } else {
+    message("ESA CCI mask-coverage diagnostic skipped — hex_5km_crosssection.rds not found.")
+  }
+
+} else {
+  message("ESA CCI section skipped — cci_landcover_ghana_stack.tif not found. Run d_01 Sec 9 to build it.")
+}
+
+
+#Interactive leaflet map — ESA CCI land classes, Ankobra basin, 2
+# Same content as the static patchwork maps above, but interactive: switch between a CartoDB and a
+# satellite basemap (baseGroups radio), toggle the 2005 / 2020 CCI classification plus the Ankobra
+# river & basin outline (overlay checkboxes), and CLICK any land-cover patch to read its class.
+# Reuses cci_anko / cci_sub / cci_years / ankobra_river / ankobra_basin built in the ESA CCI section
+# above (top-level `if` blocks don't create scope, so these persist when sourced).
+if (all(sapply(c("cci_anko", "cci_sub", "cci_years", "ankobra_river", "ankobra_basin"), exists))) {
+
+  r_2005 <- cci_anko[[which(cci_years == 2005)]]
+  r_2020 <- cci_anko[[which(cci_years == 2020)]]
+
+  # addRasterImage renders a flat PNG that carries no per-pixel data, so it can't report a class on
+  # click. Instead vectorise each year (dissolve = TRUE merges contiguous same-class cells into one
+  # multipolygon per class -> a handful of features, cheap to render) and draw those as polygons with
+  # popups. Visually equivalent to the raster (filled class regions), but every patch is now clickable.
+  cci_to_poly <- function(r) {
+    p <- sf::st_as_sf(terra::as.polygons(r, dissolve = TRUE))
+    names(p)[1] <- "value"                                   # first attribute = the CCI class code
+    dplyr::left_join(p, cci_sub[, c("value", "label", "colour")], by = "value")
+  }
+  poly_2005 <- cci_to_poly(r_2005)
+  poly_2020 <- cci_to_poly(r_2020)
+
+  # Popup on click (class name + code) and a lightweight hover label.
+  cci_popup  <- function(p) paste0("<b>", p$label, "</b><br>ESA CCI class code: ", p$value)
+  cci_hover  <- function(p) lapply(p$label, htmltools::HTML)
+
+  cci_leaflet <- leaflet::leaflet() |>
+    leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron,  group = "CartoDB") |>
+    leaflet::addProviderTiles(leaflet::providers$Esri.WorldImagery, group = "Satellite") |>
+    leaflet::addPolygons(data = poly_2005, fillColor = ~colour, fillOpacity = 0.8,
+                         weight = 0, smoothFactor = 0.2, group = "2005 land cover",
+                         label = cci_hover(poly_2005), popup = cci_popup(poly_2005),
+                         highlightOptions = leaflet::highlightOptions(
+                           weight = 2, color = "#000000", fillOpacity = 0.9, bringToFront = TRUE)) |>
+    leaflet::addPolygons(data = poly_2020, fillColor = ~colour, fillOpacity = 0.8,
+                         weight = 0, smoothFactor = 0.2, group = "2020 land cover",
+                         label = cci_hover(poly_2020), popup = cci_popup(poly_2020),
+                         highlightOptions = leaflet::highlightOptions(
+                           weight = 2, color = "#000000", fillOpacity = 0.9, bringToFront = TRUE)) |>
+    leaflet::addPolygons(data = ankobra_basin, fill = FALSE, color = "#444444",
+                         weight = 1.5, group = "Basin outline") |>
+    leaflet::addPolylines(data = ankobra_river, color = "#2b6cb0", weight = 2,
+                          opacity = 0.9, group = "Ankobra river") |>
+    leaflet::addLegend(colors = cci_sub$colour, labels = cci_sub$label,
+                       title = "ESA CCI land cover", opacity = 0.9, position = "bottomright") |>
+    leaflet::addLayersControl(
+      baseGroups    = c("CartoDB", "Satellite"),
+      overlayGroups = c("2005 land cover", "2020 land cover", "Ankobra river", "Basin outline"),
+      options       = leaflet::layersControlOptions(collapsed = FALSE)
+    ) |>
+    # Show 2005 by default; user ticks 2020 to compare (avoids the two years overlapping at load).
+    leaflet::hideGroup("2020 land cover")
+  print(cci_leaflet)
+
+  # Persist as a standalone HTML (interactive maps don't survive the RStudio viewer session).
+  if (requireNamespace("htmlwidgets", quietly = TRUE)) {
+    dir.create(here("outputs", "figures", "ndvi"), recursive = TRUE, showWarnings = FALSE)
+    out_html <- here("outputs", "figures", "ndvi", "cci_ankobra_leaflet_2005_2020.html")
+    htmlwidgets::saveWidget(cci_leaflet, out_html, selfcontained = TRUE)
+    message("Saved: outputs/figures/ndvi/cci_ankobra_leaflet_2005_2020.html")
+  }
+
+} else {
+  message("Leaflet CCI map skipped — run the ESA CCI Ankobra section above first ",
+          "(needs cci_anko, cci_sub, cci_years, ankobra_river, ankobra_basin).")
 }

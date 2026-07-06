@@ -45,7 +45,9 @@ and candidate future sources are in `data_inventory.md`.
      (`MODIS/061/MOD13Q1`), not MOD13A2 (1 km). ✅ done 2026-07-03.
   2. **QA/cloud filtering** on each 16-day composite. ✅ done 2026-07-03 (GEE-side `updateMask(SummaryQA ≤ 1)`, now kept per-16-day, not collapsed).
   3. **Mask with yearly ESA CCI land cover** (Defourny et al. 2024, 300 m) to isolate the relevant
-     area for each outcome — replaces the current MODIS MCD12Q1 mask (see below).
+     area for each outcome — replaces the current MODIS MCD12Q1 mask (see below). ✅ DATA READY
+     2026-07-06: ESA CCI downloaded (all-Ghana 1995–2022) + stacked → `cci_landcover_ghana_stack.tif`;
+     the mask still has to be APPLIED in the reworked `b_03a` (steps 4–5).
   4. **Aggregate to the MEAN EVI at 16-day intervals, per hex/basin** — i.e. do the spatial
      (zonal-mean) reduction to hex level *at each 16-day step*, not after an annual pixel-level mean.
   5. **Take the ANNUAL MAXIMUM** of that 16-day hex-level series — "peak EVI" — as the actual annual
@@ -61,7 +63,8 @@ and candidate future sources are in `data_inventory.md`.
     masks of masked zonal extraction). ESA CCI class sets (to VERIFY against the official UN-LCCS
     legend + Ghana reality; mosaic classes 30/40/100 are the ambiguous boundary that drives coverage):
     forest ≈ {50, 60/61/62, 90, (100?)}; cropland ≈ {10, 11, 12, 20, 30, (40?)}. Put the class sets in
-    a named-list config at the top of the reworked b_03a. Blocked on the ESA CCI download (below).
+    a named-list config at the top of the reworked b_03a. UNBLOCKED 2026-07-06 — ESA CCI downloaded
+    + stacked (see below); this is now the next task to build.
   - Justification given: peak EVI correlates strongly with gross primary production (Shi et al. 2017)
     and crop yields (Azzari et al. 2017; Johnson 2016).
   - **Robustness checks to also implement:** alternative land-use masks (**Digital Earth Africa
@@ -71,16 +74,20 @@ and candidate future sources are in `data_inventory.md`.
     composites downloaded/exported from GEE and zonal-meaned per hex per 16-day period locally, then
     maxed to annual; or (b) the per-16-day zonal mean done server-side in GEE before export. Scope
     before implementing — also ripples into `b_03e_assemble_eventpanel.R`.
-- [ ] **Switch land cover to ESA CCI** (needed for step 3 of the peak-EVI pipeline above, not just
+- [~] **Switch land cover to ESA CCI** (needed for step 3 of the peak-EVI pipeline above, not just
   a `*_forestcrop` fix). MODIS MCD12Q1 under-detects forest in the study area (~6–11% of land pixels
   classified as Evergreen Broadleaf Forest, driving ~80% NA in the `*_forestcrop` VI columns) and
   the local stack currently stops at 2020. ESA CCI (Defourny et al. 2024, 300 m, yearly) is the
-  specified replacement (see `data_inventory.md` §7) — needs downloading, not yet in `d_01`.
-  PARTIAL 2026-07-03: download notebook `0_data/download_land_cover_ghana.ipynb` drafted (DE Africa
-  STAC `cci_landcover`, 1992–2022, via pystac-client/odc-stac; no GEE). Study area = **Ankobra
-  river basin proxy** built from the OSM waterways lines (connected Ankobra network → 5 km-buffered
-  convex hull; bbox ≈ 2.45–1.77°W, 4.85–6.48°N); saves `data/raw/land_cover/cci_landcover_ankobra_{year}.tif`.
-  Not yet run — notebook Python env is missing its packages (`requirements.txt`).
+  specified replacement (see `data_inventory.md` §7).
+  **DOWNLOADED + STACKED 2026-07-06:** `0_data/download_land_cover_ghana.ipynb` run against
+  **Digital Earth Africa** (DE Africa STAC `cci_landcover`, via odc-stac; `configure_rio(aws_unsigned)`
+  fix applied), **all-Ghana 1995–2022** (28 layers, 300 m) → `data/raw/land_cover/esa/cci_landcover_ghana_{year}.tif`.
+  Stacked in `d_01_download_gee.R` Sec 9 → `data/raw/land_cover/esa/cci_landcover_ghana_stack.tif`.
+  Classification diagnostics (national + Ankobra maps, composition, trends, 5 km-hex mask-coverage,
+  plus an interactive leaflet map of the Ankobra basin toggling 2005/2020, with CartoDB/satellite
+  basemaps and click-to-query land-cover class) added to `d_05_ndvi.R`,
+  mirroring the MODIS MCD12Q1 block. **Remaining:** apply CCI as the
+  outcome mask in the reworked `b_03a` (peak-EVI steps 4–5) — that is the parent task above.
 - [ ] Re-download / re-stack the missing 2021–2024 MODIS land-cover layers (`d_01_download_gee.R`
   Sec 9) — `LCOVER_YEARS = 2001:2024` is requested but `modis_lc_ghana_stack.tif` only has
   2001–2020.
@@ -331,6 +338,7 @@ code/
 | Landsat Annual NDVI + EVI (250 m composites) | 1995–2025 | in progress |
 | MODIS MOD13Q1 NDVI + EVI (250 m, 16-day → annual mean, QA-masked) | 2000–2025 | in progress |
 | MODIS MCD12Q1 Land Cover Type 1 — IGBP (500 m, annual) | 2001–2024 | in progress |
+| ESA CCI Land Cover — UN-LCCS (300 m, annual, via Digital Earth Africa) | 1995–2022 | downloaded + stacked |
 | CHIRPS v2.0 rainfall | 1990–2025 | in progress |
 | Ghana Mining Repository 2025 — licenses (KML + Excel) | 2025 snapshot | available — needs investigation |
 | Ghana census microdata | 2000, 2010, 2021 | not yet acquired |

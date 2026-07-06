@@ -28,6 +28,9 @@
 #                    modis_evi_ghana_stack.tif (derived locally in Sec 9)
 #   Land cover   — MCD12Q1 IGBP annual, 500 m, Ghana, 2001–2024
 #                  → data/raw/land_cover/modis_lc_ghana_{year}.tif + modis_lc_ghana_stack.tif
+#   ESA CCI LC   — Defourny et al. 2024 UN-LCCS annual, 300 m, Ghana, 1995–2022 (NOT GEE — downloaded
+#                  from Digital Earth Africa (DE Africa STAC) via download_land_cover_ghana.ipynb;
+#                  Sec 9 only STACKS it → cci_landcover_ghana_stack.tif)
 #   CHIRPS       — Daily precipitation summed to annual totals (~5.5 km), Ghana, 1990–2025
 #                  → data/raw/chirps/chirps_ghana_{year}.tif
 #
@@ -129,8 +132,10 @@ LCOVER_YEARS   <- 2001:2024   # MCD12Q1 starts 2001; ~1 yr processing lag → 20
 
 out_modis_vi   <- here("data", "raw", "modis_vi")
 out_land_cover <- here("data", "raw", "land_cover")
+out_esa        <- here("data", "raw", "land_cover", "esa")   # ESA CCI — downloaded via download_land_cover_ghana.ipynb (not GEE)
 dir.create(out_modis_vi,   recursive = TRUE, showWarnings = FALSE)
 dir.create(out_land_cover, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_esa,        recursive = TRUE, showWarnings = FALSE)
 
 ####5. Landsat NDVI — C02 T1 L2 Annual Composite (30 m) ####
 #
@@ -509,3 +514,11 @@ save_stack(modis_evi_stk,  out_modis_vi, "modis_evi_ghana_stack.tif")
 # Land cover: single-band integer files (LC_Type1 = IGBP class, uint8).
 lc_stack <- stack_from_dir(out_land_cover, "^modis_lc_ghana_\\d{4}\\.tif$", "lc")
 save_stack(lc_stack, out_land_cover, "modis_lc_ghana_stack.tif", datatype = "INT1U")
+
+# ESA CCI land cover (Defourny et al. 2024, 300 m, annual 1995–2022; single-band UN-LCCS class files,
+# codes 10–220, uint8). Downloaded SEPARATELY from Digital Earth Africa (DE Africa STAC, not GEE)
+# via code/0_data/download_land_cover_ghana.ipynb into out_esa. Stacked here alongside the other products so downstream
+# scripts read one multi-layer TIF (cci_stack[["cci_2010"]]). This is the mask source for the
+# peak-EVI pipeline (per-16-day ESA-CCI mask → per-hex mean → annual max) built in b_03a.
+cci_stack <- stack_from_dir(out_esa, "^cci_landcover_ghana_\\d{4}\\.tif$", "cci")
+save_stack(cci_stack, out_esa, "cci_landcover_ghana_stack.tif", datatype = "INT1U")

@@ -129,15 +129,17 @@ descriptives.
 
 | Dataset | Source (GEE collection) | Coverage | Years | Resolution | Status | Use | Script |
 |---------|-------------------------|----------|-------|-----------|--------|-----|--------|
-| Landsat annual NDVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
-| Landsat annual EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
+| Landsat annual NDVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Potential — **not used for now** (high NA share) | `0_data/d_01_download_gee.R` |
+| Landsat annual EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Potential — **not used for now** (high NA share) | `0_data/d_01_download_gee.R` |
 | MODIS VI (NDVI + EVI) | `MODIS/061/MOD13Q1` (QA-filtered 16-day series; annual mean derived locally) | All Ghana | 2000–2025 | 250 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
 
 **Why both sensors:** **Landsat** is finer (30 m, back to 1995) but ~30–36% NA/year (cloud);
 **MODIS** (`MOD13Q1`, 250 m, from 2000) is coarser than Landsat but QA-filtered to ~16% NA, so it
 is far more complete year-to-year. The event study uses `ndvi_modis` as the headline outcome, with
-`evi_modis` and the no-mine-crop variants as robustness (`a_05` outcome-robustness section);
-Landsat is the finer-grained, longer-history alternative. Missingness diagnostics:
+`evi_modis` and the no-mine-crop variants as robustness (`a_05` outcome-robustness section).
+**Landsat VI is downloaded but not used for now** — its ~30–36% NA/year (cloud) share is too high for
+the annual panel; it is retained as the finer-grained (30 m), longer-history (from 1995) alternative
+to revisit once a better cloud-gap-filling composite is in place. Missingness diagnostics:
 `0_data/d_05_ndvi.R`. *(MODIS VI upgraded from the 1 km `MOD13A2` to the 250 m `MOD13Q1` on
 2026-07-03 — same bands, `SummaryQA` scheme and scale factor; needs re-export.)*
 
@@ -160,15 +162,24 @@ unaffected.
 
 | Dataset | Source | Coverage | Years | Resolution | Status | Use | Script |
 |---------|--------|----------|-------|-----------|--------|-----|--------|
+| ESA CCI land cover (UN-LCCS) | ESA/C3S CCI via Digital Earth Africa STAC (`cci_landcover`) | All Ghana | 1995–2022 | 300 m | ✅ | Current (peak-EVI outcome mask) | `0_data/download_land_cover_ghana.ipynb`; stacked in `d_01` Sec 9 |
 | MODIS land cover (IGBP `LC_Type1`) | `MODIS/061/MCD12Q1` | All Ghana | **2001–2020**\* | 500 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
 | ESA WorldCover | `ESA/WorldCover/v200` (Sentinel-1/2) | Global | 2020, 2021 | 10 m | ⬜ | Potential | — |
 | Google Dynamic World | `GOOGLE/DYNAMICWORLD/V1` (Sentinel-2) | Global | 2015–present | 10 m | ⬜ | Potential | — |
 | Hansen Global Forest Change | `UMD/hansen/global_forest_change` | Global | 2000–2023 | 30 m | ⬜ | Potential | — |
 
-**There is no separate "Landsat land cover".** The project's only land-cover source is MODIS
-MCD12Q1. The `*_landsat_forestcrop` panel columns do **not** use a Landsat land-cover product — they
-apply the *same* MODIS land cover, resampled to the Landsat 30 m VI grid (`b_03a_vi_panel.R`). Two
-reasons the finer products above are attractive as **future replacements**:
+**ESA CCI (300 m, 1995–2022) is now the preferred land-cover source** and the mask for the peak-EVI
+outcome: its finer grid and more granular legend separate evergreen (50) / deciduous (60/62) tree
+cover and rainfed cropland (10) from mosaics (30/40), which is what the forest / cropland outcome
+masks need. It covers the full VI history (from 1995) and does not stop at 2020 the way the MODIS
+stack does. MODIS MCD12Q1 (IGBP) is retained as the coarser comparison. Classification diagnostics
+for both (national + Ankobra maps, composition, trends, 5 km-hex mask-coverage, interactive leaflet)
+are in `d_05_ndvi.R`.
+
+**There is no separate "Landsat land cover".** The `*_landsat_forestcrop` panel columns do **not**
+use a Landsat land-cover product — they apply a MODIS/CCI land-cover layer resampled to the Landsat
+30 m VI grid (`b_03a_vi_panel.R`). Two reasons the MODIS product in particular is weak, motivating
+the CCI switch and the finer products above as **future replacements**:
 
 1. **MODIS 500 m IGBP under-detects Ghana's forest** — it labels most of SW Ghana as "savanna", so
    class 2 (Evergreen Broadleaf Forest) is only ~6–11% of land pixels and rarely fires, leaving the
