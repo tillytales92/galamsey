@@ -76,24 +76,35 @@ save_md_grouped <- function(df, file, group_col, digits = 4) {
 
 This document **implements** the event-study designs specified in
 [`event_study_design.md`](event_study_design.md). It reads the shared panel built by
-`2_build/b_03e_assemble_eventpanel.R` (`data/processed/event_panel_{1|2|5}km.rds`; resolution set via `params$resolution_km`) and estimates two distinct questions
-that share that panel:
+`2_build/b_03e_assemble_eventpanel.R` (`data/processed/event_panel_{1|2|5}km.rds`; resolution set via `params$resolution_km`) and estimates three questions
+that share that panel — **Q0** (added 2026-07-07) as a mechanics sanity check before Q1/Q2:
+
+- **Q0 — Own-hex mining → own-hex vegetation.** Treatment = mining **within the focal hex
+  itself**; no flow graph, no directionality. Checks that the panel/estimator mechanics work at
+  all before trusting the more elaborate upstream/downstream and neighbour-diffusion designs
+  below. See the `# Q0` section.
 
 | | **Q1 — Waterborne degradation** | **Q2 — Mining diffusion** |
 |---|---|---|
-| Outcome | downstream vegetation (NDVI/EVI; base, no-mine-crop, forest-crop) | own-hex mining (intensity + onset) |
+| Outcome | downstream peak vegetation (NDVI/EVI; cropland, no-mine-crop, forest, veg-broad) | own-hex mining (intensity + onset) |
 | Treatment | **upstream** mining onset | **neighbour** mining onset |
 | Right neighbour | directed upstream (flow graph) | adjacency (queen) + upstream as river-corridor variant |
 | Placebo | downstream onset | downstream onset |
 
 **Q1 is estimated for every vegetation-index outcome available in the panel** (see the
-`outcomes-setup` chunk below): NDVI and EVI, each as the hex-wide mean ("base"), the mean over
-non-mine pixels only ("no-mine-crop" — isolates spillover to surrounding land from the mechanical
-on-mine land-clearing signal), and the mean over Evergreen-Broadleaf-Forest pixels only
-("forest-crop" — the sparsest of the three; see `d_05_ndvi.R`'s forestcrop-missingness
-diagnostics). `ndvi_modis` remains the **headline** (its figures/tables keep their original
-filenames for the presentation deck); the other outcomes run inside the *same* V1–V3b code blocks
-as additional rows/columns/facets, not a separate section.
+`outcomes-setup` chunk below): NDVI and EVI, each as the **annual peak** (max of the masked 16-day
+MODIS series — the "peak EVI" methodology of Vashold et al. 2026; see `b_03a_vi_panel.R`), over
+four ESA-CCI-based masks — agricultural pixels only ("cropland" — the specific channel for crop
+damage from water contamination, and the **headline** mask; ~3.6–9.5% NA), non-mine pixels only
+("no-mine-crop" — isolates spillover to surrounding land from the mechanical on-mine land-clearing
+signal), tree-cover pixels only ("forest" — the sparsest mask, ~48–52% NA; see the `vi-missingness`
+diagnostic chunk below), and any vegetated land ("veg-broad" — a much lower-NA, ~1–2%, alternative
+to `forest`). `ndvi_modis_cropland_max` remains the **headline** (its figures/tables keep their
+original filenames for the presentation deck, even though the mask itself changed from the
+unrestricted hex-wide mean to `cropland` on 2026-07-07); the other outcomes run inside the *same*
+V1–V3b code blocks as additional rows/columns/facets, not a separate section. The panel also
+carries `mean` variants and two more masks (`overall`, `veg_narrow`) not currently looped over —
+see `outcomes-setup`.
 
 **Q2 is the `d03` Section D2d spatial-lag regression, upgraded** from a single TWFE regression of
 new mining on the neighbour stock — exactly the contaminated continuous-treatment-TWFE estimator the
@@ -101,8 +112,9 @@ design doc warns against — to a staggered event study with pre-trends and hete
 estimators.
 
 Estimator default: **Callaway & Sant'Anna** (`did::att_gt` → `aggte(type="dynamic")`) with
-**not-yet-treated** controls; continuous-dose robustness via `did_multiplegt_dyn`. SEs clustered on a
-coarse spatial block (sub-basin stand-in — see caveats).
+**not-yet-treated** controls; continuous-dose robustness via `did_multiplegt_dyn`. SEs clustered on
+real HydroBASINS level-9 sub-basins (`basin_num`, from `d_07_hydrobasins.R`; falls back to a 25 km
+centroid-block stand-in if absent for this resolution — see `load-panel` chunk and caveats).
 
 ---
 
@@ -267,52 +279,86 @@ es <- readRDS(here("data", "processed", sprintf("event_panel_%dkm.rds", params$r
 panel  <- es$panel
 hex_sf <- es$hex_sf
 
-# Coarse spatial block for clustering (sub-basin stand-in: 25 km centroid blocks). The design doc
-# asks for sub-basin clustering; we have no basin id in the panel yet, so this is a placeholder —
-# replace with a real basin id once available (e.g. from the MERIT 'upa' / a HydroBASINS overlay).
-cent <- sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(hex_sf))))
-blocks <- tibble(hex_id   = hex_sf$hex_id,
-                 block_id = paste0("b_", round(cent[, 1] / 25000), "_",
-                                   round(cent[, 2] / 25000)))
-# block_num: integer version of block_id required by did::att_gt's polars backend,
-# which cannot accept string cluster columns. feols can use block_id directly.
-panel <- left_join(panel, blocks, by = "hex_id") |>
-  mutate(block_num = as.integer(factor(block_id)))
+# Spatial clustering key: real HydroBASINS level-9 sub-basins (from d_07_hydrobasins.R via
+# b_03e_assemble_eventpanel.R's `basin_id`/`basin_num` columns) when present, replacing the
+# 25 km centroid-block stand-in used before 2026-07-06. `block_id`/`block_num` names are kept
+# unchanged downstream (feols `cluster = ~block_id`, did::att_gt `clustervars = "block_num"`) so
+# no other chunk needs to change. Falls back to the centroid-block stand-in — with a warning — if
+# `basin_num` isn't in this panel (e.g. a resolution `d_07_hydrobasins.R` hasn't been run for yet).
+has_basin <- all(c("basin_id", "basin_num") %in% names(panel)) && !all(is.na(panel$basin_num))
+
+if (has_basin) {
+  panel <- panel |> mutate(block_id = as.character(basin_id), block_num = basin_num)
+  message(sprintf("Clustering on %d HydroBASINS level-9 sub-basins (basin_num).",
+                  n_distinct(panel$block_num)))
+} else {
+  warning("basin_id/basin_num not found in this panel -- falling back to the 25 km centroid-block ",
+          "SE-clustering stand-in. Run d_07_hydrobasins.R then b_03e_assemble_eventpanel.R for ",
+          "this resolution to get real sub-basin clustering.")
+  cent <- sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(hex_sf))))
+  blocks <- tibble(hex_id   = hex_sf$hex_id,
+                   block_id = paste0("b_", round(cent[, 1] / 25000), "_",
+                                     round(cent[, 2] / 25000)))
+  panel <- left_join(panel, blocks, by = "hex_id") |>
+    mutate(block_num = as.integer(factor(block_id)))
+}
 
 has_upstream <- !all(is.na(panel$up_onset_year))
 has_terrain  <- all(c("elev_mean", "slope_mean") %in% names(panel)) &&
                 !all(is.na(panel$elev_mean))
 xf <- if (has_terrain) ~ elev_mean + slope_mean else ~ 1
 
-c(upstream_columns_present = has_upstream, terrain_covariates_present = has_terrain)
+c(upstream_columns_present  = has_upstream,
+  terrain_covariates_present = has_terrain,
+  hydrobasins_clustering     = has_basin,
+  n_clusters                 = n_distinct(panel$main_basin))
 ```
 
 ```{r outcomes-setup}
-# Vegetation-index outcomes used throughout Q1: NDVI/EVI x {base, no-mine-crop, forest-crop}.
-# no-mine-crop masks out the cumulative mine footprint (isolates spillover to surrounding land from
-# the mechanical on-mine land-clearing signal); forest-crop restricts to Evergreen Broadleaf Forest
-# pixels (IGBP class 2) -- the sparsest of the three (d_05_ndvi.R's forestcrop-missingness
-# diagnostics: ~80% NA at 5 km, worse at finer grids; the MODIS land-cover stack currently stops at
-# 2020). Kept only if present in THIS panel and not all-NA. ndvi_modis is listed first and stays the
-# HEADLINE throughout Q1 (its own filenames are unchanged, for the presentation deck); the rest are
-# folded into the same V1-V3b code blocks as additional rows/columns/facets.
+# Vegetation-index outcomes used throughout Q1, built from the reworked b_03a_vi_panel.R
+# "peak EVI" pipeline (Vashold et al. 2026 methodology; see galamsey_tasklist.md's Data section
+# and code/2_build/explainer.md). Every {index} x {mask} combo now has BOTH an annual MEAN and an
+# annual MAX ("peak") column -- see the `vi-missingness` chunk further below (right after the
+# `overlap` chunk) for NA rates by mask. Decisions taken 2026-07-07 (see CHANGELOG):
+#   - Headline STAT = max (peak) -- the whole point of the rework; peak EVI/NDVI tracks GPP/crop
+#     yields better than an annual mean (Shi et al. 2017; Azzari et al. 2017). MEAN is now looped
+#     too, but ONLY for the cropland mask (added 2026-07-XX) -- a robustness cut against the
+#     peak-EVI methodology, without paying the 4x mask blowup mean x {nominecrop,forest,veg_broad}
+#     would add.
+#   - MASK set = cropland, no-mine-crop, forest, veg-broad -- `overall` (the unrestricted hex mean)
+#     was SWAPPED OUT for `cropland` as the headline mask: `cropland` isolates the specific
+#     *agricultural* damage channel (crop losses from water contamination) rather than mixing
+#     forest/urban/water pixels into one diluted hex-wide number, and its NA rate (~3.6-9.5%) is
+#     still low. `nominecrop` is ~0.1% NA; `forest` (renamed from the old `forestcrop`, now the
+#     ESA CCI tree-cover classes rather than MODIS IGBP class 2) is kept for continuity with the
+#     forest-clearing story despite staying ~48-52% NA (same sparsity problem as before -- see the
+#     missingness chunk); `veg_broad` is a much lower-NA (~1-2%) "any vegetated land" alternative
+#     added specifically because `forest` is so sparse. `overall`/`veg_narrow` are available in the
+#     panel but excluded here to bound runtime -- add them back below if a robustness cut is needed.
+# Kept only if present in THIS panel and not all-NA. ndvi_modis_cropland_max is listed first and
+# stays the HEADLINE throughout Q1 (its own filenames are unchanged, for the presentation deck);
+# the rest are folded into the same V1-V3b code blocks as additional rows/columns/facets.
 OUTCOMES <- c(
-  ndvi_modis                = "NDVI",
-  evi_modis                 = "EVI",
-  ndvi_modis_nominecrop     = "NDVI (no-mine-crop)",
-  evi_modis_nominecrop      = "EVI (no-mine-crop)",
-  ndvi_modis_forestcrop     = "NDVI (forest-crop)",
-  evi_modis_forestcrop      = "EVI (forest-crop)"
+  ndvi_modis_cropland_max     = "NDVI (peak, cropland)",
+  evi_modis_cropland_max      = "EVI (peak, cropland)",
+  ndvi_modis_cropland_mean    = "NDVI (mean, cropland)",
+  evi_modis_cropland_mean     = "EVI (mean, cropland)"
+  # ndvi_modis_nominecrop_max   = "NDVI (peak, no-mine-crop)",
+  # evi_modis_nominecrop_max    = "EVI (peak, no-mine-crop)",
+  # ndvi_modis_forest_max       = "NDVI (peak, forest)",
+  # evi_modis_forest_max        = "EVI (peak, forest)",
+  # ndvi_modis_veg_broad_max    = "NDVI (peak, veg-broad)",
+  # evi_modis_veg_broad_max     = "EVI (peak, veg-broad)"
 )
 OUTCOMES <- OUTCOMES[names(OUTCOMES) %in% names(panel)]
 OUTCOMES <- OUTCOMES[vapply(names(OUTCOMES), \(c) !all(is.na(panel[[c]])), logical(1))]
-extra_outcomes <- setdiff(names(OUTCOMES), "ndvi_modis")   # everything beyond the NDVI headline
+extra_outcomes <- setdiff(names(OUTCOMES), "ndvi_modis_cropland_max")   # everything beyond the NDVI headline
 
 # Runtime note: every Q1 version below (V1 TWFE + dCDH, V2 C&S stock-threshold, V3 C&S onset-clock,
-# V3b two-clock TWFE) loops over `OUTCOMES`. With all 6 present this multiplies the number of C&S /
-# dCDH fits ~6x versus the original NDVI-only document -- expect a much longer knit (dCDH especially,
+# V3b two-clock TWFE) loops over `OUTCOMES`. With all 8 present this multiplies the number of C&S /
+# dCDH fits ~8x versus a single-outcome document -- expect a much longer knit (dCDH especially,
 # see the memory note in the q1-v1-dcdh chunk). Trim OUTCOMES here (e.g. to NDVI + EVI only, or drop
-# the forest-crop pair given its sparsity) for a faster exploratory run.
+# the forest pair given its sparsity) for a faster exploratory run.
 names(OUTCOMES)
 ```
 
@@ -327,6 +373,88 @@ overlap_txt <- sprintf(
   min(max(ndvi_years), max(mining_years)))
 writeLines(overlap_txt, file.path(out_es, "es_overlap_window.md"))
 cat(overlap_txt)
+```
+
+```{r vi-missingness, fig.height=5}
+# NA share for every VI column (index x mask x stat) in THIS panel -- the evidence behind the
+# mask/stat choices made in `outcomes-setup` above (headline stat = max/peak; mask set = cropland,
+# nominecrop, forest, veg_broad; decided 2026-07-07 after reviewing this exact diagnostic).
+#
+# Also answers a land-cover coverage question: ESA CCI only runs 1995-2022, but the VI panel runs
+# to 2025. b_03a_vi_panel.R's mask_vi_year() CLAMPS the CCI year for 2023-2025 to the nearest
+# available year (2022) rather than going NA -- so those three years are NOT actually re-derived
+# from new land-cover data, they reuse the 2022 classification under a "land cover didn't change"
+# assumption. Only `urban_share` (built directly off the CCI raster with no clamp) is genuinely NA
+# past 2022. The year-trend plot below makes this visible: mask NA rates go FLAT from 2023 on
+# (same value as 2022), while urban_share's NA rate jumps to 100%.
+vi_all_cols <- setdiff(es$vi_cols, "urban_share")
+
+na_by_col <- tibble(
+  col      = vi_all_cols,
+  na_share = vapply(vi_all_cols, \(c) mean(is.na(panel[[c]])), numeric(1))
+) |>
+  mutate(
+    index     = str_extract(col, "^ndvi|^evi"),
+    remainder = str_remove(col, "^(ndvi|evi)_modis_"),          # "{mask}_{stat}" or just "{stat}"
+    stat      = str_extract(remainder, "mean$|max$"),
+    mask      = str_remove(remainder, "_?(mean|max)$"),
+    mask      = if_else(mask == "", "overall", mask)
+  ) |>
+  dplyr::select(index, mask, stat, na_share)
+
+na_by_mask <- na_by_col |>
+  group_by(mask) |>
+  summarise(na_share = mean(na_share), .groups = "drop") |>
+  arrange(na_share)
+
+save_md(na_by_mask, "es_vi_missingness_by_mask.md", digits = 3)
+
+kbl(na_by_mask, digits = 3, caption = paste0(
+    "VI column NA share by land-cover mask (averaged over {NDVI,EVI} x {mean,max}). overall/",
+    "nominecrop are ~pixel-complete; forest stays the sparsest -- same problem as the old ",
+    "MODIS-IGBP forestcrop mask; veg_broad/veg_narrow/cropland are the usable middle ground.")) |>
+  kable_styling(full_width = FALSE)
+
+p_na_mask <- ggplot(na_by_col, aes(x = reorder(mask, na_share), y = na_share, fill = stat)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~index) +
+  scale_y_continuous(labels = scales::percent) +
+  coord_flip() +
+  labs(title    = "VI column missingness by mask, index, and stat",
+       subtitle = "mean and max are equally missing within a mask -- NA is driven by pixel coverage, not the temporal reduction",
+       x = NULL, y = "Share of hex-years NA", fill = "Stat") +
+  theme_bw(base_size = 11)
+p_na_mask
+save_es(p_na_mask, "es_vi_missingness_by_mask.png", height = 4.5)
+
+# Year trend for the 4 OUTCOMES masks + urban_share -- shows the ESA CCI 2022 clamp (flat from
+# 2023 on) vs urban_share's genuine, unclamped NA.
+na_by_year <- panel |>
+  group_by(year) |>
+  summarise(
+    cropland    = mean(is.na(ndvi_modis_cropland_max)),
+    nominecrop  = mean(is.na(ndvi_modis_nominecrop_max)),
+    forest      = mean(is.na(ndvi_modis_forest_max)),
+    veg_broad   = mean(is.na(ndvi_modis_veg_broad_max)),
+    urban_share = if ("urban_share" %in% names(panel)) mean(is.na(urban_share)) else NA_real_,
+    .groups = "drop"
+  ) |>
+  pivot_longer(-year, names_to = "series", values_to = "na_share")
+
+cci_last_year <- max(vi_years <- sort(unique(panel$year))[sort(unique(panel$year)) <= 2022])
+
+p_na_year <- ggplot(na_by_year, aes(year, na_share, colour = series)) +
+  geom_vline(xintercept = cci_last_year + 0.5, linetype = "dotted", colour = "grey40") +
+  geom_line() + geom_point(size = 1) +
+  scale_y_continuous(labels = scales::percent) +
+  annotate("text", x = cci_last_year + 0.7, y = 1,
+           label = "ESA CCI ends 2022 ->\nmasks clamp, urban_share doesn't",
+           hjust = 0, size = 3, colour = "grey40") +
+  labs(title = "NA share by year: land-cover masks clamp past 2022, urban_share does not",
+       x = NULL, y = "Share of hexes NA", colour = NULL) +
+  theme_bw(base_size = 11)
+p_na_year
+save_es(p_na_year, "es_vi_missingness_by_year.png", height = 4.5)
 ```
 
 ```{r panel-censored}
@@ -415,12 +543,12 @@ combined |>
 <!--   semi_join(pv_complete_ids, by = "hex_id") |> -->
 <!--   mutate(adj_D = as.integer(!is.na(adj_onset_year) & year >= adj_onset_year)) -->
 
-<!-- do.call(panelview, c(list(ndvi_modis ~ adj_D, data = panel_pv_adj, -->
+<!-- do.call(panelview, c(list(ndvi_modis_cropland_max ~ adj_D, data = panel_pv_adj, -->
 <!--   main       = "Full panel — Treated Hexes (queen-adjacency onset).", -->
 <!--   legend.labs = c("Control Hex", "Treated Hex (before adj onset)", "Treated Hex (after adj onset)")), -->
 <!--   pv_args)) -->
 
-<!-- do.call(panelview, c(list(ndvi_modis ~ adj_D, data = panel_pv_adj_cens, -->
+<!-- do.call(panelview, c(list(ndvi_modis_cropland_max ~ adj_D, data = panel_pv_adj_cens, -->
 <!--   main       = "Pre-own-entry censored — Treated Hexes (queen-adjacency onset).", -->
 <!--   legend.labs = c("Control Hex", "Treated Hex (before adj onset)", "Treated Hex (after adj onset)")), -->
 <!--   pv_args)) -->
@@ -435,7 +563,7 @@ is temporarily disabled (rendering issue to fix).
 ```{r panelview-thresholds, fig.height=6, fig.width=10, eval=has_upstream}
 pv_complete_ids <- panel |>
   filter(year >= 2007, year <= 2017) |>
-  group_by(hex_id) |> filter(!any(is.na(ndvi_modis))) |>
+  group_by(hex_id) |> filter(!any(is.na(ndvi_modis_cropland_max))) |>
   ungroup() |> distinct(hex_id)
 
 # Treatment clock = first year `stock_col` exceeds mbar (NA = never treated), matching V2's
@@ -453,7 +581,7 @@ pv_show <- function(stock_col, mbar, main, file) {
     }) |>
     ungroup() |>
     mutate(D = as.integer(!is.na(g_thr) & year >= g_thr))
-  p <- panelview(ndvi_modis ~ D, data = d, index = c("hex_id", "year"), main = main,
+  p <- panelview(ndvi_modis_cropland_max ~ D, data = d, index = c("hex_id", "year"), main = main,
                  legend.labs = c("Control", "Pre-treatment", "Post-treatment"),
                  pre.post = TRUE, by.timing = TRUE, collapse.history = TRUE,
                  display.all = TRUE, report.missing = FALSE, background = "white")
@@ -477,7 +605,7 @@ mbar_grid <- c(0, 10, 25, 50)    # ha thresholds for V2 / V2c; mbar = 0 == "any 
 
 # C&S event study wrapper. `gcol` is a numeric column in `data` (0 = never-treated, else first-treat
 # year). Returns the att_gt object + dynamic (event-time) and overall aggregations.
-run_cs <- function(data, yname, gcol, xformla = xf, cluster = "block_num",
+run_cs <- function(data, yname, gcol, xformla = xf, cluster = "main_basin",
                    control = "notyettreated", min_e = -5, max_e = 5) {
   data <- data |> filter(is.finite(.data[[yname]]))
   att <- did::att_gt(
@@ -652,13 +780,129 @@ different vegetation.
 
 ---
 
+# Q0 — Own-hex mining → own-hex vegetation (mechanics sanity check) {.tabset}
+
+**Purpose.** Before trusting the upstream/downstream designs in Q1 (flow graph, directionality,
+waterborne mechanism), check the most basic version of the claim: **is there a detectable
+vegetation effect in the hex that is actually mined**, full stop? Treatment here is mining
+**within the focal hex itself** (`own_onset_year` / `own_new_ha` / `own_stock_ha`, already in the
+panel from `b_03b_own_mining.R` — no flow-graph, no directionality, no new data). If this doesn't
+show an effect, something is wrong upstream of the fancier designs (panel construction, outcome
+definition, event-time coding); if it does, it's the natural baseline Q1's upstream/downstream
+results should be read against. Runs on every outcome in `OUTCOMES` and does **not** require
+`has_upstream` — it works even before the flow graph exists.
+
+Two versions, mirroring Q1's V3 (absorbing onset, no threshold) and V2 (absorbing treatment at a
+stock threshold):
+
+- **Q0a** — treatment clock = `first_treat_own` (the year the hex first mines; already built in
+  `b_03e_assemble_eventpanel.R`, 0 = never mined). No threshold — the cleanest version.
+- **Q0b** — treatment clock = the first year `own_stock_ha` (cumulative own-hex mined hectares)
+  crosses $\bar m$, swept over the same `mbar_grid` as Q1/V2 (0/10/25/50 ha) — checks whether the
+  effect scales with *how much* of the hex is mined, not just *whether* it is.
+
+Both use the same C&S (`did::att_gt`, not-yet-treated controls) estimator and `xf` control
+formula as Q1, via the `run_cs`/`first_cross`/`cs_row`/`v2_dynplot`/`outcome_dynplot` helpers
+defined above.
+
+## Q0a — Onset design (any own-hex mining, no threshold)
+
+```{r q0a-fit}
+# One C&S fit per outcome, gname = first_treat_own (already 0/onset-year coded in the panel).
+q0a_fits <- imap(OUTCOMES, \(lab, yc) run_cs(panel, yc, "first_treat_own"))
+
+q0a_overall <- imap_dfr(q0a_fits, \(fit, oc)
+  tibble(outcome = OUTCOMES[[oc]], att = fit$overall$overall.att, se = fit$overall$overall.se)) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+
+save_md(q0a_overall, "es_q0a_overall_table.md")
+kbl(q0a_overall, digits = 4,
+    caption = "Q0a: overall ATT of own-hex mining onset on own-hex vegetation, by outcome.") |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r q0a-plot, fig.height=4.5}
+# Headline (NDVI peak) dynamic ATT.
+p_q0a_headline <- tidy_dyn(q0a_fits[["evi_modis_cropland_max"]]$dynamic, "Own-hex mining onset") |>
+  ggplot(aes(event_time, att)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), fill = "#721F81", alpha = 0.15) +
+  geom_line(colour = "#721F81") + geom_point(colour = "#721F81", size = 1.8) +
+  labs(title    = "Q0a — Own-hex mining onset -> own-hex NDVI (peak)",
+       subtitle = "C&S dynamic ATT, not-yet-treated controls. A clear negative post-onset break confirms the pipeline mechanics.",
+       x = "Event time (years relative to own mining onset)", y = "ATT on NDVI (peak)") +
+  theme_bw(base_size = 11)
+p_q0a_headline
+save_es(p_q0a_headline, "es_q0a_headline.png", height = 4.5)
+
+# All outcomes overlaid.
+q0a_dyn_list <- map(q0a_fits, "dynamic")
+p_q0a_outcomes <- outcome_dynplot(q0a_dyn_list, unname(OUTCOMES[names(q0a_dyn_list)]),
+  "Q0a — Own-hex mining onset across outcomes",
+  "C&S dynamic ATT; one line per outcome; 95% CI ribbon")
+p_q0a_outcomes
+save_es(p_q0a_outcomes, "es_q0a_outcomes.png", height = 4.5)
+```
+
+## Q0b — Absorbing treatment at a stock threshold (own_stock_ha, mbar sweep)
+
+```{r q0b-fit}
+# run_v0b_own: the V2-style mbar sweep, but for a single exposure (own-hex mining) instead of the
+# 5 upstream/lateral/downstream exposures -- so it reuses v2_dynplot/cs_row directly (both expect
+# a list keyed "mbar_0"/"mbar_10"/"mbar_25"/"mbar_50", which this produces).
+run_v0b_own <- function(yname) {
+  l <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "own_stock_ha", mb), yname, "g_thr"))
+  set_names(l, paste0("mbar_", mbar_grid))
+}
+
+q0b_fits <- imap(OUTCOMES, \(lab, yc) run_v0b_own(yc))
+
+q0b_all <- imap_dfr(q0b_fits, \(cs_list, oc) cs_row(cs_list, OUTCOMES[[oc]])) |>
+  rename(outcome = exposure) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+
+q0b_wide <- q0b_all |>
+  mutate(cell = sprintf("%+.4f (%.4f)", att, se)) |>
+  select(outcome, mbar, cell) |>
+  pivot_wider(names_from = mbar, values_from = cell, names_prefix = "stock > ") |>
+  rename_with(~paste0(., " ha"), starts_with("stock > "))
+save_md(q0b_wide, "es_q0b_stability_table.md")
+kbl(q0b_wide, caption = paste0(
+  "Q0b: overall ATT (SE) of own-hex mining on own-hex vegetation, across stock thresholds and ",
+  "outcomes. Compare against Q0a (mbar=0-equivalent) and against Q1's upstream/downstream ",
+  "results -- own-hex effects should be the LARGEST in magnitude (direct land-clearing, not a ",
+  "spillover), setting the scale for what a real waterborne effect could plausibly look like.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r q0b-plot, fig.height=4.5}
+p_q0b_headline <- v2_dynplot(q0b_fits[["ndvi_modis_cropland_max"]],
+  "Q0b — Own-hex mining ATT on NDVI (peak) across stock thresholds",
+  "C&S dynamic ATT, not-yet-treated controls; one line per own_stock_ha threshold")
+p_q0b_headline
+save_es(p_q0b_headline, "es_q0b_headline.png", height = 4.5)
+
+# All outcomes overlaid at a representative threshold (25 ha, matching Q1's outcome-overlay plots).
+Q0B_MBAR   <- 25L
+q0b_mb_key <- paste0("mbar_", Q0B_MBAR)
+q0b_dyn_list <- map(q0b_fits, \(cs_list) cs_list[[q0b_mb_key]]$dynamic)
+p_q0b_outcomes <- outcome_dynplot(q0b_dyn_list, unname(OUTCOMES[names(q0b_dyn_list)]),
+  sprintf("Q0b — Own-hex mining across outcomes — stock > %d ha", Q0B_MBAR),
+  "C&S dynamic ATT; one line per outcome; 95% CI ribbon")
+p_q0b_outcomes
+save_es(p_q0b_outcomes, "es_q0b_outcomes.png", height = 4.5)
+```
+
+---
+
 # Q1 — Upstream mining → downstream vegetation {.tabset}
 
 Every version below (V1 through V3b) is estimated **once per outcome** in `OUTCOMES` (defined in the
-`outcomes-setup` chunk above). `ndvi_modis` is kept as the **headline** — its plots/tables keep their
+`outcomes-setup` chunk above). `ndvi_modis_cropland_max` is kept as the **headline** — its plots/tables keep their
 original filenames, for continuity with the presentation deck — while the other outcomes (EVI, and
-the no-mine-crop / forest-crop variants of both) run inside the *same* code blocks as additional
-rows, columns, or facets, rather than a separate "robustness" section.
+the no-mine-crop / forest / veg-broad variants of both) run inside the *same* code blocks as
+additional rows, columns, or facets, rather than a separate "robustness" section.
 
 ```{r q1-guard, results='asis'}
 if (!has_upstream)
@@ -680,7 +924,7 @@ check (dCDH) follows. The upstream-vs-downstream split is the directional placeb
 ```{r q1-v1-prep, eval=has_upstream}
 # Build first-difference panels for all available stock dimensions AND all outcomes in `OUTCOMES`
 # (across() creates lag_<col> / d_<outcome> columns for every stock/outcome column present).
-# NOTE: no longer drops rows on !is.na(d_ndvi) globally -- outcomes differ in coverage (forest-crop
+# NOTE: no longer drops rows on !is.na(d_ndvi) globally -- outcomes differ in coverage (forest
 # especially is sparse), so each feols() call below drops its own outcome's NA rows via its formula.
 make_dl <- function(df) {
   stock_cols   <- intersect(
@@ -724,10 +968,10 @@ m_flow_full <- imap(OUTCOMES, \(lab, yc) run_flow(dl,          yc))
 m_flow_cens <- imap(OUTCOMES, \(lab, yc) run_flow(dl_censored, yc))
 
 # Headline (NDVI) — identical display + filenames to the original single-outcome version.
-etable(m_flow_full[["ndvi_modis"]], headers = f_hdrs, title = "Flow lags — full panel (NDVI, headline)")
-etable(m_flow_cens[["ndvi_modis"]], headers = f_hdrs, title = "Flow lags — censored (NDVI, headline)")
-save_md(tidy_feols_md(m_flow_full[["ndvi_modis"]], f_hdrs), "es_v1_flowlags_full.md")
-save_md(tidy_feols_md(m_flow_cens[["ndvi_modis"]], f_hdrs), "es_v1_flowlags_censored.md")
+etable(m_flow_full[["ndvi_modis_cropland_max"]], headers = f_hdrs, title = "Flow lags — full panel (NDVI, headline)")
+etable(m_flow_cens[["ndvi_modis_cropland_max"]], headers = f_hdrs, title = "Flow lags — censored (NDVI, headline)")
+save_md(tidy_feols_md(m_flow_full[["ndvi_modis_cropland_max"]], f_hdrs), "es_v1_flowlags_full.md")
+save_md(tidy_feols_md(m_flow_cens[["ndvi_modis_cropland_max"]], f_hdrs), "es_v1_flowlags_censored.md")
 
 # All other outcomes: same display, one etable per outcome, plus their own markdown exports. print()
 # is required inside the for loop -- R does not auto-print statements inside control-flow blocks.
@@ -766,10 +1010,10 @@ m_joint_full <- imap(OUTCOMES, \(lab, yc) run_joint(dl,          yc))
 m_joint_cens <- imap(OUTCOMES, \(lab, yc) run_joint(dl_censored, yc))
 
 # Headline (NDVI) — identical display + filenames to the original single-outcome version.
-etable(m_joint_full[["ndvi_modis"]], headers = j_hdrs, title = "Joint spec — full panel (NDVI, headline)")
-etable(m_joint_cens[["ndvi_modis"]], headers = j_hdrs, title = "Joint spec — censored (NDVI, headline)")
-save_md(tidy_feols_md(m_joint_full[["ndvi_modis"]], j_hdrs), "es_v1_joint_full.md")
-save_md(tidy_feols_md(m_joint_cens[["ndvi_modis"]], j_hdrs), "es_v1_joint_censored.md")
+etable(m_joint_full[["ndvi_modis_cropland_max"]], headers = j_hdrs, title = "Joint spec — full panel (NDVI, headline)")
+etable(m_joint_cens[["ndvi_modis_cropland_max"]], headers = j_hdrs, title = "Joint spec — censored (NDVI, headline)")
+save_md(tidy_feols_md(m_joint_full[["ndvi_modis_cropland_max"]], j_hdrs), "es_v1_joint_full.md")
+save_md(tidy_feols_md(m_joint_cens[["ndvi_modis_cropland_max"]], j_hdrs), "es_v1_joint_censored.md")
 
 # All other outcomes: same display, one etable per outcome, plus their own markdown exports.
 for (oc in extra_outcomes) {
@@ -826,9 +1070,9 @@ run_dcdh <- function(df, col, yname) {
 }
 
 # Headline (NDVI) — unchanged from the single-outcome version.
-dcdh_full <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel,          d[1], "ndvi_modis")),
+dcdh_full <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel,          d[1], "ndvi_modis_cropland_max")),
                       sapply(dcdh_dims, `[`, 2))
-dcdh_cens <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel_censored, d[1], "ndvi_modis")),
+dcdh_cens <- setNames(lapply(dcdh_dims, \(d) run_dcdh(panel_censored, d[1], "ndvi_modis_cropland_max")),
                       sapply(dcdh_dims, `[`, 2))
 
 # Other outcomes — nested outcome -> dim lists.
@@ -988,27 +1232,27 @@ not-yet-treated controls, outcome in levels. Five exposure dimensions (treatment
 
 Adjacent (queen) is excluded because it aggregates upstream + lateral + downstream neighbours,
 confounding treatment and placebo signals. The $\bar m$ sweep across {0, 10, 25, 50} ha is the
-threshold-stability check, run for **every outcome in `OUTCOMES`** — `ndvi_modis` is the headline
+threshold-stability check, run for **every outcome in `OUTCOMES`** — `ndvi_modis_cropland_max` is the headline
 (plots/table below keep their original filenames); the rest are added as a combined comparison
 table plus an outcome-overlay plot at $\bar m = 25$ ha.
 
 ```{r q1-v2, eval=has_upstream}
-v2_up <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "up_stock_ha", mb), "ndvi_modis", "g_thr"))
+v2_up <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "up_stock_ha", mb), "ndvi_modis_cropland_max", "g_thr"))
 names(v2_up) <- paste0("mbar_", mbar_grid)
 
 if (has_near_flow) {
-  v2_near_up <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "nearest_up_stock_ha", mb), "ndvi_modis", "g_thr"))
+  v2_near_up <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "nearest_up_stock_ha", mb), "ndvi_modis_cropland_max", "g_thr"))
   names(v2_near_up) <- paste0("mbar_", mbar_grid)
 }
 if (has_lateral) {
-  v2_lat <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "lateral_stock_ha", mb), "ndvi_modis", "g_thr"))
+  v2_lat <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "lateral_stock_ha", mb), "ndvi_modis_cropland_max", "g_thr"))
   names(v2_lat) <- paste0("mbar_", mbar_grid)
 }
 if (has_near_flow) {
-  v2_near_dn <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "nearest_down_stock_ha", mb), "ndvi_modis", "g_thr"))
+  v2_near_dn <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "nearest_down_stock_ha", mb), "ndvi_modis_cropland_max", "g_thr"))
   names(v2_near_dn) <- paste0("mbar_", mbar_grid)
 }
-v2_dn <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "down_stock_ha", mb), "ndvi_modis", "g_thr"))
+v2_dn <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "down_stock_ha", mb), "ndvi_modis_cropland_max", "g_thr"))
 names(v2_dn) <- paste0("mbar_", mbar_grid)
 
 # Dynamic stability table (treatment → comparison → placebo)
@@ -1054,7 +1298,7 @@ v2_rows_headline <- v2_rows_from_exposures(list(
   lat     = if (has_lateral   && exists("v2_lat"))     v2_lat     else NULL,
   near_dn = if (has_near_flow && exists("v2_near_dn")) v2_near_dn else NULL,
   dn      = v2_dn
-)) |> mutate(outcome = OUTCOMES[["ndvi_modis"]], .before = 1)
+)) |> mutate(outcome = OUTCOMES[["ndvi_modis_cropland_max"]], .before = 1)
 v2_rows_extra <- imap_dfr(v2_extra, \(exp_list, oc)
   v2_rows_from_exposures(exp_list) |> mutate(outcome = OUTCOMES[[oc]], .before = 1))
 
@@ -1083,13 +1327,13 @@ kbl_v2_all
 
 ```{r q1-v2-outcome-plots, eval=has_upstream, fig.height=4.5}
 # Outcome-overlay view at a representative threshold (25 ha): does the upstream-vs-downstream
-# contrast hold across NDVI / EVI / no-mine-crop / forest-crop? One line per outcome.
+# contrast hold across NDVI / EVI / no-mine-crop / forest / veg-broad? One line per outcome.
 OUTCOME_MBAR <- 25L
 mb_key       <- paste0("mbar_", OUTCOME_MBAR)
 
-up_dyn_list <- c(list(ndvi_modis = v2_up[[mb_key]]$dynamic),
+up_dyn_list <- c(list(ndvi_modis_cropland_max = v2_up[[mb_key]]$dynamic),
                  lapply(v2_extra, \(e) e$up[[mb_key]]$dynamic))
-dn_dyn_list <- c(list(ndvi_modis = v2_dn[[mb_key]]$dynamic),
+dn_dyn_list <- c(list(ndvi_modis_cropland_max = v2_dn[[mb_key]]$dynamic),
                  lapply(v2_extra, \(e) e$dn[[mb_key]]$dynamic))
 out_labels  <- unname(OUTCOMES[names(up_dyn_list)])
 
@@ -1208,10 +1452,10 @@ censored <- censored |>
   )
 
 # Headline = nearest 1-hop upstream; all-reachable upstream = robustness; downstream = placebos.
-if (has_nearest)      v3_nearest      <- run_cs(censored, "ndvi_modis", "g_nearest")
-v3_up   <- run_cs(censored, "ndvi_modis", "g_up")
-if (has_nearest_down) v3_nearest_down <- run_cs(censored, "ndvi_modis", "g_nearest_down")
-v3_down <- run_cs(censored, "ndvi_modis", "g_down")
+if (has_nearest)      v3_nearest      <- run_cs(censored, "ndvi_modis_cropland_max", "g_nearest")
+v3_up   <- run_cs(censored, "ndvi_modis_cropland_max", "g_up")
+if (has_nearest_down) v3_nearest_down <- run_cs(censored, "ndvi_modis_cropland_max", "g_nearest_down")
+v3_down <- run_cs(censored, "ndvi_modis_cropland_max", "g_down")
 
 rows <- list(
   if (has_nearest) tibble(treatment = "nearest upstream — 1-hop (headline)",
@@ -1270,7 +1514,7 @@ v3_extra_defs <- set_names(
 )
 
 v3_rows_headline <- v3_tbl |> select(treatment, att, se) |>
-  mutate(outcome = OUTCOMES[["ndvi_modis"]], .before = 1)
+  mutate(outcome = OUTCOMES[["ndvi_modis_cropland_max"]], .before = 1)
 v3_rows_extra <- imap_dfr(v3_extra_defs, \(defs, oc)
   v3_rows_from_defs(defs) |> mutate(outcome = OUTCOMES[[oc]], .before = 1))
 
@@ -1375,8 +1619,8 @@ v3b_fits <- imap(OUTCOMES, \(lab, yc) fit_v3b(yc))
 
 # Headline (NDVI) — identical display, table export, and plot filename to the original
 # single-outcome version.
-m_v3b    <- v3b_fits[["ndvi_modis"]]$model
-v3b_coef <- v3b_fits[["ndvi_modis"]]$coef
+m_v3b    <- v3b_fits[["ndvi_modis_cropland_max"]]$model
+v3b_coef <- v3b_fits[["ndvi_modis_cropland_max"]]$coef
 etable(m_v3b, title = "V3b — two-clock TWFE (own pre-entry clock + nearest-upstream clock), NDVI headline")
 save_md(v3b_coef |> transmute(clock, event_time, est = round(est, 4), se = round(se, 4)),
         "es_v3b_coefficients.md")
@@ -1398,7 +1642,7 @@ save_es(p_v3b, "es_v3b_twoclock.png", width = 10, height = 4.5)
 
 ```{r q1-v3b-alloutcomes, eval=(has_upstream && has_nearest), fig.width=10, fig.height=12}
 # All outcomes together, faceted by outcome (rows) x clock (columns) -- one integrated view of
-# whether the two-clock decomposition holds across NDVI/EVI/no-mine-crop/forest-crop. Cheap (feols,
+# whether the two-clock decomposition holds across NDVI/EVI/no-mine-crop/forest/veg-broad. Cheap (feols,
 # not att_gt), so computed for every outcome without a separate reduced grid.
 v3b_all_coef <- imap_dfr(v3b_fits, \(fit, oc) fit$coef |> mutate(outcome = OUTCOMES[[oc]], .before = 1)) |>
   mutate(outcome = factor(outcome, levels = unname(OUTCOMES)))
@@ -1528,22 +1772,34 @@ tibble(file = list.files(out_es, pattern = "\\.(png|md)$")) |>
 
 # Caveats & next steps
 
-- **Sub-basin clustering** is a 25 km block stand-in; swap in a real basin id (HydroBASINS / MERIT
-  `upa` pour-points) for the headline SEs.
+- **Sub-basin clustering** now uses real HydroBASINS level-9 sub-basins (`basin_num`, from
+  `d_07_hydrobasins.R`) when present for this resolution (see `load-panel`); falls back to the old
+  25 km centroid-block stand-in — with a warning — for a resolution that hasn't been run yet.
 - **Window**: Barenblitt is 2007–2017; the usable event window is the overlap with the NDVI stack
   (see the overlap table). Onsets before NDVI coverage have no pre-period and are dropped by `did`.
 - **Coverage / accuracy**: Barenblitt is SW-Ghana only at 75.6% producer accuracy → onset measured
   with error and "never-treated" conflates "never surveyed"; prefer not-yet-treated controls.
 - **Off-network galamsey** (~5.5% of mined ha at `ROUTE_KM2=10`) is unattributed upstream; the
-  `d_04_merit.R` 11j threshold sweep documents the sensitivity.
-- **Cropland masking**: NDVI is an all-pixel hex mean; restrict to cropland pixels (Q1's
-  *agricultural* channel) once a land-cover mask is available.
+  `d_04_merit.R` 11j threshold sweep documents the sensitivity. The panel also carries a full
+  `ROUTE_KM2=50` alt flow graph (`_upa50`-suffixed up/down/lateral columns, from `b_03c`/`b_03d`
+  at the coarser trunk-stream-only threshold) as a robustness cut, but it is **not yet wired into
+  any V1–V3b design below** — would need a second treatment-definition dimension threaded through
+  each chunk.
+- **Cropland masking** — `cropland` (built in the 2026-07-06 `b_03a` rework) is now the **headline**
+  mask (swapped in for the unrestricted `overall` mean on 2026-07-07) precisely because it isolates
+  the *agricultural* damage channel rather than mixing forest/urban/water pixels into one hex-wide
+  number. `overall`/`veg_narrow` remain in the panel but are not currently in `OUTCOMES`.
+- **ESA CCI year clamp** — the land-cover masks (`nominecrop` aside) are only genuinely re-derived
+  through 2022; VI years 2023–2025 reuse the 2022 CCI classification (`b_03a`'s `mask_vi_year()`
+  clamps rather than going NA). See the `vi-missingness` chunk above for the NA-rate evidence this
+  produces (flat, not missing, past 2022).
 - **dCDH** (`did_multiplegt_dyn`) runs only if `DIDmultiplegtDYN` is installed (`HAS_DCDH = `r HAS_DCDH`).
 - **Multi-outcome runtime.** Every Q1 design (V1 TWFE + dCDH, V2, V3, V3b) now loops over `OUTCOMES`
-  (NDVI/EVI x base/no-mine-crop/forest-crop; `outcomes-setup` chunk) rather than NDVI alone. This is
-  exploratory — expect a substantially longer knit (dCDH especially, up to ~60 runs across outcomes x
-  dims x panels) — and the forest-crop outcomes are the sparsest (see `d_05_ndvi.R`'s
-  forestcrop-missingness diagnostics), so their C&S fits may be underpowered or fail to converge on
-  small resolutions. Trim `OUTCOMES` for a faster or more reliable run. NDVI vs EVI ATT *magnitudes*
-  are not directly comparable (different index scales) — compare sign/significance/event-time shape.
+  (NDVI/EVI peak x cropland/no-mine-crop/forest/veg-broad; `outcomes-setup` chunk) rather than NDVI
+  alone. This is exploratory — expect a substantially longer knit (dCDH especially, up to ~80 runs
+  across outcomes x dims x panels) — and the `forest` outcomes are the sparsest (~48–52% NA; see
+  the `vi-missingness` diagnostic chunk), so their C&S fits may be underpowered or fail to converge
+  on small resolutions. Trim `OUTCOMES` for a faster or more reliable run. NDVI vs EVI ATT
+  *magnitudes* are not directly comparable (different index scales) — compare
+  sign/significance/event-time shape.
 ```

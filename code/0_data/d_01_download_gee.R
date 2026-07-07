@@ -3,9 +3,12 @@
 # no derived layers or per-hex extraction here — those live in d_0N_* siblings and
 # 2_build/b_02_hex_frame.R.
 #
-# EXPORT REGION: currently restricted to the Barenblitt study area (SW Ghana) + 25 km buffer
-# (Section 3), to keep the 30 m Landsat exports to one GeoTIFF per year. The full-Ghana region
-# is retained but commented out in Section 3 — set `export_region <- ghana_bounds` to scale up.
+# EXPORT REGION: Sections 5-7 (Landsat/MODIS/land cover/CHIRPS) are restricted to the Barenblitt
+# study area (SW Ghana) + 25 km buffer (Section 3), to keep the 30 m Landsat exports to one
+# GeoTIFF per year — set `export_region <- ghana_bounds` there to scale all of them up. Section 6c
+# (Hansen GFC) uses the national `ghana_bounds` directly instead (activated 2026-07-07), since it's
+# a single static image (cheap at national extent) and the Maus et al. mining polygons it feeds
+# into are not restricted to the SW-Ghana study area.
 #
 # NOTE: MERIT-DEM + MERIT Hydro GEE exports are handled in d_04_merit.R, not here.
 # That script immediately processes the exports into hydro-geomorphic layers (HAND,
@@ -36,12 +39,19 @@
 #   HydroBASINS  — WWF/HydroSHEDS/v1/Basins/hybas_9 (level-9 sub-basins), static, filtered to
 #                  export_region → data/raw/hydrobasins/hydrobasins_hybas9_studyarea.geojson
 #                  (table export, not a raster; intended sub-basin ID for event-study SE clustering)
+#   Hansen GFC   — UMD/hansen/global_forest_change_2025_v1_13, ~30 m, Ghana NATIONAL extent, single
+#                  static image (treecover2000/loss/lossyear/gain/datamask; lossyear covers
+#                  2001–2025) → data/raw/hansen/hansen_gfc_ghana*.tif + hansen_gfc_ghana_stack.tif
+#                  (Sec 9 just confirms band names + mosaics tiles if GEE sharded the export; no
+#                  per-year stacking needed). Feeds d_10_forest_loss_onset.R's forest-loss-year
+#                  proxy for the Maus et al. mining-polygon onset-year question.
 #
 # Drive layout: all products export to one Drive folder (ghana_mining_gee_exports);
 # the source-explicit filenames keep them unambiguous within it.
 #
 # Workflow:
-#   Secs 1–7  submit all GEE export tasks to Google Drive (5 VIs, 6 land cover, 7 CHIRPS).
+#   Secs 1–7  submit all GEE export tasks to Google Drive (5 VIs, 6 land cover, 6b HydroBASINS,
+#             6c Hansen GFC, 7 CHIRPS).
 #   Sec 7b    optional blocking monitor (uncomment to poll task completion).
 #   Sec 8     download completed exports from Drive (uncomment once tasks show COMPLETED).
 #   Sec 9     stack downloaded TIFs into multi-layer GeoTIFFs for fast loading.
@@ -98,22 +108,27 @@ cat(sprintf("Study-area export bbox (Barenblitt +%g km): %.3f–%.3f degE, %.3f�
             BUFFER_KM, study_bbox[["xmin"]], study_bbox[["xmax"]],
             study_bbox[["ymin"]], study_bbox[["ymax"]]))
 
-# --- Full-Ghana region (commented out — uncomment to scale up to national coverage) ---
-# gha_country <- st_read(
-#   here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin0.shp"),
-#   quiet = TRUE) |>
-#   st_transform(4326)
-# bbox_ghana <- st_bbox(gha_country)
-# ghana_bounds <- ee$Geometry$Rectangle(
-#   coords   = c(bbox_ghana[["xmin"]], bbox_ghana[["ymin"]],
-#                bbox_ghana[["xmax"]], bbox_ghana[["ymax"]]),
-#   proj     = "EPSG:4326",
-#   geodesic = FALSE)
-# cat(sprintf("Ghana bounding box: %.3f°W – %.3f°E, %.3f°N – %.3f°N\n",
-#             bbox_ghana[["xmin"]], bbox_ghana[["xmax"]],
-#             bbox_ghana[["ymin"]], bbox_ghana[["ymax"]]))
+# --- Full-Ghana region --- activated 2026-07-07 for Section 6c (Hansen GFC): Maus et al.'s
+# Ghana mining polygons extend well beyond the SW-Ghana study_bounds (a national footprint), and
+# Hansen GFC is a single static image (not a per-year time series), so a national export is cheap
+# regardless. `ghana_bounds` is available but does NOT change `export_region` below — Sections 5–7
+# (Landsat/MODIS/CHIRPS) still use the restricted study_bounds unchanged.
+gha_country <- st_read(
+  here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin0.shp"),
+  quiet = TRUE) |>
+  st_transform(4326)
+bbox_ghana <- st_bbox(gha_country)
+ghana_bounds <- ee$Geometry$Rectangle(
+  coords   = c(bbox_ghana[["xmin"]], bbox_ghana[["ymin"]],
+               bbox_ghana[["xmax"]], bbox_ghana[["ymax"]]),
+  proj     = "EPSG:4326",
+  geodesic = FALSE)
+cat(sprintf("Ghana bounding box: %.3f°W – %.3f°E, %.3f°N – %.3f°N\n",
+            bbox_ghana[["xmin"]], bbox_ghana[["xmax"]],
+            bbox_ghana[["ymin"]], bbox_ghana[["ymax"]]))
 
-# Active export region for all Section 5–7 tasks. Swap to ghana_bounds (above) to scale up.
+# Active export region for Section 5–7 tasks (Landsat/MODIS/land cover/CHIRPS). Section 6c (Hansen
+# GFC) uses ghana_bounds directly instead. Swap to ghana_bounds here too to scale the VI exports up.
 export_region <- study_bounds
 
 ####4. Parameters ####
@@ -136,9 +151,11 @@ LCOVER_YEARS   <- 2001:2024   # MCD12Q1 starts 2001; ~1 yr processing lag → 20
 out_modis_vi   <- here("data", "raw", "modis_vi")
 out_land_cover <- here("data", "raw", "land_cover")
 out_esa        <- here("data", "raw", "land_cover", "esa")   # ESA CCI — downloaded via download_land_cover_ghana.ipynb (not GEE)
+out_hansen     <- here("data", "raw", "hansen")
 dir.create(out_modis_vi,   recursive = TRUE, showWarnings = FALSE)
 dir.create(out_land_cover, recursive = TRUE, showWarnings = FALSE)
 dir.create(out_esa,        recursive = TRUE, showWarnings = FALSE)
+dir.create(out_hansen,     recursive = TRUE, showWarnings = FALSE)
 
 ####5. Landsat NDVI — C02 T1 L2 Annual Composite (30 m) ####
 #
@@ -355,6 +372,49 @@ basins_task <- ee$batch$Export$table$toDrive(
 basins_task$start()
 message("  Submitted: hydrobasins_hybas9_studyarea (table export)")
 
+####6c. Hansen Global Forest Change v1.13 (2000-2025) ####
+#
+# Collection: UMD/hansen/global_forest_change_2025_v1_13 (single static image, NOT a time
+#   series — one export task, unlike Secs 5-6's per-year loops). Confirmed latest version as of
+#   2026-07-07 (v1.13 supersedes v1.12/2024); re-check https://developers.google.com/earth-engine/
+#   datasets/catalog/UMD_hansen_global_forest_change_2025_v1_13 periodically for newer releases.
+# Bands exported (dropping the first_b*/last_b* Landsat spectral-composite bands -- not needed here):
+#   treecover2000 — tree canopy cover for year 2000 (0-100%), 30.92 m native.
+#   loss          — bitmask, 1 = stand-replacement forest loss detected anywhere 2001-2025.
+#   lossyear      — 0 = no loss; 1-25 = loss detected primarily in year 2000+N (i.e. 2001-2025).
+#     THIS is the change-detection signal for the Maus et al. mining-polygon onset-year question
+#     (see galamsey_tasklist.md / d_10_forest_loss_onset.R): for a polygon that was forested in
+#     2000, the earliest/modal lossyear inside it is a candidate proxy for "when did clearing
+#     (possibly mining) begin" -- conceptually similar to what Barenblitt's own per-year
+#     classification measures directly, but derived from Hansen's independent break-detection
+#     algorithm instead of a from-scratch annual classifier.
+#   gain          — bitmask, forest gain 2000-2012 ONLY (not updated in later Hansen versions) —
+#     included for completeness/context, not used by the onset-year analysis.
+#   datamask      — 0 = no data, 1 = mapped land, 2 = permanent water. Use to exclude water from
+#     any zonal stats (loss/lossyear are meaningless over water).
+# National extent (`ghana_bounds`, not `export_region`) — the Maus polygons this feeds into are
+# NOT restricted to the SW-Ghana study area (see d_09_mining_mausetal.R's Ghana map). Exported at
+# native ~30 m; GEE will auto-shard into multiple GeoTIFFs if needed, same as the Sec 5 Landsat
+# exports at national scale.
+
+message("\n=== Submitting Hansen Global Forest Change export task ===")
+hansen_img <- ee$Image("UMD/hansen/global_forest_change_2025_v1_13")$
+  select(list("treecover2000", "loss", "lossyear", "gain", "datamask"))
+
+hansen_task <- ee$batch$Export$image$toDrive(
+  image          = hansen_img,
+  description    = "hansen_gfc_ghana",
+  folder         = DRIVE_FOLDER,
+  fileNamePrefix = "hansen_gfc_ghana",
+  scale          = 30,
+  region         = ghana_bounds,
+  crs            = "EPSG:4326",
+  maxPixels      = 1e10,
+  fileFormat     = "GeoTIFF"
+)
+hansen_task$start()
+message("  Submitted: hansen_gfc_ghana (treecover2000, loss, lossyear, gain, datamask; national extent)")
+
 ####7. CHIRPS — Daily Precipitation → Annual Totals ####
 #
 # Collection: UCSB-CHG/CHIRPS/DAILY (Climate Hazards Group InfraRed Precipitation
@@ -403,6 +463,7 @@ message(sprintf("Submitted %d CHIRPS tasks to Drive folder '%s'.",
 # walk(lc_tasks,                        ee_monitoring)
 # walk(chirps_tasks,                    ee_monitoring)
 # ee_monitoring(basins_task)
+# ee_monitoring(hansen_task)
 
 ####8. Download from Google Drive ####
 # Run AFTER all GEE tasks show "COMPLETED" in the Tasks tab.
@@ -452,6 +513,7 @@ download_from_drive <- function(drive_folder, prefix, local_dir) {
 #download_from_drive(DRIVE_FOLDER, "modis_lc_ghana_",     out_land_cover)
 #download_from_drive(DRIVE_FOLDER, "chirps_ghana_",       out_chirps)
 #download_from_drive(DRIVE_FOLDER, "hydrobasins_hybas9_studyarea", out_hydrobasins)
+#download_from_drive(DRIVE_FOLDER, "hansen_gfc_ghana",    out_hansen)
 
 message("\n=== d_01_download.R: export tasks submitted ===")
 message(sprintf(
@@ -471,6 +533,7 @@ message(sprintf(
   "  CHIRPS:               %d tasks (chirps_ghana_1990 … 2025)", length(chirps_tasks)
 ))
 message("  HydroBASINS:          1 table export (hydrobasins_hybas9_studyarea, hybas_9 sub-basins)")
+message("  Hansen GFC:           1 image export (hansen_gfc_ghana, national extent, v1.13 2000-2025)")
 message("  Monitor: code.earthengine.google.com → Tasks tab")
 message("  Download: uncomment Section 8 once all tasks show COMPLETED")
 
@@ -557,3 +620,26 @@ save_stack(lc_stack, out_land_cover, "modis_lc_ghana_stack.tif", datatype = "INT
 # peak-EVI pipeline (per-16-day ESA-CCI mask → per-hex mean → annual max) built in b_03a.
 cci_stack <- stack_from_dir(out_esa, "^cci_landcover_ghana_\\d{4}\\.tif$", "cci")
 save_stack(cci_stack, out_esa, "cci_landcover_ghana_stack.tif", datatype = "INT1U")
+
+# Hansen GFC: already a single ready-to-use multi-band GeoTIFF as exported (no per-year files to
+# stack) — GEE may have sharded it into tiles at national extent, so mosaic with vrt() if so. Named
+# bands (treecover2000/loss/lossyear/gain/datamask) survive the export; just confirm and rename
+# defensively in case GEE flattened them to b1..b5. Consumed by d_10_forest_loss_onset.R.
+hansen_files <- list.files(out_hansen, pattern = "^hansen_gfc_ghana.*\\.tif$", full.names = TRUE)
+if (length(hansen_files) == 0) {
+  message("No hansen_gfc_ghana*.tif found in ", out_hansen, " — run Section 8 first.")
+} else {
+  hansen_r <- if (length(hansen_files) == 1L) terra::rast(hansen_files) else terra::vrt(hansen_files, overwrite = TRUE)
+  if (!all(c("treecover2000", "loss", "lossyear", "gain", "datamask") %in% names(hansen_r)))
+    names(hansen_r) <- c("treecover2000", "loss", "lossyear", "gain", "datamask")
+  message(sprintf("Hansen GFC: %d band(s) [%s], %.0f m res, CRS EPSG:4326",
+                  terra::nlyr(hansen_r), paste(names(hansen_r), collapse = ", "),
+                  mean(terra::res(hansen_r)) * 111320))
+  out_hansen_tif <- file.path(out_hansen, "hansen_gfc_ghana_stack.tif")
+  if (!file.exists(out_hansen_tif)) {
+    terra::writeRaster(hansen_r, out_hansen_tif, overwrite = FALSE, datatype = "INT1U")
+    message(sprintf("Saved: %s", out_hansen_tif))
+  } else {
+    message(sprintf("Skipping (already exists): %s", out_hansen_tif))
+  }
+}
