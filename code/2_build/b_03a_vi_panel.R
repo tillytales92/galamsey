@@ -22,7 +22,10 @@
 # (~26 yr x ~23 periods x 2 indices x 6 masks x 3 resolutions of masked zonal extraction).
 # Prerequisites: hex_{N}km_crosssection.rds (b_01_cross_section.R).
 
-RESOLUTIONS <- c(5, 2, 1)   # smallest grid (fewest hexes) first — fails fast, cheapest to test
+RESOLUTIONS <- c(5, 2)   # 1 km DEFERRED 2026-07-06: terra::extract() over 80,716 hexes made the
+# full 3-resolution run project to 30+ hours; run 1km separately (ideally after profiling/switching
+# to a faster zonal-stats engine e.g. exactextractr) rather than block 5/2km on it. To include 1km
+# again, change back to c(5, 2, 1).
 
 pacman::p_load(sf, terra, janitor, tidyverse, conflicted, here)
 conflicts_prefer(

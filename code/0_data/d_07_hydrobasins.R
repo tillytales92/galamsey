@@ -13,8 +13,8 @@
 #   BEFORE swapping the 25 km centroid-block stand-in for real basin clustering.
 #
 # PART 2 — Build artifact (Sec 3)
-#   Writes the per-hex lookup consumed by the build pipeline:
-#     data/processed/hydrobasins/hex_basin_5km.csv
+#   Writes the per-hex lookup consumed by the build pipeline, per resolution:
+#     data/processed/hydrobasins/hex_basin_{N}km.csv
 #       hex_id, HYBAS_ID, PFAF_ID, MAIN_BAS, basin_num
 #   Assignment is by hex CENTROID (matches the 25 km centroid-block convention in
 #   a_05); centroids falling outside every basin polygon (coastal edge) are assigned
@@ -23,15 +23,22 @@
 #   cluster column directly. `MAIN_BAS` is kept so SEs can optionally be clustered at
 #   the coarser main-basin level as a robustness check.
 #
+# Loops over RESOLUTIONS like the sibling b_03c/b_03d scripts — only needs each
+# resolution's hex_{N}km_crosssection.rds (from b_01), NOT the VI panel, so this can
+# run for a resolution (e.g. 2 km) independently of whether its peak-EVI extraction
+# (b_03a) has been run yet.
+#
 # Downstream wiring:
-#   b_03e_assemble_eventpanel.R  merges hex_basin_5km.csv into event_panel_5km.rds
+#   b_03e_assemble_eventpanel.R  merges hex_basin_{N}km.csv into event_panel_{N}km.rds
 #   a_05_event_study.Rmd         replaces the block_id placeholder with basin_num
 #
-# Outputs:
-#   data/processed/hydrobasins/hex_basin_5km.csv
-#   outputs/figures/hydrobasins/basin_partition_map.png
-#   outputs/figures/hydrobasins/hexes_per_basin_hist.png
-#   outputs/figures/hydrobasins/basin_summary.csv
+# Outputs (per resolution N):
+#   data/processed/hydrobasins/hex_basin_{N}km.csv
+#   outputs/figures/hydrobasins/basin_partition_map_{N}km.png
+#   outputs/figures/hydrobasins/hexes_per_basin_hist_{N}km.png
+#   outputs/figures/hydrobasins/basin_summary_{N}km.csv
+
+RESOLUTIONS <- c(5, 2, 1)   # km
 
 ####0. Setup ####
 pacman::p_load(sf, here, janitor, tidyverse, scales, patchwork, conflicted)
@@ -43,11 +50,10 @@ conflicts_prefer(
 )
 UTM30N <- 32630
 
-basins_path  <- here("data", "raw", "hydrobasins", "hydrobasins_hybas9_studyarea.geojson")
-hex_cache    <- here("data", "processed", "hex_5km_crosssection.rds")
+basins_path     <- here("data", "raw", "hydrobasins", "hydrobasins_hybas9_studyarea.geojson")
 barenblitt_path <- here("data", "raw", "barenblitt", "FullConversiontoMiningExtent2019.shp")
-admin0_path  <- here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin0.shp")
-rivers_path  <- here("data", "processed", "waterways", "waterways_natural.shp")
+admin0_path     <- here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin0.shp")
+rivers_path     <- here("data", "processed", "waterways", "waterways_natural.shp")
 
 proc_dir <- here("data", "processed", "hydrobasins")
 fig_dir  <- here("outputs", "figures", "hydrobasins")
@@ -56,10 +62,14 @@ dir.create(fig_dir,  recursive = TRUE, showWarnings = FALSE)
 
 stopifnot("HydroBASINS geojson not found — run d_01 Sec 6b export + download_from_drive first." =
             file.exists(basins_path))
-if (!file.exists(hex_cache))
-  stop("hex_5km_crosssection.rds not found — run b_01_cross_section.R first.")
 
-####1. Load ####
+have_res <- RESOLUTIONS[file.exists(
+  here("data", "processed", sprintf("hex_%dkm_crosssection.rds", RESOLUTIONS))
+)]
+if (!length(have_res)) stop("No crosssection caches found. Run b_01_cross_section.R first.")
+message(sprintf("Resolutions with caches: %s km", paste(have_res, collapse = ", ")))
+
+####1. Load shared assets (once for all resolutions) ####
 # Basins: EPSG:4326 → UTM30N for metric overlay/area. Level-9 fields of interest:
 #   HYBAS_ID (unique sub-basin id), MAIN_BAS (main-basin id, coarser), PFAF_ID
 #   (Pfafstetter code), SUB_AREA (basin area, km²).
@@ -67,10 +77,6 @@ basins <- st_read(basins_path, quiet = TRUE) |>
   st_make_valid() |>
   st_transform(UTM30N)
 message(sprintf("Loaded %d HydroBASINS level-9 polygons from the export region.", nrow(basins)))
-
-hex_sf        <- readRDS(hex_cache)$hex_sf |> st_transform(UTM30N)   # already UTM30N; guard anyway
-hex_centroids <- st_centroid(hex_sf)
-message(sprintf("Loaded %d hexes from the 5 km cross-section grid.", nrow(hex_sf)))
 
 # Galamsey extent (for the map overlay) — optional.
 mining_2019 <- if (file.exists(barenblitt_path)) {
@@ -87,7 +93,17 @@ admin0 <- if (file.exists(admin0_path)) {
   st_read(admin0_path, quiet = TRUE) |> st_make_valid() |> st_transform(UTM30N)
 } else NULL
 
-####2. Assign each hex to a basin (by centroid) ####
+####2. Per-resolution loop ####
+for (res_km in have_res) {
+message(sprintf("\n%s\n=== HydroBASINS assignment: %d km ===\n%s",
+                strrep("=", 55), res_km, strrep("=", 55)))
+
+hex_cache     <- here("data", "processed", sprintf("hex_%dkm_crosssection.rds", res_km))
+hex_sf        <- readRDS(hex_cache)$hex_sf |> st_transform(UTM30N)   # already UTM30N; guard anyway
+hex_centroids <- st_centroid(hex_sf)
+message(sprintf("Loaded %d hexes from the %d km cross-section grid.", nrow(hex_sf), res_km))
+
+####2a. Assign each hex to a basin (by centroid) ####
 # st_within: centroid inside exactly one basin polygon. Any centroid outside every
 # basin (study-area edge / coast) falls back to the nearest basin.
 assigned <- st_join(
@@ -112,12 +128,12 @@ lookup <- assigned |>
   select(hex_id, HYBAS_ID, PFAF_ID, MAIN_BAS) |>
   mutate(basin_num = as.integer(factor(HYBAS_ID)))   # compact 1..K for did/polars
 
-####3. Cluster-count diagnostics + write artifact ####
+####2b. Cluster-count diagnostics + write artifact ####
 n_clusters <- n_distinct(lookup$HYBAS_ID)
 n_main     <- n_distinct(lookup$MAIN_BAS)
 per_basin  <- lookup |> count(HYBAS_ID, name = "n_hex")
 
-cat("\n=== HydroBASINS level-9 clustering diagnostics (5 km hex grid) ===\n")
+cat(sprintf("\n=== HydroBASINS level-9 clustering diagnostics (%d km hex grid) ===\n", res_km))
 cat(sprintf("  hexes                     : %d\n", nrow(lookup)))
 cat(sprintf("  distinct level-9 basins   : %d   <- number of SE clusters\n", n_clusters))
 cat(sprintf("  distinct MAIN_BAS (coarse): %d\n", n_main))
@@ -136,13 +152,13 @@ per_basin_summary <- basins |>
   select(HYBAS_ID, MAIN_BAS, PFAF_ID, SUB_AREA) |>
   inner_join(per_basin, by = "HYBAS_ID") |>
   arrange(desc(n_hex))
-write_csv(per_basin_summary, file.path(fig_dir, "basin_summary.csv"))
+write_csv(per_basin_summary, file.path(fig_dir, sprintf("basin_summary_%dkm.csv", res_km)))
 
-out_csv <- file.path(proc_dir, "hex_basin_5km.csv")
+out_csv <- file.path(proc_dir, sprintf("hex_basin_%dkm.csv", res_km))
 write_csv(lookup, out_csv)
 message(sprintf("Written: %s  (%d hexes → %d basins)", out_csv, nrow(lookup), n_clusters))
 
-####4a. Map — basin partition over the study area ####
+####2c. Map — basin partition over the study area ####
 # Basins are categorical; a sequential palette would mislead. Fill with a small
 # cycling qualitative set purely to separate neighbours (no legend — K is large).
 basins_used <- basins |> filter(HYBAS_ID %in% lookup$HYBAS_ID) |>
@@ -163,8 +179,8 @@ p_map <- ggplot() +
            expand = FALSE) +
   labs(
     title    = "HydroBASINS level-9 sub-basins over the study area",
-    subtitle = sprintf("%d basins cover the 5 km hex grid (= SE clusters); black = Barenblitt 2019 galamsey extent",
-                       n_clusters),
+    subtitle = sprintf("%d basins cover the %d km hex grid (= SE clusters); black = Barenblitt 2019 galamsey extent",
+                       n_clusters, res_km),
     caption  = "WWF/HydroSHEDS HydroBASINS (hybas_9). Barenblitt et al. (2021). Till Meissner."
   ) +
   theme_minimal(base_size = 10) +
@@ -173,10 +189,10 @@ p_map <- ggplot() +
         panel.grid = element_blank(),
         plot.caption = element_text(colour = "grey50", size = 7))
 
-ggsave(file.path(fig_dir, "basin_partition_map.png"), p_map,
+ggsave(file.path(fig_dir, sprintf("basin_partition_map_%dkm.png", res_km)), p_map,
        width = 8, height = 8, dpi = 150)
 
-####4b. Diagnostic — hexes-per-basin distribution ####
+####2d. Diagnostic — hexes-per-basin distribution ####
 p_hist <- ggplot(per_basin, aes(n_hex)) +
   geom_histogram(binwidth = 1, fill = "#2c7fb8", colour = "white") +
   geom_vline(xintercept = median(per_basin$n_hex), linetype = 2, colour = "grey30") +
@@ -191,9 +207,15 @@ p_hist <- ggplot(per_basin, aes(n_hex)) +
   theme(plot.title = element_text(face = "bold"),
         plot.caption = element_text(colour = "grey50", size = 7))
 
-ggsave(file.path(fig_dir, "hexes_per_basin_hist.png"), p_hist,
+ggsave(file.path(fig_dir, sprintf("hexes_per_basin_hist_%dkm.png", res_km)), p_hist,
        width = 7, height = 5, dpi = 150)
 
-message("\n=== d_07_hydrobasins.R complete ===")
 message(sprintf("  Artifact: %s", out_csv))
-message(sprintf("  Figures : %s {basin_partition_map, hexes_per_basin_hist}.png", fig_dir))
+message(sprintf("  Figures : %s {basin_partition_map, hexes_per_basin_hist}_%dkm.png", fig_dir, res_km))
+
+rm(hex_sf, hex_centroids, assigned, lookup, n_clusters, n_main, per_basin,
+   per_basin_summary, out_csv, basins_used, bb, p_map, p_hist)
+gc()
+}   # end RESOLUTIONS loop
+
+message("\n=== d_07_hydrobasins.R complete ===")

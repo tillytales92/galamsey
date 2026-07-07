@@ -11,8 +11,13 @@ Three families of scripts:
   builder.
 - **`rs05`** — the **production classifier**: a Random Forest on Google's AlphaEarth satellite
   embeddings that outputs annual mine-probability maps for 2017–2024.
-- **`rs03` / `rs05` design notes** — `rs03_embedding_classifier_design.md` documents the embedding
-  classifier's design choices.
+- **`rs03`** — a **design doc, not an executable script**: `rs03_embedding_classifier_design.md`
+  lays out the embedding-classifier plan (data sources, workflow, validation strategy, open risks)
+  that `rs05` implements. **Numbering gap:** there is no `rs04` — the tasklist's original RS3
+  ("compute spectral indices per year") and RS4 ("train RF classifier on spectral bands") script
+  slots were superseded once the AlphaEarth embedding approach proved viable; indices are instead
+  computed inline in `rs01`/`rs02` Section 6, and classification jumped straight to the embedding
+  classifier in `rs05`.
 
 All scripts require the GEE setup from `CLAUDE.md` (`RETICULATE_PYTHON` / `EARTHENGINE_PYTHON`) and
 must be run interactively — `ee_Authenticate()` / `ee_Initialize()` open browser windows.
@@ -74,8 +79,9 @@ intended to become the RS mine panel.
 
 **Workflow:**
 1. Load Barenblitt 2019 **artisanal** polygons (`minetype == 1`) as positive training labels;
-   study area = their convex hull (constrains sampling to the SW-Ghana survey region so negatives
-   are real not-mine, not unsurveyed northern Ghana).
+   study area = the convex hull of **all** Barenblitt 2019 polygons (artisanal + industrial, not
+   just the artisanal training subset) — constrains sampling to the SW-Ghana survey region so
+   negatives are real not-mine, not unsurveyed northern Ghana.
 2. Build a binary label raster (1 = confirmed mine, 0 = non-mine in-study-area) and stack it with
    the 64-band `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` mosaic for the 2019 training year.
 3. `stratifiedSample()` draws 2,000 mine + 6,000 non-mine points (1:3 ratio).
@@ -92,6 +98,7 @@ intended to become the RS mine panel.
 
 **Outputs (to Google Drive → `data/raw/embedding/`):** `mine_prob_ghana_{2017..2024}.tif` +
 `mine_embedding_training_samples.csv`. Section 10 (commented) stacks the downloaded probability maps
-into `mine_prob_stack` for downstream per-hex area computation.
+into `mine_prob_stack`, per its own comment "for `rs06_embedding_panel.R`" — that script does not
+exist yet in this folder, so Section 10's output is currently unconsumed until it's written.
 
 **Design notes:** `code/1_remote_sensing/rs03_embedding_classifier_design.md`.

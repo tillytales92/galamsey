@@ -10,11 +10,14 @@ Most GEE scripts must be run **interactively** — `ee_Authenticate()` / `ee_Ini
 open browser windows and cannot run unattended. See the repo `CLAUDE.md` for the `RETICULATE_PYTHON`
 / `EARTHENGINE_PYTHON` environment setup.
 
-**Rough dependency order:** `d_01` (VI/land-cover/precip rasters) and `d_02` (DEM) are the base
-downloads; `d_03` builds the waterways layer that `b_01` needs; `d_04` builds the MERIT flow graph
-that the event-panel pipeline needs; `d_05` and `d_06` are diagnostic / instrument-EDA scripts that
-read what the others produced. There is no strict global ordering beyond "download before you
-process".
+**Rough dependency order:** `d_01` (VI/land-cover/precip rasters, plus the HydroBASINS table
+export) and `d_02` (DEM) are the base downloads; `d_03` builds the waterways layer that `b_01`
+needs; `d_04` builds the MERIT flow graph that the event-panel pipeline needs; `d_07` turns the
+`d_01`-exported HydroBASINS layer into the per-hex sub-basin clustering key that `b_03e` needs;
+`d_05` and `d_06` are diagnostic / instrument-EDA scripts that read what the others produced.
+`download_land_cover_ghana.ipynb` is a standalone Python/Jupyter download (Digital Earth Africa
+STAC, not GEE) for ESA CCI land cover, which `d_01` Sec 9 then stacks alongside the GEE rasters.
+There is no strict global ordering beyond "download before you process".
 
 ---
 
@@ -34,12 +37,19 @@ they are tightly coupled to their processing.)
 | Landsat EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | 30 m | 1995–2025 | `data/raw/landsat_vi/landsat_evi_ghana_{year}.tif` + `landsat_evi_ghana_stack.tif` |
 | MODIS VI | `MODIS/061/MOD13Q1` (NDVI+EVI, QA-filtered 16-day series → local annual mean) | 250 m | 2000–2025 | `data/raw/modis_vi/modis_{ndvi,evi}_16day_ghana_{year}.tif` → `modis_{ndvi,evi}_ghana_stack.tif` |
 | MODIS land cover | `MODIS/061/MCD12Q1` (IGBP `LC_Type1`) | 500 m | 2001–2024 | `data/raw/land_cover/modis_lc_ghana_stack.tif` |
+| HydroBASINS | `WWF/HydroSHEDS/v1/Basins/hybas_9` (level-9 sub-basins, table export, not a raster) | — | static | `data/raw/hydrobasins/hydrobasins_hybas9_studyarea.geojson` |
 | CHIRPS precip | `UCSB-CHG/CHIRPS/DAILY` summed to annual mm | ~5.5 km | 1990–2025 | `data/raw/chirps/chirps_ghana_{year}.tif` |
+| ESA CCI land cover | Defourny et al. 2024 UN-LCCS, via Digital Earth Africa STAC — **not GEE**, downloaded separately by `download_land_cover_ghana.ipynb` | 300 m | 1995–2022 | `data/raw/land_cover/esa/cci_landcover_ghana_{year}.tif` → stacked by `d_01` Sec 9 |
 
-**Workflow (numbered sections in the script):** Secs 1–7 submit all export tasks (5 = Landsat +
-MODIS vegetation indices, 6 = land cover, 7 = CHIRPS); Sec 7b is an optional blocking monitor;
-Sec 8 downloads completed exports from Drive (uncomment once the EE Tasks tab shows COMPLETED);
-Sec 9 stacks the downloaded TIFs into multi-layer GeoTIFFs.
+**Workflow (numbered sections in the script):** Secs 1–7 submit all export tasks (5/5b/5c =
+Landsat + MODIS vegetation indices, 6 = MODIS land cover, 6b = HydroBASINS table export, 7 =
+CHIRPS); Sec 7b is an optional blocking monitor; Sec 8 downloads completed exports from Drive
+(uncomment once the EE Tasks tab shows COMPLETED); Sec 9 stacks the downloaded TIFs into
+multi-layer GeoTIFFs — including the separately-downloaded ESA CCI yearly rasters (from
+`download_land_cover_ghana.ipynb`) into `cci_landcover_ghana_stack.tif`, alongside the GEE-sourced
+stacks. MODIS VI (Sec 5c) exports the QA-masked **16-day** MOD13Q1 composites (not a GEE-side
+annual mean); the annual mean stack is derived locally in Sec 9 for backward compatibility, while
+the 16-day files themselves feed the peak-EVI pipeline (`b_03a`, masked by the ESA CCI stack).
 
 **Re-run when:** the VI/land-cover/precip window needs extending, or a collection is updated.
 
@@ -152,19 +162,27 @@ Plus diagnostic PNGs and interactive leaflet HTML in `outputs/figures/merit/`.
 
 ## d_05_ndvi.R
 
-**Purpose:** Diagnostic script (no processed outputs) to **understand the three vegetation / land-
-cover products before use** — missingness patterns and land-cover composition. Answers "how much of
-each NDVI/EVI product is NA, by year and by pixel?" and "what does MODIS land cover look like
-Ghana-wide vs in the Ankobra basin, and how has it changed?"
+**Purpose:** Diagnostic script (no processed outputs) to **understand the vegetation / land-cover
+products before use** — missingness patterns and land-cover composition, for BOTH MODIS MCD12Q1
+and ESA CCI. Answers "how much of each NDVI/EVI product is NA, by year and by pixel?", "what does
+land cover look like Ghana-wide vs in the Ankobra basin, and how has it changed?", and "how much
+does switching the outcome mask from MODIS to the finer ESA CCI grid reduce hex-year NA rates?"
 
-**Reads:** the Landsat/MODIS VI stacks and the land-cover stack built by `d_01`.
+**Reads:** the Landsat/MODIS VI stacks, the MODIS MCD12Q1 land-cover stack, and the ESA CCI
+land-cover stack (`cci_landcover_ghana_stack.tif`) — all built by `d_01`.
 
 **Produces (interactive plots, not saved by default):**
 - `% NA` by year for all four VI products; per-pixel NA-frequency maps.
-- IGBP land-cover categorical maps (Ghana 2010 + most recent year), 2019 class-composition bars,
-  cropland vs forest time trends.
+- IGBP (MODIS MCD12Q1) land-cover categorical maps (Ghana 2010 + most recent year), 2019
+  class-composition bars, cropland vs forest time trends.
 - The same land-cover analysis restricted to a hydrologically-defined Ankobra basin polygon (OSM
   "Ankobra" river → convex hull → 20 km buffer).
+- A parallel ESA CCI block (added 2026-07-06) mirroring the MODIS diagnostics above — national +
+  Ankobra UN-LCCS classification maps, composition bars, and time trends — plus a mask-coverage
+  diagnostic comparing candidate CCI forest/cropland mask definitions' hex-year NA rates on the
+  5 km grid (the choice that feeds `b_03a`'s outcome masks), and an interactive leaflet map of the
+  Ankobra basin toggling the 2005 vs. 2020 CCI classification (CartoDB/satellite basemaps,
+  click-to-query class code), saved to `outputs/figures/ndvi/cci_ankobra_leaflet_2005_2020.html`.
 
 **Re-run when:** new VI/land-cover downloads land and you want to re-check coverage before building
 the VI panel (`b_03a`).
@@ -200,3 +218,44 @@ falls within gold-suitable bedrock), and aggregates to district level.
 
 **Companion doc:** `code/0_data/gold_deposits.md` — the conceptual plan (what alluvial-gold
 landforms are, why each matters, how the tools produce each layer).
+
+---
+
+## d_07_hydrobasins.R
+
+**Purpose:** Turns the HydroBASINS level-9 sub-basin export (from `d_01` Sec 6b) into a per-hex
+sub-basin ID — the SE-clustering key that replaces the 25 km centroid-block stand-in used in
+`a_05`'s event study. Owns the HydroBASINS dataset end-to-end (parallel to how `d_03` owns OSM and
+`d_04` owns MERIT): no GEE/auth needed here, it's an offline join against the already-downloaded
+geojson. Loops over `RESOLUTIONS <- c(5, 2, 1)` km like the sibling `b_03c`/`b_03d` scripts; each
+resolution only needs its own `hex_{N}km_crosssection.rds` (from `b_01`), not the VI panel.
+
+**Part 1 — Diagnostics (Secs 2, 2b, 2c, 2d):** assigns each hex to a basin by centroid
+(`st_within`; centroids falling outside every polygon — coastal edge — get the nearest basin by
+`st_nearest_feature`), then reports cluster-count diagnostics (number of distinct level-9 basins =
+number of SE clusters, hexes-per-basin distribution, singleton-basin share, a <30-cluster
+warning), a categorical map of the basin partition with the Barenblitt galamsey extent and
+natural rivers overlaid, and a hexes-per-basin histogram.
+
+**Part 2 — Build artifact (Sec 2b write):** writes the per-hex lookup consumed downstream.
+
+**Inputs:**
+- `data/raw/hydrobasins/hydrobasins_hybas9_studyarea.geojson` — from `d_01` Sec 6b export
+- `data/raw/barenblitt/FullConversiontoMiningExtent2019.shp` — optional, map overlay only
+- `data/processed/waterways/waterways_natural.shp` — optional, map overlay only
+- `hex_{N}km_crosssection.rds` — for hex geometries, per resolution
+
+**Outputs — `data/processed/hydrobasins/`:**
+
+| File | Contents |
+|------|----------|
+| `hex_basin_{N}km.csv` | `hex_id, HYBAS_ID, PFAF_ID, MAIN_BAS, basin_num` — `basin_num` is a compact `1..K` integer factor of `HYBAS_ID` (the `did`/`polars` SE-clustering backend can't take the large-integer `HYBAS_ID` or a string cluster column directly); `MAIN_BAS` is kept for an optional coarser robustness clustering |
+| `outputs/figures/hydrobasins/basin_partition_map_{N}km.png` | Basin partition map |
+| `outputs/figures/hydrobasins/hexes_per_basin_hist_{N}km.png` | Hexes-per-basin histogram |
+| `outputs/figures/hydrobasins/basin_summary_{N}km.csv` | Per-basin hex counts + `SUB_AREA` |
+
+**Downstream wiring:** `b_03e_assemble_eventpanel.R` merges `hex_basin_{N}km.csv` into
+`event_panel_{N}km.rds`; `a_05_event_study.Rmd` replaces the `block_id` placeholder with
+`basin_num`.
+
+**Re-run when:** HydroBASINS export updates, or a new hex resolution is added.

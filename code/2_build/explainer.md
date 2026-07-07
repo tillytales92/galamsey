@@ -114,15 +114,20 @@ change      change    updated   added/     changes
 
 ## b_03a_vi_panel.R
 
-**Purpose:** Extract annual vegetation index zonal means per hex per year from Landsat and
-MODIS raster stacks. The slowest step (~4–5 hours at 1 km); only re-run if rasters change.
+**Purpose:** Peak-EVI / peak-NDVI zonal extraction per hex per year (Vashold et al. 2026
+methodology; **rewritten 2026-07-06**, superseding the earlier "extract an already-annual
+MODIS raster" version). Per (index, year, mask): reads the MODIS MOD13Q1 **16-day** composite
+stack (not an annual-mean raster), masks each 16-day layer, reduces to hex level (zonal
+**mean**) at each 16-day step, then takes **both the annual mean and the annual max ("peak")**
+of that per-hex 16-day series — spatial reduction happens first, temporal reduction second.
+Landsat VI is no longer used (dropped for now — high NA share; see `data_inventory.md` §6).
+Compute-heavy; `RESOLUTIONS` is currently `c(5, 2)` — **1 km is deferred** (`terra::extract()`
+over the 80,716-hex 1 km grid projected to 30+ hours even after a read/mask perf fix; run it
+separately, ideally after switching to a faster zonal-stats engine such as `exactextractr`).
 
 **Inputs:**
-- `data/raw/landsat_vi/landsat_ndvi_ghana_stack.tif` — Landsat NDVI annual composites (1995–2025, 30 m)
-- `data/raw/landsat_vi/landsat_evi_ghana_stack.tif` — Landsat EVI
-- `data/raw/modis_vi/modis_ndvi_ghana_stack.tif` — MODIS MOD13Q1 NDVI (2000–2025, 250 m)
-- `data/raw/modis_vi/modis_evi_ghana_stack.tif` — MODIS EVI
-- `data/raw/land_cover/modis_lc_ghana_stack.tif` — MODIS MCD12Q1 IGBP land cover (2001–2024)
+- `data/raw/modis_vi/modis_{ndvi,evi}_16day_ghana_{yr}.tif` — MODIS MOD13Q1 16-day composites, QA-masked server-side, 250 m (~23 bands/yr)
+- `data/raw/land_cover/esa/cci_landcover_ghana_stack.tif` — ESA CCI land cover (yearly, 300 m), resampled once onto the MODIS VI grid
 - `data/raw/barenblitt/` — both shapefiles (for the no-mine mask)
 - `hex_{N}km_crosssection.rds` — for hex geometries and study extent
 
@@ -130,26 +135,25 @@ MODIS raster stacks. The slowest step (~4–5 hours at 1 km); only re-run if ras
 
 | File | Contents |
 |------|----------|
-| `hex_{N}km_vi_panel.rds` | tibble: hex × year × 12 VI columns (see below) |
+| `hex_{N}km_vi_panel.rds` | tibble: hex × year × 24 VI columns + `urban_share` (25 columns) |
 
-**Variables (all are zonal means over hex pixels):**
+**Variables:** column naming is `{index}_modis[_{mask}]_{stat}` for `index` in {`ndvi`, `evi`},
+`stat` in {`mean`, `max`}, `mask` in {overall (no suffix), `nominecrop`, `cropland`, `forest`,
+`veg_narrow`, `veg_broad`} — 2 × 2 × 6 = 24 columns, values in the native VI range [-0.2, 1.0].
 
-| Variable | Source | Mask |
-|----------|--------|------|
-| `ndvi_landsat` | Landsat 250 m | All pixels |
-| `evi_landsat` | Landsat 250 m | All pixels |
-| `ndvi_modis` | MODIS 1 km | All pixels |
-| `evi_modis` | MODIS 1 km | All pixels |
-| `ndvi_landsat_forestcrop` | Landsat 250 m | IGBP class 2 (Evergreen Broadleaf Forest) only; NA outside 2001–2024 |
-| `evi_landsat_forestcrop` | Landsat 250 m | IGBP class 2 |
-| `ndvi_modis_forestcrop` | MODIS 1 km | IGBP class 2 |
-| `evi_modis_forestcrop` | MODIS 1 km | IGBP class 2 |
-| `ndvi_landsat_nominecrop` | Landsat 250 m | Cumulative Barenblitt footprint excluded — captures spillover externalities, not direct land-clearing |
-| `evi_landsat_nominecrop` | Landsat 250 m | No-mine mask |
-| `ndvi_modis_nominecrop` | MODIS 1 km | No-mine mask |
-| `evi_modis_nominecrop` | MODIS 1 km | No-mine mask |
+| Mask | Definition |
+|------|-----------|
+| `overall` | No mask — all classified pixels |
+| `nominecrop` | Cumulative Barenblitt mine extent excluded (a mining mask, not ESA CCI) — captures spillover externalities, not direct land-clearing |
+| `cropland` | ESA CCI classes 10, 11, 12, 20, 30 |
+| `forest` | ESA CCI classes 50, 60, 61, 62, 70, 90 |
+| `veg_narrow` | `cropland` ∪ `forest` classes ("productive green") |
+| `veg_broad` | `veg_narrow` + mosaics/shrubland/grassland/sparse & flooded veg (excludes urban 190, bare 200/201/202, water 210, snow 220, lichen/moss 140) |
 
-**Re-run when:** new GEE raster downloads land.
+Plus `urban_share` — fraction of a hex's classified ESA CCI pixels that are urban (class 190)
+that year; NA for VI years outside CCI's 1995–2022 coverage (not clamped, unlike the VI masks).
+
+**Re-run when:** the 16-day rasters, the CCI stack, or the hex grids change.
 
 ---
 
@@ -189,22 +193,30 @@ b_03e to keep all cumsum logic in one place.
 
 **Purpose:** Build directed hex-to-hex flow graphs from MERIT Hydro's D8 flow direction
 raster. An edge A → B means water flows from hex A into hex B (A upstream, B downstream).
-Only channel cells (upstream drainage area > `ROUTE_KM2 = 10 km²`) source edges, so the
+Only channel cells (upstream drainage area > `ROUTE_KM2`) source edges, so the
 graph follows drainage divides rather than routing over ridges. Runs on the native 4326
 MERIT grid — reprojecting D8 pointer codes corrupts routing.
+
+Builds **two treatment definitions per resolution**, at two `ROUTE_KM2` channel-source
+thresholds (`ROUTE_CONFIGS`, see `d_04_merit.R` Sec 11j sweep): **10 km²** (primary,
+unsuffixed output files — reaches small tributaries, 5.5% of mined ha off-network) and
+**50 km²** (alt/robustness, `_upa50`-suffixed files — trunk-stream only, closer to the OSM
+natural-river network, 23% of mined ha off-network). Per-hex upstream-exposure ranking is
+stable across a finer {2,5,10,20} km² sweep, so 50 km² is a genuinely coarser network, not
+noise around 10.
 
 **Inputs:**
 - `data/raw/merit/merit_hydro_studyarea*.tif` — native 4326 MERIT Hydro GeoTIFF(s), bands: dir, upa, wth, elv. Downloaded by `d_04_merit.R` Secs 4–5.
 - `hex_{N}km_crosssection.rds` — for hex geometries (only `hex_sf` is used; the file already exists on disk from prior b_01 runs and does not need to be re-run)
 
-**Outputs — `data/processed/merit/`:**
+**Outputs — `data/processed/merit/`** (per resolution N × threshold suffix S in {`""` (primary, ROUTE_KM2=10), `"_upa50"` (alt, ROUTE_KM2=50)}):
 
 | File | Contents |
 |------|----------|
-| `hex_flow_edges_{N}km.csv` | Directed edge list: one row per hex pair |
-| `hex_downstreamness_{N}km.csv` | Per-hex downstreamness scalar |
+| `hex_flow_edges_{N}km{S}.csv` | Directed edge list: one row per hex pair |
+| `hex_downstreamness_{N}km{S}.csv` | Per-hex downstreamness scalar |
 
-**Variables in `hex_flow_edges_{N}km.csv`:**
+**Variables in `hex_flow_edges_{N}km{S}.csv`:**
 
 | Variable | Description |
 |----------|-------------|
@@ -213,7 +225,7 @@ MERIT grid — reprojecting D8 pointer codes corrupts routing.
 | `n_crossings` | Number of MERIT cells that cross this hex boundary |
 | `flow_weight` | Net flow weight (sum of upa at crossing cells, dominant direction minus reverse) |
 
-**Variables in `hex_downstreamness_{N}km.csv`:**
+**Variables in `hex_downstreamness_{N}km{S}.csv`:**
 
 | Variable | Description |
 |----------|-------------|
@@ -221,7 +233,7 @@ MERIT grid — reprojecting D8 pointer codes corrupts routing.
 | `mean_log_upa` | Mean log(upstream area) over channel cells within the hex — cardinal downstreamness scalar; rises monotonically downstream |
 | `n_chan_cells` | Number of channel cells within the hex |
 
-**Re-run when:** MERIT data updated, or new hex resolution added.
+**Re-run when:** MERIT data updated, new hex resolution added, or `ROUTE_KM2` thresholds change.
 
 ---
 
@@ -230,19 +242,21 @@ MERIT grid — reprojecting D8 pointer codes corrupts routing.
 **Purpose:** Propagate own-hex mining upstream and downstream over the MERIT flow graph to
 produce the event-study treatment variable. Also computes 1-hop (immediate neighbour) flow
 aggregates and a lateral variable (queen-adjacent minus 1-hop up/down) for mechanism
-separation. If flow edges are absent for a given resolution (1 km and 2 km until b_03c has
-been run), writes an NA stub so b_03e can always assemble.
+separation. Runs once per `ROUTE_KM2` threshold config from b_03c (`ROUTE_SUFFIXES <- c("",
+"_upa50")`) — the primary (10 km²) and alt (50 km²) flow graphs each get their own exposure
+cache. If flow edges are absent for a given resolution/threshold, writes an NA stub so b_03e
+can always assemble.
 
 **Inputs:**
 - `hex_{N}km_own_mining.rds` — from b_03b
-- `data/processed/merit/hex_flow_edges_{N}km.csv` — from b_03c (optional; NA stub written if absent)
+- `data/processed/merit/hex_flow_edges_{N}km{S}.csv` — from b_03c, S in {`""`, `"_upa50"`} (optional; NA stub written if absent)
 - `hex_{N}km_crosssection.rds` — for `hex_sf` geometries (used for `poly2nb` queen adjacency in lateral computation)
 
-**Output — `data/processed/`:**
+**Output — `data/processed/`** (per threshold suffix S in {`""`, `"_upa50"`}):
 
 | File | Contents |
 |------|----------|
-| `hex_{N}km_flow_exposure.rds` | tibble: flow-graph hexes × years 2007:2017 (or NA stub for all columns) |
+| `hex_{N}km_flow_exposure{S}.rds` | tibble: flow-graph hexes × years 2007:2017 (or NA stub for all columns) |
 
 **Variables:**
 
@@ -274,10 +288,12 @@ onset columns via cumsum, and adds Callaway–Sant'Anna event-time bookkeeping c
 Runs in seconds — re-run freely whenever any upstream cache or model specification changes.
 
 **Inputs:**
-- `hex_{N}km_vi_panel.rds` — from b_03a
+- `hex_{N}km_vi_panel.rds` — from b_03a (25 VI/urban columns)
 - `hex_{N}km_own_mining.rds` — from b_03b
-- `hex_{N}km_flow_exposure.rds` — from b_03d
+- `hex_{N}km_flow_exposure.rds` — from b_03d, ROUTE_KM2=10 (primary)
+- `hex_{N}km_flow_exposure_upa50.rds` — from b_03d, ROUTE_KM2=50 (alt robustness; optional — joined with an `_upa50` suffix on every column if present)
 - `hex_{N}km_crosssection.rds` — covariates only (`gold_suit_share`, `dist_river_km`, `elev_mean`, `slope_mean`)
+- `data/processed/hydrobasins/hex_basin_{N}km.csv` — from `d_07_hydrobasins.R` (optional; per-hex HydroBASINS level-9 sub-basin id — the SE-clustering key that replaces the 25 km centroid-block stand-in)
 
 **Outputs — `data/processed/`:**
 
@@ -296,10 +312,11 @@ Runs in seconds — re-run freely whenever any upstream cache or model specifica
 | `hex_num` | Integer part of hex_id |
 | `year` | Calendar year (1995–2025) |
 
-*Vegetation indices (12 columns — see b_03a for full definitions):*
-`ndvi_landsat`, `evi_landsat`, `ndvi_modis`, `evi_modis`,
-`ndvi_landsat_forestcrop`, `evi_landsat_forestcrop`, `ndvi_modis_forestcrop`, `evi_modis_forestcrop`,
-`ndvi_landsat_nominecrop`, `evi_landsat_nominecrop`, `ndvi_modis_nominecrop`, `evi_modis_nominecrop`
+*Vegetation indices (24 columns + `urban_share` = 25 — see b_03a for full definitions):*
+`{ndvi,evi}_modis_{mean,max}`, `{ndvi,evi}_modis_nominecrop_{mean,max}`,
+`{ndvi,evi}_modis_cropland_{mean,max}`, `{ndvi,evi}_modis_forest_{mean,max}`,
+`{ndvi,evi}_modis_veg_narrow_{mean,max}`, `{ndvi,evi}_modis_veg_broad_{mean,max}`,
+`urban_share`
 
 *Own-hex mining:*
 
@@ -361,6 +378,22 @@ Runs in seconds — re-run freely whenever any upstream cache or model specifica
 | `lateral_stock_ha` | Cumulative sum of `lateral_new_ha` |
 | `lateral_onset_year` | First year `lateral_new_ha > 0` |
 
+*ROUTE_KM2=50 robustness (present only when `hex_{N}km_flow_exposure_upa50.rds` exists):*
+
+Mirrors all 15 up/down/lateral columns above (`up_new_ha` … `lateral_onset_year`), each with
+an `_upa50` suffix (e.g. `up_new_ha_upa50`), built from the coarser 50 km² channel-source
+threshold flow graph instead of the primary 10 km² one.
+
+*Sub-basin SE-clustering keys (from `d_07_hydrobasins.R`; present only when
+`hydrobasins/hex_basin_{N}km.csv` exists):*
+
+| Variable | Description |
+|----------|-------------|
+| `basin_id` | HydroBASINS level-9 sub-basin ID (`HYBAS_ID`) |
+| `main_basin` | Coarser HydroBASINS main-basin ID (`MAIN_BAS`) — fallback cut with fewer, larger clusters |
+| `pfaf_id` | Pfafstetter code |
+| `basin_num` | Compact `1..K` factor of `basin_id`, for the `did`/`polars` SE-clustering backend |
+
 *Time-invariant covariates (from b_01 crosssection):*
 
 | Variable | Description |
@@ -370,4 +403,5 @@ Runs in seconds — re-run freely whenever any upstream cache or model specifica
 | `gold_suit_share` | Share of hex overlapping gold-suitable geology (0–1) |
 | `dist_river_km` | Distance to nearest natural waterway (km) |
 
-**Re-run when:** any upstream cache changes, or C&S specification changes (e.g. different `first_treat` encoding).
+**Re-run when:** any upstream cache changes, C&S specification changes (e.g. different
+`first_treat` encoding), or the hydrobasins cache is updated.

@@ -31,9 +31,15 @@ extent CSV, `n_surveyed_districts.rds` from `a_01`).
 **Narrative arc:** Overview → "What's new" → **Part 1: Where does galamsey happen?** (Barenblitt
 data, incidence maps, concentration) → **clustering** (Moran's I, LISA) → **why clustered?**
 (geography-weighted null, M1–M5 robustness, spatial spline) → **spreading?** (spatial lag, MERIT
-flow direction, event-study design). It embeds the D1/D2 figures from `a_01`/`a_02`, the MAUP/first-
-stage figures behind `a_03`, the MERIT flow-graph figures from `d_04`, and the event-study
-schematic/figures from `a_05`.
+flow direction, event-study design) → **Motivating Facts** (national mining trend vs. gold price,
+the alluvial-geomorphology instruments — gold-suitable geology, HAND, MRVBF, SPI, STI — and a
+"Next Steps" slide of in-progress/data-gap items) → **Annex** (a large bank of backup slides:
+district-level cumulative/trajectory maps, the neighbour-role schematic, OSM-vs-MERIT river
+comparison, the flow-rank and upstream-exposure maps, upstream panelviews, and per-version/per-
+role placebo & 1-hop event-study figures for both V1 (dCDH) and V2 (threshold) designs, plus an
+IV-methodology explainer). It embeds the D1/D2 figures from `a_01`/`a_02`, the MAUP/first-stage
+figures behind `a_03`, the motivating-facts figures from `a_04`, the MERIT flow-graph figures from
+`d_04`, and the event-study schematic/figures from `a_05`.
 
 **Render:** `quarto render galamsey_motivation.qmd` (produces both formats). The `rsconnect/`
 subfolder holds Posit Connect Cloud publishing metadata for the deployed HTML deck.
