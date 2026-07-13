@@ -1,0 +1,657 @@
+---
+title: "Galamsey event study — Q0: own-hex mining → own-hex vegetation (mechanics sanity check)"
+author: "Sree Ayyar, Till Meissner"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+params:
+  resolution_km: 2   # set to 1, 2, or 5; or override via rmarkdown::render(params=list(resolution_km=5))
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 5, dpi = 120)
+pacman::p_load(tidyverse, sf, did, here, kableExtra, panelView)
+# did_multiplegt_dyn lives in DIDmultiplegtDYN (optional — continuous-dose robustness only).
+# DIDmultiplegtDYN 2.3.0 calls polars via the bare symbol `pl` but does NOT import polars in its
+# NAMESPACE, so `pl` is only resolvable when polars is *attached* (library) on the search path —
+# otherwise did_multiplegt_dyn dies with "object 'pl' not found" inside $with_columns(). Hence we
+# require BOTH packages here and attach polars in the dcdh chunk.
+HAS_DCDH <- requireNamespace("DIDmultiplegtDYN", quietly = TRUE) &&
+            requireNamespace("polars", quietly = TRUE)
+
+# ---- Static-output export --------------------------------------------------
+# Every headline figure and table is also written to outputs/figures/event_study/
+# so galamsey_motivation.qmd can embed them without re-running any estimation.
+# Figures -> PNG via save_es(); tables -> GitHub-flavoured markdown via save_md()
+# (the deck reads these with cat(readLines(...))). All saves are guarded so an
+# export hiccup never aborts the knit.
+out_es <- here("outputs", "figures", "event_study")
+dir.create(out_es, recursive = TRUE, showWarnings = FALSE)
+
+save_es <- function(plot, file, width = 9, height = 5, dpi = 150) {
+  tryCatch(
+    ggplot2::ggsave(file.path(out_es, file), plot, width = width, height = height, dpi = dpi),
+    error = function(e) message("save_es skipped ", file, ": ", conditionMessage(e)))
+  invisible(plot)
+}
+
+save_md <- function(df, file, digits = 4, caption = NULL) {
+  tryCatch({
+    md <- knitr::kable(as.data.frame(df), format = "pipe", digits = digits, caption = caption)
+    writeLines(md, file.path(out_es, file))
+  }, error = function(e) message("save_md skipped ", file, ": ", conditionMessage(e)))
+  invisible(df)
+}
+```
+
+This document **implements Q0** of the three-part event-study battery specified in
+[`event_study_design.md`](event_study_design.md). It was split out of the original combined
+`a_05_event_study.Rmd` on 2026-07-08 into three self-contained, independently-knittable files so
+each question can be run on its own:
+
+- **`a_05_event_study_1.Rmd`** (this file) — **Q0**: own-hex mining → own-hex vegetation.
+- [`a_05_event_study_2.Rmd`](a_05_event_study_2.Rmd) — **Q1**: upstream mining → downstream vegetation.
+- [`a_05_event_study_3.Rmd`](a_05_event_study_3.Rmd) — **Q2**: neighbour mining → own mining.
+
+**Q0 — Own-hex mining → own-hex vegetation.** Treatment = mining **within the focal hex itself**;
+no flow graph, no directionality. This is the mechanics sanity check that should be run and read
+*before* trusting the more elaborate upstream/downstream (Q1) and neighbour-diffusion (Q2) designs
+in the sibling files: if there is no detectable vegetation effect in the hex that is actually
+mined, something is wrong upstream of the fancier designs (panel construction, outcome definition,
+event-time coding); if there is, it's the natural baseline Q1/Q2 results should be read against.
+
+It reads the shared panel built by `2_build/b_03e_assemble_eventpanel.R`
+(`data/processed/event_panel_{1|2|5}km.rds`; resolution set via `params$resolution_km`) and runs
+on every outcome in `OUTCOMES` (see the `outcomes-setup` chunk below) — it does **not** require an
+upstream/downstream flow graph, so it works even before that graph exists.
+
+Estimator: **Callaway & Sant'Anna** (`did::att_gt` → `aggte(type="dynamic")`) with
+**not-yet-treated** controls, on an absorbing own-hex stock-threshold treatment (0/5/10 ha), plus a
+**dCDH** (`did_multiplegt_dyn`) continuous-dose robustness check on the same `own_stock_ha` variable
+(runs only if `DIDmultiplegtDYN`/`polars` are installed — `HAS_DCDH = `r HAS_DCDH`). SEs clustered
+on real HydroBASINS level-9 sub-basins (`basin_num`, from `d_07_hydrobasins.R`; falls back to a
+25 km centroid-block stand-in if absent for this resolution — see `load-panel` chunk and caveats).
+
+---
+
+# Data foundations
+
+```{r load-panel}
+es <- readRDS(here("data", "processed", sprintf("event_panel_%dkm.rds", params$resolution_km)))
+panel  <- es$panel
+hex_sf <- es$hex_sf
+
+# Spatial clustering key: real HydroBASINS level-9 sub-basins (from d_07_hydrobasins.R via
+# b_03e_assemble_eventpanel.R's `basin_id`/`basin_num` columns) when present, replacing the
+# 25 km centroid-block stand-in used before 2026-07-06. `block_id`/`block_num` names are kept
+# unchanged downstream (did::att_gt `clustervars = "block_num"`) so no other chunk needs to change.
+# Falls back to the centroid-block stand-in — with a warning — if `basin_num` isn't in this panel
+# (e.g. a resolution `d_07_hydrobasins.R` hasn't been run for yet).
+has_basin <- all(c("basin_id", "basin_num") %in% names(panel)) && !all(is.na(panel$basin_num))
+
+if (has_basin) {
+  panel <- panel |> mutate(block_id = as.character(basin_id), block_num = basin_num)
+  message(sprintf("Clustering on %d HydroBASINS level-9 sub-basins (basin_num).",
+                  n_distinct(panel$block_num)))
+} else {
+  warning("basin_id/basin_num not found in this panel -- falling back to the 25 km centroid-block ",
+          "SE-clustering stand-in. Run d_07_hydrobasins.R then b_03e_assemble_eventpanel.R for ",
+          "this resolution to get real sub-basin clustering.")
+  cent <- sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(hex_sf))))
+  blocks <- tibble(hex_id   = hex_sf$hex_id,
+                   block_id = paste0("b_", round(cent[, 1] / 25000), "_",
+                                     round(cent[, 2] / 25000)))
+  panel <- left_join(panel, blocks, by = "hex_id") |>
+    mutate(block_num = as.integer(factor(block_id)))
+}
+
+has_terrain  <- all(c("elev_mean", "slope_mean") %in% names(panel)) &&
+                !all(is.na(panel$elev_mean))
+xf <- if (has_terrain) ~ elev_mean + slope_mean else ~ 1
+
+c(terrain_covariates_present = has_terrain,
+  hydrobasins_clustering     = has_basin,
+  n_clusters                 = n_distinct(panel$block_num))
+```
+
+Vegetation-index outcomes for Q0 (2026-07-08 revision) are restricted to **peak (annual max)
+only** — no annual-mean variants — for **both NDVI and EVI**, across three ESA-CCI/Barenblitt
+land-cover masks:
+
+- **`no-mine-crop`** — excludes any pixel ever classified as Barenblitt mining, using the mining
+  footprint directly rather than relying on ESA-CCI's annual land-cover reclassification. Isolates
+  the within-hex spillover signal (vegetation loss on land that was never itself mined) from the
+  mechanical VI collapse on pixels that were physically bulldozed.
+- **`veg_narrow`** — the **headline mask**. Built in `b_03a_vi_panel.R`'s `CCI_MASKS` as the union
+  of the `cropland` classes (ESA-CCI/UN-LCCS codes 10, 11, 12, 20, 30 — rainfed + irrigated
+  cropland + cropland-dominant mosaic) and the `forest` classes (50, 60, 61, 62, 70, 90 — all
+  tree-cover types: broadleaf evergreen/deciduous, needleleaf evergreen, mixed). Informally, the
+  "productive green" mask — dense cropland plus tree cover, and nothing sparser (excludes
+  vegetation mosaics, shrubland, grassland, and sparse/flooded vegetation, which only the broader
+  `veg_broad` mask includes). `cropland ⊂ veg_narrow ⊂ veg_broad` by construction.
+- **`cropland`** — ESA-CCI classes 10, 11, 12, 20, 30 only (a subset of `veg_narrow`, dropped down
+  to just the agricultural pixels) — kept as the narrower agricultural-damage-channel comparison.
+
+```{r outcomes-setup}
+# Vegetation-index outcomes, built from the reworked b_03a_vi_panel.R "peak EVI" pipeline
+# (Vashold et al. 2026 methodology; see galamsey_tasklist.md's Data section and
+# code/2_build/explainer.md). Restricted 2026-07-08 to peak (max) only, for both NDVI and EVI,
+# across three masks -- see the prose above this chunk for what each mask means (veg_narrow's
+# cropland-union-forest definition, drawn from b_03a_vi_panel.R's CCI_MASKS, in particular).
+# evi_modis_veg_narrow_max is listed first and stays the HEADLINE throughout this file (all
+# hardcoded lookups in q0b-plot/panelview-thresholds point at it specifically); its NDVI
+# counterpart and the other masks are folded into the same code blocks as additional outcomes.
+# NDVI and EVI ATT MAGNITUDES are not directly comparable (different index scales) -- see caveats.
+OUTCOMES <- c(
+  evi_modis_veg_narrow_max   = "EVI (peak, veg-narrow)",
+  ndvi_modis_veg_narrow_max  = "NDVI (peak, veg-narrow)",
+  evi_modis_nominecrop_max   = "EVI (peak, no-mine-crop)",
+  ndvi_modis_nominecrop_max  = "NDVI (peak, no-mine-crop)",
+  evi_modis_cropland_max     = "EVI (peak, cropland)",
+  ndvi_modis_cropland_max    = "NDVI (peak, cropland)"
+)
+OUTCOMES <- OUTCOMES[names(OUTCOMES) %in% names(panel)]
+OUTCOMES <- OUTCOMES[vapply(names(OUTCOMES), \(c) !all(is.na(panel[[c]])), logical(1))]
+
+names(OUTCOMES)
+```
+
+```{r overlap, results='asis'}
+ndvi_years   <- es$ndvi_years
+mining_years <- es$mining_years
+overlap_txt <- sprintf(
+  "The NDVI stack covers %d–%d; Barenblitt mining spans %d–%d; the usable event window (their overlap) is **%d–%d**.",
+  min(ndvi_years), max(ndvi_years),
+  min(mining_years), max(mining_years),
+  max(min(ndvi_years), min(mining_years)),
+  min(max(ndvi_years), max(mining_years)))
+cat(overlap_txt)
+```
+
+```{r vi-missingness, fig.height=5}
+# NA share for every VI column (index x mask x stat) in THIS panel -- the evidence behind the
+# mask/stat choices made in `outcomes-setup` above (headline stat = max/peak; headline mask =
+# cropland; decided 2026-07-07 after reviewing this exact diagnostic).
+vi_all_cols <- setdiff(es$vi_cols, "urban_share")
+
+na_by_col <- tibble(
+  col      = vi_all_cols,
+  na_share = vapply(vi_all_cols, \(c) mean(is.na(panel[[c]])), numeric(1))
+) |>
+  mutate(
+    index     = str_extract(col, "^ndvi|^evi"),
+    remainder = str_remove(col, "^(ndvi|evi)_modis_"),          # "{mask}_{stat}" or just "{stat}"
+    stat      = str_extract(remainder, "mean$|max$"),
+    mask      = str_remove(remainder, "_?(mean|max)$"),
+    mask      = if_else(mask == "", "overall", mask)
+  ) |>
+  dplyr::select(index, mask, stat, na_share)
+
+na_by_mask <- na_by_col |>
+  group_by(mask) |>
+  summarise(na_share = mean(na_share), .groups = "drop") |>
+  arrange(na_share)
+
+save_md(na_by_mask, "es_vi_missingness_by_mask.md", digits = 3)
+
+kbl(na_by_mask, digits = 3, caption = paste0(
+    "VI column NA share by land-cover mask (averaged over {NDVI,EVI} x {mean,max}). overall/",
+    "nominecrop are ~pixel-complete; forest stays the sparsest -- veg_broad/veg_narrow/cropland ",
+    "are the usable middle ground.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+**Treatment structure by threshold.** The C&S treatment clock is the first year the focal hex's
+**own** mining stock crosses $\bar m$ (the `first_cross` rule below). We show it at all three
+thresholds in `mbar_grid` ($\bar m = 0$, 5, and 10 ha — one panelview each, three in total).
+Outcome/completeness check is `evi_modis_veg_narrow_max` (the headline outcome as of 2026-07-08 —
+see `outcomes-setup` for its definition), restricted to hexes with no NA in that column over the
+Barenblitt window (2007–2017), same restriction style as `_2.Rmd`'s upstream panelviews.
+
+```{r panelview-thresholds, fig.height=6, fig.width=10}
+# Thresholds must match mbar_grid (defined in the helpers chunk below) — kept as a literal here
+# since this chunk runs before helpers.
+pv_mbar_grid <- c(0, 5, 10)
+pv_complete_ids <- panel |>
+  filter(year >= 2007, year <= 2017) |>
+  group_by(hex_id) |> filter(!any(is.na(evi_modis_veg_narrow_max))) |>
+  ungroup() |> distinct(hex_id)
+
+# Treatment clock = first year `stock_col` exceeds mbar (NA = never treated), matching
+# first_cross() in the helpers chunk below (inlined here since this chunk runs first).
+pv_show <- function(stock_col, mbar, main, file) {
+  d <- panel |>
+    filter(year >= 2007, year <= 2017) |>
+    semi_join(pv_complete_ids, by = "hex_id") |>
+    group_by(hex_id) |>
+    mutate(g_thr = {
+      col <- .data[[stock_col]]
+      y   <- year[!is.na(col) & col > mbar]
+      if (length(y)) min(y) else NA_integer_
+    }) |>
+    ungroup() |>
+    mutate(D = as.integer(!is.na(g_thr) & year >= g_thr))
+  p <- panelview(evi_modis_veg_narrow_max ~ D, data = d, index = c("hex_id", "year"), main = main,
+                 legend.labs = c("Control", "Pre-treatment", "Post-treatment"),
+                 pre.post = TRUE, by.timing = TRUE, collapse.history = TRUE,
+                 display.all = TRUE, report.missing = FALSE, background = "white")
+  print(p)
+  save_es(p, file, width = 10, height = 6)
+  invisible(p)
+}
+
+# One panelview per threshold in pv_mbar_grid (0/5/10 ha) -- three in total, all on own_stock_ha.
+pv_specs <- purrr::map(pv_mbar_grid, \(mb) list(
+  "own_stock_ha", mb,
+  sprintf("Own-hex mining — stock > %d ha (mbar = %d)", mb, mb),
+  sprintf("es_q0_panelview_own_mbar%d.png", mb)
+))
+pv_specs <- Filter(\(s) s[[1]] %in% names(panel) && !all(is.na(panel[[s[[1]]]])), pv_specs)
+for (s in pv_specs) pv_show(s[[1]], s[[2]], s[[3]], s[[4]])
+```
+
+---
+
+# Control variables in the C&S estimator
+
+`did::att_gt` uses `xformla` in both legs of the doubly-robust (DR) estimator: the propensity
+score model (what predicts a hex's treatment cohort) and the outcome regression (what predicts
+EVI conditional on pre-treatment covariates). DR is consistent if *either* leg is correctly
+specified — but adding the right pre-treatment predictors of treatment timing strengthens the
+propensity score and makes treated/control groups more comparable.
+
+**Currently used:** `xf = ~ elev_mean + slope_mean` (or `~ 1` when terrain is absent). These
+capture topographic accessibility: high, steep terrain is harder to mine and has systematically
+different vegetation.
+
+```{r helpers}
+mbar_grid <- c(0, 5, 10)    # ha thresholds for the stock-threshold sweep; must match pv_mbar_grid
+                            # in the panelview-thresholds chunk above (revised 2026-07-08)
+
+# C&S event study wrapper. `gcol` is a numeric column in `data` (0 = never-treated, else first-treat
+# year). Returns the att_gt object + dynamic (event-time) and overall aggregations.
+run_cs <- function(data, yname, gcol, xformla = xf, cluster = "block_num",
+                   control = "notyettreated", min_e = -5, max_e = 5) {
+  data <- data |> filter(is.finite(.data[[yname]]))
+  att <- did::att_gt(
+    yname = yname, tname = "year", idname = "hex_num", gname = gcol,
+    control_group = control, xformla = xformla, clustervars = cluster,
+    data = as.data.frame(data), est_method = "dr",
+    base_period = "universal", allow_unbalanced_panel = TRUE, bstrap = TRUE
+  )
+  list(att     = att,
+       dynamic = did::aggte(att, type = "dynamic", min_e = min_e, max_e = max_e, na.rm = TRUE),
+       overall = did::aggte(att, type = "group", na.rm = TRUE))
+}
+
+# first-treat column from a "stock crosses mbar" rule
+first_cross <- function(df, stock_col, mbar) {
+  df |> group_by(hex_id) |>
+    mutate(g_thr = {
+      col <- .data[[stock_col]]
+      y   <- year[!is.na(col) & col > mbar]   # NA treated as below threshold; avoids year[NA]=NAs
+      if (length(y)) min(y) else 0L
+    }) |>
+    ungroup()
+}
+
+# Summarise a map(mbar_grid, run_cs) list into a tidy ATT table row.
+cs_row <- function(cs_list, label)
+  imap_dfr(cs_list, ~tibble(exposure = label, mbar = .y,
+                             att = .x$overall$overall.att, se = .x$overall$overall.se))
+
+# tidy_dyn: one C&S dynamic aggregation -> tidy event-time frame.
+tidy_dyn <- function(dyn, label)
+  tibble(threshold  = label,
+         event_time = dyn$egt,
+         att        = dyn$att.egt,
+         se         = dyn$se.egt) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+
+# Three-threshold palette (revised 2026-07-08 for mbar_grid = c(0, 5, 10)); ">0 ha" is mbar = 0
+# (any onset).
+v2_thresh_cols <- c(">0 ha" = "#6A3D9A", ">5 ha" = "#2171B5", ">10 ha" = "#E67E22")
+
+# v2_dynplot: overlay the C&S dynamic ATT across all stock thresholds in mbar_grid for one exposure.
+# CI shown as an unfilled (outline-only) band — fill = NA, thin dotted edge.
+v2_dynplot <- function(cs_list, title, subtitle) {
+  bind_rows(
+    tidy_dyn(cs_list[["mbar_0"]]$dynamic,  ">0 ha"),
+    tidy_dyn(cs_list[["mbar_5"]]$dynamic,  ">5 ha"),
+    tidy_dyn(cs_list[["mbar_10"]]$dynamic, ">10 ha")
+  ) |>
+    mutate(threshold = factor(threshold, levels = names(v2_thresh_cols))) |>
+    ggplot(aes(event_time, att, colour = threshold)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+    geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi, colour = threshold),
+                fill = NA, linewidth = 0.25, linetype = "dotted") +
+    geom_line() + geom_point(size = 1.8) +
+    scale_colour_manual(values = v2_thresh_cols) +
+    labs(title = title, subtitle = subtitle,
+         x = "Event time (years relative to threshold crossing)",
+         y = "ATT on EVI", colour = "Stock threshold") +
+    theme_bw(base_size = 11)
+}
+
+# outcome_dynplot: overlay the C&S dynamic ATT across OUTCOMES for one exposure/threshold.
+outcome_dynplot <- function(dyn_list, labels, title, subtitle) {
+  df <- bind_rows(purrr::map2(dyn_list, labels, \(d, l) tidy_dyn(d, l)))
+  df$outcome <- factor(df$threshold, levels = labels)
+  ggplot(df, aes(event_time, att, colour = outcome, fill = outcome)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+    geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.12, colour = NA) +
+    geom_line() + geom_point(size = 1.6) +
+    labs(title = title, subtitle = subtitle,
+         x = "Event time (years relative to treatment)", y = "ATT on outcome",
+         colour = "Outcome", fill = "Outcome") +
+    theme_bw(base_size = 11)
+}
+```
+
+---
+
+# Q0 — Own-hex mining → own-hex vegetation (mechanics sanity check) {.tabset}
+
+**Purpose.** Before trusting the upstream/downstream designs in Q1 (flow graph, directionality,
+waterborne mechanism) or the neighbour-diffusion design in Q2, check the most basic version of the
+claim: **is there a detectable vegetation effect in the hex that is actually mined**, full stop?
+Treatment here is mining **within the focal hex itself** (`own_onset_year` / `own_new_ha` /
+`own_stock_ha`, already in the panel from `b_03b_own_mining.R` — no flow-graph, no directionality,
+no new data). If this doesn't show an effect, something is wrong upstream of the fancier designs
+(panel construction, outcome definition, event-time coding); if it does, it's the natural baseline
+Q1/Q2 results should be read against. Runs on every outcome in `OUTCOMES`.
+
+**Design.** Treatment clock = the first year `own_stock_ha` (cumulative own-hex mined hectares)
+crosses $\bar m$, swept over `mbar_grid` (0/5/10 ha) — checks whether the effect scales with *how
+much* of the hex is mined, not just *whether* it is (an onset-only, no-threshold version — the
+former "Q0a" — was tried first and dropped 2026-07-08 as redundant with the $\bar m = 0$ case here,
+which already captures any own-hex onset). Two estimators:
+
+- **Callaway & Sant'Anna** (absorbing treatment at the threshold-crossing year) — the headline. The
+  0/5/10 ha comparison is plotted both as an overlay across all three thresholds (one plot per
+  land-cover mask) and, separately, as one outcome-comparison plot per (mask x threshold) —
+  3 masks x 3 thresholds = 9 plots in total.
+- **dCDH** (`did_multiplegt_dyn`, continuous dose) — treats `own_stock_ha` as a continuous
+  treatment intensity rather than discretising it at a threshold; robustness check against the
+  threshold choice itself. Runs only if `DIDmultiplegtDYN`/`polars` are installed.
+
+## Callaway & Sant'Anna — absorbing treatment (own_stock_ha, mbar sweep)
+
+```{r q0b-fit}
+# run_v0b_own: the mbar sweep for a single exposure (own-hex mining) -- reuses v2_dynplot/cs_row
+# directly (both expect a list keyed "mbar_0"/"mbar_5"/"mbar_10", matching mbar_grid, which this
+# produces).
+run_v0b_own <- function(yname) {
+  l <- map(mbar_grid, \(mb) run_cs(first_cross(panel, "own_stock_ha", mb), yname, "g_thr"))
+  set_names(l, paste0("mbar_", mbar_grid))
+}
+
+q0b_fits <- imap(OUTCOMES, \(lab, yc) run_v0b_own(yc))
+
+q0b_all <- imap_dfr(q0b_fits, \(cs_list, oc) cs_row(cs_list, OUTCOMES[[oc]])) |>
+  rename(outcome = exposure) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+
+q0b_wide <- q0b_all |>
+  mutate(cell = sprintf("%+.4f (%.4f)", att, se)) |>
+  select(outcome, mbar, cell) |>
+  pivot_wider(names_from = mbar, values_from = cell, names_prefix = "stock > ") |>
+  rename_with(~paste0(., " ha"), starts_with("stock > "))
+
+save_md(q0b_wide, "es_q0b_stability_table.md")
+kbl(q0b_wide, caption = paste0(
+  "Overall ATT (SE) of own-hex mining on own-hex vegetation, across stock thresholds and ",
+  "outcomes. Compare against Q1's upstream/downstream results -- own-hex effects should be the ",
+  "LARGEST in magnitude (direct land-clearing, not a spillover), setting the scale for what a ",
+  "real waterborne effect could plausibly look like.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r q0b-plot, fig.height=4.5}
+# Q0b threshold-sweep plot (0/5/10 ha, from mbar_grid), one v2_dynplot PER LAND-COVER MASK on the
+# headline EVI (peak) index -- veg_narrow is the original headline plot (kept, same filename
+# es_q0b_headline.png); nominecrop and cropland added alongside as mask-robustness comparisons at
+# the same three thresholds.
+q0b_mask_specs <- list(
+  veg_narrow = list(col = "evi_modis_veg_narrow_max", label = "veg-narrow",   file = "es_q0b_headline.png"),
+  nominecrop = list(col = "evi_modis_nominecrop_max", label = "no-mine-crop", file = "es_q0b_nominecrop.png"),
+  cropland   = list(col = "evi_modis_cropland_max",   label = "cropland",    file = "es_q0b_cropland.png")
+)
+q0b_mask_specs <- Filter(\(s) s$col %in% names(q0b_fits), q0b_mask_specs)
+
+q0b_mask_plots <- imap(q0b_mask_specs, \(s, mask_key) {
+  p <- v2_dynplot(q0b_fits[[s$col]],
+    sprintf("Q0b — Own-hex mining ATT on EVI (peak, %s) across stock thresholds", s$label),
+    "C&S dynamic ATT, not-yet-treated controls; one line per own_stock_ha threshold (0/5/10 ha)")
+  print(p)
+  save_es(p, s$file, height = 4.5)
+  p
+})
+p_q0b_headline <- q0b_mask_plots[["veg_narrow"]]   # kept for downstream reference
+```
+
+```{r q0b-outcome-plots, fig.height=4.5, results='asis'}
+# All outcomes overlaid, split into one plot PER LAND-COVER MASK (so NDVI vs EVI lines within a
+# mask are directly comparable, rather than all 6 outcomes -- 3 masks x 2 indices -- mixed onto one
+# axis) at EVERY threshold in mbar_grid (0/5/10 ha -- revised 2026-07-08 from just the two endpoint
+# thresholds, so mbar=5 gets the same per-mask outcome view as 0 and 10). 3 masks x 3 thresholds = 9
+# plots in total. Both the threshold values and the mask groupings are derived from
+# mbar_grid/OUTCOMES programmatically -- if OUTCOMES gains/loses a mask or index, or mbar_grid
+# changes, this chunk adapts without any hardcoded column names.
+
+# Parse each OUTCOMES column into {index, mask, stat} components -- mirrors the vi-missingness
+# chunk's column-name parser above.
+outcome_meta <- tibble(col = names(OUTCOMES), label = unname(OUTCOMES)) |>
+  mutate(
+    index     = toupper(str_extract(col, "^ndvi|^evi")),
+    remainder = str_remove(col, "^(ndvi|evi)_modis_"),          # "{mask}_{stat}"
+    stat      = str_extract(remainder, "mean$|max$"),
+    mask      = str_remove(remainder, "_?(mean|max)$")
+  )
+
+Q0B_MBARS <- mbar_grid   # all thresholds, e.g. c(0, 5, 10)
+
+for (mb in Q0B_MBARS) {
+  cat(sprintf("\n\n### Stock > %d ha\n\n", mb))
+  mb_key <- paste0("mbar_", mb)
+  for (msk in unique(outcome_meta$mask)) {
+    cols_here <- outcome_meta |> filter(mask == msk)
+    if (nrow(cols_here) == 0) next
+    msk_label <- str_replace_all(msk, "_", "-")   # display only, e.g. "veg_narrow" -> "veg-narrow"
+    dyn_list <- map(cols_here$col, \(oc) q0b_fits[[oc]][[mb_key]]$dynamic) |>
+      set_names(cols_here$index)
+    p <- outcome_dynplot(dyn_list, cols_here$index,
+      sprintf("Own-hex mining — %s — stock > %d ha", msk_label, mb),
+      "C&S dynamic ATT; one line per vegetation index (NDVI vs EVI); 95% CI ribbon")
+    print(p)
+    save_es(p, sprintf("es_q0b_outcomes_mbar%d_%s.png", mb, msk), height = 4.5)
+  }
+}
+```
+
+---
+
+## dCDH — continuous dose (own_stock_ha)
+
+Robustness check against the C&S threshold choice above: rather than discretising `own_stock_ha`
+at $\bar m \in \{0, 5, 10\}$, `did_multiplegt_dyn` (de Chaisemartin & D'Haultfœuille) treats the
+cumulative own-hex mined hectares as a continuous treatment intensity and estimates effects of
+*changes in dose*, pooling across all dose levels. One fit per outcome in `OUTCOMES`.
+
+```{r q0-dcdh-guard, results='asis'}
+if (!HAS_DCDH)
+  cat("> **dCDH skipped** — `DIDmultiplegtDYN` and/or `polars` are not installed. ",
+      "Install both to run the continuous-dose robustness check.\n")
+```
+
+```{r q0-dcdh, eval=HAS_DCDH}
+# DIDmultiplegtDYN 2.3.0 references polars' `pl` as a bare symbol without importing it, so polars
+# MUST be attached (not just available) or did_multiplegt_dyn errors with "object 'pl' not found".
+library(polars)
+
+# Single treatment dimension (own_stock_ha) -- unlike Q1's 5-exposure dCDH battery, Q0 has no
+# upstream/downstream/lateral split, so this is just one run per outcome, on the full panel (no
+# full-vs-censored split either: own_stock_ha IS the treatment being tested, so there is no
+# separate "already mining" contamination to censor out here).
+run_dcdh_own <- function(yname) {
+  m <- DIDmultiplegtDYN::did_multiplegt_dyn(
+    df        = as.data.frame(panel),
+    outcome   = yname,
+    group     = "hex_id",
+    time      = "year",
+    treatment = "own_stock_ha",
+    effects   = 5,
+    placebo   = 3,
+    cluster   = "block_num",
+    graph_off = TRUE          # we build our own plot below
+  )
+  res <- list(results = m$results)   # keep only what q0-dcdh-plot / -table use
+  rm(m); gc()
+  res
+}
+
+dcdh_q0 <- imap(OUTCOMES, \(lab, yc) run_dcdh_own(yc))
+```
+
+```{r q0-dcdh-plot, eval=HAS_DCDH, fig.height=4.2, results='asis'}
+# dCDH convention (from did_multiplegt_dyn): Effect_l -> event time +l (post), Placebo_l -> event
+# time -l (pre), reference period normalised to 0 at event time 0.
+tidy_dcdh_own <- function(obj) {
+  mk <- function(mat, sgn) {
+    if (is.null(mat) || !nrow(mat)) return(NULL)
+    tibble(event_time = sgn * seq_len(nrow(mat)),
+           est = mat[, "Estimate"], lo = mat[, "LB CI"], hi = mat[, "UB CI"])
+  }
+  bind_rows(mk(obj$results$Effects, 1L),
+            mk(obj$results$Placebos, -1L),
+            tibble(event_time = 0L, est = 0, lo = NA_real_, hi = NA_real_)) |>
+    arrange(event_time)
+}
+
+for (oc in names(dcdh_q0)) {
+  d <- tidy_dcdh_own(dcdh_q0[[oc]])
+  p <- ggplot(d, aes(event_time, est)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+    geom_line(colour = "#721F81") + geom_point(colour = "#721F81", size = 1.9) +
+    geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.18, colour = "#721F81") +
+    scale_x_continuous(breaks = sort(unique(d$event_time))) +
+    labs(title    = sprintf("dCDH — Own-hex mining stock -> %s", OUTCOMES[[oc]]),
+         subtitle = "de Chaisemartin-D'Haultfoeuille continuous-dose (stock) estimator; 95% CI",
+         x = "Event time (years relative to stock-dose change)",
+         y = paste0("Effect on ", OUTCOMES[[oc]])) +
+    theme_bw(base_size = 11)
+  print(p)
+  save_es(p, sprintf("es_q0_dcdh_%s.png", oc), height = 4.2)
+}
+```
+
+```{r q0-dcdh-table, eval=HAS_DCDH}
+# Compact dCDH summary: the headline numbers behind the plots above, one row per outcome.
+#   - ATE [95% CI]  : average total effect (single summary effect of the stock dose on the outcome)
+#   - p(pre-trend)  : joint placebo test (H0: all pre-period placebos = 0); HIGH p = flat pre-trends
+#   - p(effects)    : joint test (H0: all dynamic effects = 0); LOW p = effects jointly significant
+#   - Switchers     : number of switching hexes identifying the ATE (effective sample / precision)
+scl  <- function(x) if (is.null(x)) NA_real_ else as.numeric(x)
+pick <- function(a, col) if (is.matrix(a)) a[1, col] else a[[col]]
+dcdh_summary_own <- function(obj) {
+  a <- obj$results$ATE
+  tibble(ate       = pick(a, "Estimate"),
+         ci_lo     = pick(a, "LB CI"),
+         ci_hi     = pick(a, "UB CI"),
+         p_pre     = scl(obj$results$p_jointplacebo),
+         p_effects = scl(obj$results$p_jointeffects),
+         switchers = pick(a, "Switchers"))
+}
+
+dcdh_q0_tab <- imap_dfr(dcdh_q0, \(obj, oc)
+  dcdh_summary_own(obj) |> mutate(outcome = OUTCOMES[[oc]], .before = 1))
+
+dcdh_q0_out <- dcdh_q0_tab |>
+  mutate(`ATE [95% CI]` = sprintf("%.4f [%.4f, %.4f]", ate, ci_lo, ci_hi),
+         `p(pre-trend)` = sprintf("%.3f", p_pre),
+         `p(effects)`   = sprintf("%.3f", p_effects))
+
+save_md(dcdh_q0_out |> select(outcome, `ATE [95% CI]`, `p(pre-trend)`, `p(effects)`, switchers),
+        "es_q0_dcdh_summary.md")
+
+dcdh_q0_out |>
+  select(outcome, `ATE [95% CI]`, `p(pre-trend)`, `p(effects)`, switchers) |>
+  kbl(caption = paste0(
+    "dCDH summary (continuous own-hex mining stock dose). ATE = average total effect on the ",
+    "outcome; p(pre-trend) = joint placebo test (high = pre-trends flat, design credible); ",
+    "p(effects) = joint test that dynamic effects are zero; Switchers = hexes identifying the ATE.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# Static exports for the presentation deck
+
+Every figure and table above is also written to `outputs/figures/event_study/` so
+`4_presentation/galamsey_motivation.qmd` can embed them (`.png` via `include_graphics`, `.md`
+via `cat(readLines(...))`) without re-running any estimation. The manifest below lists what the
+last knit of *this file* produced (it will also list outputs from `_2`/`_3` if those were knitted
+into the same session's `out_es` directory).
+
+```{r export-manifest}
+tibble(file = list.files(out_es, pattern = "\\.(png|md)$")) |>
+  mutate(kind = ifelse(grepl("\\.png$", file), "figure", "table")) |>
+  arrange(kind, file) |>
+  kbl(caption = "Static event-study outputs found in outputs/figures/event_study/.") |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# Caveats & next steps
+
+- **Sub-basin clustering** now uses real HydroBASINS level-9 sub-basins (`basin_num`, from
+  `d_07_hydrobasins.R`) when present for this resolution (see `load-panel`); falls back to the old
+  25 km centroid-block stand-in — with a warning — for a resolution that hasn't been run yet.
+- **Window**: Barenblitt is 2007–2017; the usable event window is the overlap with the NDVI stack
+  (see the overlap table). Onsets before NDVI coverage have no pre-period and are dropped by `did`.
+- **Coverage / accuracy**: Barenblitt is SW-Ghana only at 75.6% producer accuracy → onset measured
+  with error and "never-treated" conflates "never surveyed"; prefer not-yet-treated controls.
+- **No-mine-crop masking (switched 2026-07-08 from cropland)** — `nominecrop` excludes any pixel
+  ever classified as Barenblitt mining, using the mining footprint directly rather than relying on
+  ESA-CCI's annual land-cover reclassification. For Q0 this matters more than for Q1: it isolates
+  vegetation loss on land *within the mined hex that was never itself mined* — the genuine
+  within-hex spillover signal — from the mechanical, near-total VI collapse on pixels that were
+  physically bulldozed. `cropland` mixed the two less cleanly. See `outcomes-setup` for the
+  reasoning and `data/raw/barenblitt`'s coverage caveats for what "ever classified as mining" means
+  (SW Ghana only, 75.6% producer accuracy).
+- **ESA CCI year clamp** — the land-cover masks are only genuinely re-derived through 2022; VI
+  years 2023–2025 reuse the 2022 CCI classification (`b_03a`'s `mask_vi_year()` clamps rather than
+  going NA). See the `vi-missingness` chunk above for the NA-rate evidence this produces (flat, not
+  missing, past 2022). Applies to `veg_narrow`/`cropland` (both ESA-CCI-derived); not directly
+  applicable to `nominecrop` (a Barenblitt-derived mask, not ESA-CCI-derived).
+- **NDVI vs EVI ATT magnitudes are not directly comparable** — the two indices are on different
+  scales, so overlaying them can make one look mechanically larger/smaller than the other for
+  reasons that have nothing to do with the underlying effect. Compare sign, significance, and
+  event-time shape across NDVI/EVI, not raw coefficient size. The outcome plots (`q0b-outcome-plots`
+  chunk) split by mask, specifically so each plot only ever overlays the NDVI/EVI pair *within* one
+  mask — within-mask index comparisons are meaningful there, and within-index cross-mask
+  comparisons (e.g. `evi_modis_veg_narrow_max` vs. `evi_modis_cropland_max`) are meaningful by
+  reading across the three mask-specific plots at a given threshold.
+- **Own-hex effects are the baseline, not the headline finding** — under the `nominecrop` mask this
+  design now carries a real (if narrow) spillover interpretation of its own — does mining anywhere
+  in the hex depress vegetation on the *non-mined* remainder of that same hex — rather than being
+  purely mechanical land-clearing. It still exists primarily to validate that the panel/estimator
+  mechanics detect a real effect before Q1/Q2's cross-hex spillover claims are trusted; a
+  `cropland`- or unmasked-outcome comparison (both still in `OUTCOMES`) shows the larger, more
+  mechanical effect for scale.
+- **dCDH** (`did_multiplegt_dyn`) runs only if `DIDmultiplegtDYN` is installed (`HAS_DCDH = `r HAS_DCDH`).
+- **Package footprint** — this file loads a trimmed package set relative to the original combined
+  `a_05_event_study.Rmd` (dropped: spdep, fixest, igraph, broom; kept `panelView` for the threshold
+  panelviews above, and conditionally loads `DIDmultiplegtDYN`/`polars` for the dCDH robustness
+  check when available) — none of the other dropped packages are used by Q0's code. See
+  [`a_05_event_study_2.Rmd`](a_05_event_study_2.Rmd) / [`_3.Rmd`](a_05_event_study_3.Rmd) for the
+  designs that need spdep/fixest/igraph/broom.

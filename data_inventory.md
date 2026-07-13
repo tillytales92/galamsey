@@ -33,12 +33,14 @@ is the current source; the two remote-sensing detectors below are being develope
 | Barenblitt — annual mining extent | Barenblitt et al. (2021), RF on Landsat | SW Ghana | 2007–2017 | ✅ | Current | `2_build/b_01_cross_section.R` |
 | Barenblitt — full mining extent 2019 | Barenblitt et al. (2021) | SW Ghana | 2019 (cross-section) | ✅ | Current | `2_build/b_01_cross_section.R` |
 | RS embedding mine-probability panel | Google AlphaEarth embeddings + RF (this project) | SW Ghana study area | 2017–2024 (annual) | 🔄 | Potential (will replace Barenblitt) | `1_remote_sensing/rs05_embedding_classifier.R` |
-| Africa Mining Watch — early detections | MLP detector (GeoJSON boxes + rectpolys) | Ghana | 2025 snapshot | ✅ | Potential | — (inspect raw GeoJSON) |
+| Africa Mining Watch — early detections | MLP detector (GeoJSON boxes + rectpolys) | SW Ghana (pilot bbox, not national) | 2025 snapshot | ✅ | Potential | `0_data/d_08_africa_mining_watch.R` |
+| Maus et al. — global mining polygons | Maus et al. (2022), global mining-footprint delineation | Ghana subset (577 of 44,929 global polygons) | static snapshot | ✅ | Potential | `0_data/d_09_mining_mausetal.R` |
 
 **Why several:** Barenblitt is the validated benchmark but is **positive-labels-only** at 75.6%
 producer accuracy and covers SW Ghana only. `rs05` (AlphaEarth embeddings) is the intended production
-replacement, giving an annual 2017–2024 panel; Africa Mining Watch is an alternative early ML
-detection layer held for comparison.
+replacement, giving an annual 2017–2024 panel; Africa Mining Watch and Maus et al. are alternative
+ML/global detection layers held for validation/ensemble comparison against Barenblitt and rs05 (EDA
+done for both 2026-07-07; full accuracy comparison still open — see `galamsey_tasklist.md`).
 
 **Barenblitt notes.**
 - Polygons are **clumps of contiguous classified pixels**, not exact outlines of individual galamsey
@@ -89,22 +91,28 @@ See §"Key Data Caveats" on the 1:10M scale limitation.
 
 ## 4. Rivers & hydrology
 
-Two representations of the river network are in use; the candidates add real-water observation and
-basin identifiers. (See `code/0_data/rivers_exploration.Rmd` for the full comparison.)
+Two representations of the river network, plus a sub-basin partition, are in use; the remaining
+candidates add real-water observation and finer river topology. (See `code/0_data/rivers_exploration.Rmd`
+for the full river-definition comparison.)
 
 | Dataset | Source | Coverage | Years | Resolution | Status | Use | Script |
 |---------|--------|----------|-------|-----------|--------|-----|--------|
 | OSM waterways (lines) | OpenStreetMap / Geofabrik | Ghana | current snapshot | vector | ✅ | Current | `0_data/d_03_waterways.R` |
 | MERIT Hydro (`dir`/`upa`/`wth`/`elv`) | Yamazaki et al. (2019) | Study area + Ankobra tiles | static | ~90 m | ✅ | Current | `0_data/d_04_merit.R` |
 | JRC Global Surface Water | `JRC/GSW1_4/GlobalSurfaceWater` (GEE) | Global | 1984–2021 | 30 m | ⬜ | Potential | — |
-| HydroSHEDS / HydroBASINS / HydroRIVERS | WWF / Lehner et al. | Global | static | 15 arc-sec | ⬜ | Potential | — |
+| HydroBASINS (level-9 sub-basins) | WWF/HydroSHEDS `WWF/HydroSHEDS/v1/Basins/hybas_9` (GEE) | Study area | static | ~sub-basin polygons | ✅ | Current | `0_data/d_01_download_gee.R` (download) → `0_data/d_07_hydrobasins.R` (hex assignment) |
+| HydroSHEDS / HydroRIVERS | WWF / Lehner et al. | Global | static | 15 arc-sec | ⬜ | Potential | — |
 
 **Why several:** **OSM** gives real, named rivers (distance-to-river, display) but is gap-prone.
 **MERIT Hydro** is a modelled, gap-free channel network that reaches small tributaries and provides
 the **D8 flow direction** for the upstream→downstream hex graph (must be traced on its native 4326
 grid). **JRC** would validate MERIT channels and flag actual standing water incl. mining ponds.
-**HydroBASINS** would supply real **sub-basin IDs** for the event-study SE clustering (currently a
-25 km centroid-block stand-in — flagged in `event_study_design.md`).
+**HydroBASINS** now supplies real **sub-basin IDs** for the event-study SE clustering — downloaded
+2026-07-06 (`d_01` Sec 6b, 453 basins in the study region) and assigned to hexes by `d_07_hydrobasins.R`
+(280 level-9 basins over the 5 km grid, `basin_num` factor), replacing the earlier 25 km
+centroid-block stand-in (`event_study_design.md` SE-clustering section; the stand-in remains a
+fallback where `basin_num` is unpopulated, e.g. the deferred 1 km grid). **HydroRIVERS** (vector
+river lines/topology) remains a candidate, distinct from the already-integrated HydroBASINS polygons.
 
 ---
 
@@ -131,17 +139,21 @@ descriptives.
 |---------|-------------------------|----------|-------|-----------|--------|-----|--------|
 | Landsat annual NDVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Potential — **not used for now** (high NA share) | `0_data/d_01_download_gee.R` |
 | Landsat annual EVI | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_EVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Potential — **not used for now** (high NA share) | `0_data/d_01_download_gee.R` |
-| MODIS VI (NDVI + EVI) | `MODIS/061/MOD13Q1` (QA-filtered 16-day series; annual mean derived locally) | All Ghana | 2000–2025 | 250 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
+| MODIS VI (NDVI + EVI) | `MODIS/061/MOD13Q1` (QA-filtered 16-day series; annual mean derived locally) | All Ghana | 2000–2025 | 250 m | ✅ | Current | `0_data/d_01_download_gee.R` |
 
 **Why both sensors:** **Landsat** is finer (30 m, back to 1995) but ~30–36% NA/year (cloud);
 **MODIS** (`MOD13Q1`, 250 m, from 2000) is coarser than Landsat but QA-filtered to ~16% NA, so it
-is far more complete year-to-year. The event study uses `ndvi_modis` as the headline outcome, with
-`evi_modis` and the no-mine-crop variants as robustness (`a_05` outcome-robustness section).
+is far more complete year-to-year. The event study is built on MODIS peak (max) NDVI/EVI, masked by
+ESA CCI land cover: `a_05_event_study_1.Rmd` (Q0, own-hex) heads with `evi_modis_veg_narrow_max`,
+`a_05_event_study_2.Rmd` (Q1, upstream→downstream) with `ndvi_modis_cropland_max`; the full
+NDVI/EVI × {veg-narrow, no-mine-crop, cropland} outcome grid is looped as robustness in both (and in
+`_3.Rmd`, Q2).
 **Landsat VI is downloaded but not used for now** — its ~30–36% NA/year (cloud) share is too high for
 the annual panel; it is retained as the finer-grained (30 m), longer-history (from 1995) alternative
 to revisit once a better cloud-gap-filling composite is in place. Missingness diagnostics:
 `0_data/d_05_ndvi.R`. *(MODIS VI upgraded from the 1 km `MOD13A2` to the 250 m `MOD13Q1` on
-2026-07-03 — same bands, `SummaryQA` scheme and scale factor; needs re-export.)*
+2026-07-03 — same bands and `SummaryQA` scheme and scale factor; re-export complete, full
+2000–2025 16-day series and annual stacks are on disk.)*
 
 **Export region (2026-07-03):** `d_01` now restricts **all** its GEE exports to the Barenblitt study
 area (SW Ghana + 25 km buffer) via a single `export_region` variable — the full-Ghana 30 m Landsat
@@ -166,7 +178,7 @@ unaffected.
 | MODIS land cover (IGBP `LC_Type1`) | `MODIS/061/MCD12Q1` | All Ghana | **2001–2020**\* | 500 m | 🔄 | Current | `0_data/d_01_download_gee.R` |
 | ESA WorldCover | `ESA/WorldCover/v200` (Sentinel-1/2) | Global | 2020, 2021 | 10 m | ⬜ | Potential | — |
 | Google Dynamic World | `GOOGLE/DYNAMICWORLD/V1` (Sentinel-2) | Global | 2015–present | 10 m | ⬜ | Potential | — |
-| Hansen Global Forest Change | `UMD/hansen/global_forest_change` | Global | 2000–2023 | 30 m | ⬜ | Potential | — |
+| Hansen Global Forest Change | `UMD/hansen/global_forest_change_2025_v1_13` | All Ghana (national, single static image) | 2000–2025 | 30 m | 🔄 | Potential | `0_data/d_01_download_gee.R` |
 
 **ESA CCI (300 m, 1995–2022) is now the preferred land-cover source** and the mask for the peak-EVI
 outcome: its finer grid and more granular legend separate evergreen (50) / deciduous (60/62) tree
@@ -189,7 +201,10 @@ the CCI switch and the finer products above as **future replacements**:
    + re-stack in `d_01` Sec 9 to recover them.
 
 A 10 m product (ESA WorldCover / Dynamic World) or Hansen tree-cover/loss would give a far better
-"forest around mines" mask and a cropland mask for the agricultural channel.
+"forest around mines" mask and a cropland mask for the agricultural channel. **Hansen download
+activated 2026-07-07** (`d_01` Sec 6c, national extent since it is a single static image, not a
+per-year time series) but not yet used as a land-cover mask or event-study outcome — see
+`galamsey_tasklist.md`'s "Add Hansen Global Forest Change as an event-study outcome" item.
 
 ---
 
@@ -315,6 +330,11 @@ computed in the RS index pipeline and could be extracted for downstream reaches.
 - **MERIT flow direction must not be reprojected** — trace the flow graph on the native EPSG:4326 grid.
 - **MERIT coverage** currently spans the study-area + Ankobra tiles, not all of Ghana; ~5.5% of mined
   ha sits off the channel network at `ROUTE_KM2 = 10`.
+- **HydroBASINS `basin_num` (SE-clustering key) is only populated at 5 km and 2 km** — the 1 km grid
+  falls back to the older 25 km centroid-block stand-in since `d_07_hydrobasins.R` hasn't been run
+  there. HydroBASINS level-9 is also GEE's finest available level (not level 12); some basins are
+  hex-sized singletons (18 at 5 km), which caps how far finer basin-level clustering alone can fix
+  small-cluster SE inflation — see `event_study_design.md`'s SE-clustering section.
 - **Landsat VI is cloud-gappy** (~30–36% NA/year) vs MODIS (~16%); prefer MODIS as the headline
   outcome, Landsat as finer-grained robustness.
 - **Admin shapefile** `valid_on`/`valid_to` NA date columns crash `sf_as_ee()` — always

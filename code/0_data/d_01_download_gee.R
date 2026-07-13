@@ -513,7 +513,7 @@ download_from_drive <- function(drive_folder, prefix, local_dir) {
 #download_from_drive(DRIVE_FOLDER, "modis_lc_ghana_",     out_land_cover)
 #download_from_drive(DRIVE_FOLDER, "chirps_ghana_",       out_chirps)
 #download_from_drive(DRIVE_FOLDER, "hydrobasins_hybas9_studyarea", out_hydrobasins)
-#download_from_drive(DRIVE_FOLDER, "hansen_gfc_ghana",    out_hansen)
+download_from_drive(DRIVE_FOLDER, "hansen_gfc_ghana",    out_hansen)
 
 message("\n=== d_01_download.R: export tasks submitted ===")
 message(sprintf(

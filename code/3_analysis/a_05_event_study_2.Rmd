@@ -1,0 +1,855 @@
+---
+title: "Galamsey event study — Q1 (part 1): upstream mining → downstream vegetation (C&S mbar sweep)"
+author: "Sree Ayyar, Till Meissner"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+params:
+  resolution_km: 2   # set to 1, 2, or 5; or override via rmarkdown::render(params=list(resolution_km=5))
+                     # 5 km (the primary grid — see event_study_design.md) is fastest; 2 km is
+                     # heavier but tractable now that the dCDH battery lives in a_05_event_study_2b.Rmd.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 5, dpi = 120)
+pacman::p_load(tidyverse, sf, spdep, did, here, kableExtra, panelView, plotly, htmltools, htmlwidgets)
+
+# Interactive HTML overlays: the Q1 exposure/threshold overlay plots (section "Exposure overlay"
+# and "Threshold stability") are rendered as toggleable plotly widgets -- click a legend entry to
+# hide that exposure, double-click to isolate it -- so the time series can be explored one exposure
+# at a time. The underlying ggplot is still written to PNG via save_es() for the deck. Set FALSE to
+# fall back to static ggplot in the HTML too.
+INTERACTIVE <- TRUE
+# NOTE: this file is Q1 PART 1 (Callaway & Sant'Anna mbar sweep) only. The dCDH continuous-dose
+# battery — the heavy polars/Rust step that OOMs at 2 km when chained after this file's ~80 C&S
+# bootstrap fits in one session — was split out into a_05_event_study_2b.Rmd on 2026-07-09 so each
+# estimator knits in its own R process.
+
+# ---- Static-output export --------------------------------------------------
+# Every headline figure and table is also written to outputs/figures/event_study/
+# so galamsey_motivation.qmd can embed them without re-running any estimation.
+# Figures -> PNG via save_es(); tables -> GitHub-flavoured markdown via save_md()
+# (the deck reads these with cat(readLines(...))). All saves are guarded so an
+# export hiccup never aborts the knit.
+out_es <- here("outputs", "figures", "event_study")
+dir.create(out_es, recursive = TRUE, showWarnings = FALSE)
+
+save_es <- function(plot, file, width = 9, height = 5, dpi = 150) {
+  tryCatch(
+    ggplot2::ggsave(file.path(out_es, file), plot, width = width, height = height, dpi = dpi),
+    error = function(e) message("save_es skipped ", file, ": ", conditionMessage(e)))
+  invisible(plot)
+}
+
+save_md <- function(df, file, digits = 4, caption = NULL) {
+  tryCatch({
+    md <- knitr::kable(as.data.frame(df), format = "pipe", digits = digits, caption = caption)
+    writeLines(md, file.path(out_es, file))
+  }, error = function(e) message("save_md skipped ", file, ": ", conditionMessage(e)))
+  invisible(df)
+}
+
+# Grouped markdown table: rows are blocked by `group_col`, which becomes a bold header row above
+# each block (pack_rows-style) instead of repeating on every line. Renders as a plain GFM pipe
+# table the deck can cat(). Used for the exposure/routing result tables.
+save_md_grouped <- function(df, file, group_col, digits = 4) {
+  tryCatch({
+    df   <- as.data.frame(df, check.names = FALSE)
+    cols <- setdiff(names(df), group_col)
+    fmt_col <- function(col)
+      if (is.numeric(col)) ifelse(is.na(col), "", as.character(round(col, digits)))
+      else                 ifelse(is.na(col), "", as.character(col))
+    body <- as.data.frame(lapply(df[cols], fmt_col), stringsAsFactors = FALSE, check.names = FALSE)
+    make_row <- function(cells) paste0("| ", paste(cells, collapse = " | "), " |")
+    lines <- c(make_row(cols), make_row(rep("---", length(cols))))
+    for (g in unique(as.character(df[[group_col]]))) {
+      idx   <- which(as.character(df[[group_col]]) == g)
+      lines <- c(lines, make_row(c(paste0("**", g, "**"), rep("", length(cols) - 1))))
+      for (i in idx) lines <- c(lines, make_row(unlist(body[i, ], use.names = FALSE)))
+    }
+    writeLines(lines, file.path(out_es, file))
+  }, error = function(e) message("save_md_grouped skipped ", file, ": ", conditionMessage(e)))
+  invisible(df)
+}
+```
+
+```{r widget-dep, include=FALSE}
+# Force htmlwidgets to inject the plotly.js dependency into the page ONCE. The overlay chunks below
+# emit each widget as a raw HTML fragment via htmltools::renderTags() inside a results='asis' loop
+# (the only reliable way to interleave widgets with pandoc tabset headers); those fragments carry
+# the per-plot data + binding but rely on this chunk to have loaded the shared plotly.js. include=
+# FALSE hides the throwaway plot but knitr still harvests its dependency. No-op when INTERACTIVE.
+if (INTERACTIVE) htmltools::tagList(plotly::plot_ly(x = 1, y = 1, type = "scatter", mode = "markers"))
+```
+
+This document **implements Q1** of the three-part event-study battery specified in
+[`event_study_design.md`](event_study_design.md), **rebuilt 2026-07-09** to the clean two-estimator
+structure of its Q0 sibling [`a_05_event_study_1.Rmd`](a_05_event_study_1.Rmd). The sprawling
+V1 (TWFE distributed-lag) / V3 / V3b machinery of the previous version is gone; what remains are the
+**two estimators Q0 uses** — now split across two files so each knits in its own R session:
+
+- [`a_05_event_study_1.Rmd`](a_05_event_study_1.Rmd) — **Q0**: own-hex mining → own-hex vegetation
+  (mechanics sanity check; read that one first).
+- **`a_05_event_study_2.Rmd`** (this file) — **Q1 part 1**: upstream mining → downstream vegetation,
+  **Callaway & Sant'Anna mbar sweep**. Companion
+  [`a_05_event_study_2b.Rmd`](a_05_event_study_2b.Rmd) runs the **dCDH continuous-dose** robustness
+  for the same exposure families × two routings.
+- [`a_05_event_study_3.Rmd`](a_05_event_study_3.Rmd) — **Q2**: neighbour mining → own mining.
+
+**Q1 — Waterborne degradation.** Outcome = downstream peak vegetation; treatment = **upstream**
+mining; the directed flow graph supplies the neighbour definitions; downstream onset is the
+directional placebo.
+
+**Two estimators (mirroring Q0), split across two files** (2026-07-09 — chaining them in one session
+exhausted memory: `did_multiplegt_dyn` runs on polars/Rust and OOMs at 2 km after this file's ~80
+C&S bootstrap fits):
+
+1. **Callaway & Sant'Anna — absorbing treatment at a stock threshold** (the headline; **this file**).
+   Treatment clock = first year the exposure's mining **stock** crosses $\bar m$, swept over
+   `mbar_grid = c(0, 5, 10, 20)` ha. `did::att_gt` → `aggte(type="dynamic")`, not-yet-treated
+   controls, DR estimator.
+2. **dCDH — continuous dose** (`did_multiplegt_dyn`, de Chaisemartin & D'Haultfœuille) — moved to
+   [`a_05_event_study_2b.Rmd`](a_05_event_study_2b.Rmd). Treats the exposure stock as a continuous
+   treatment intensity rather than discretising it at a threshold — robustness against the threshold
+   choice.
+
+**Two dimensions swept through both estimators:**
+
+- **Five directed exposures** (treatment → comparison → placebo): all-reachable upstream, upstream
+  1-hop, **lateral** (queen-adjacent minus the 1-hop up/down hexes — the off-flow comparison, *not*
+  plain queen adjacency, which would mix upstream + lateral + downstream), downstream 1-hop, and
+  all-reachable downstream.
+- **Two routing cut-offs.** The MERIT D8 flow graph is built at two minimum-upstream-drainage-area
+  thresholds: **ROUTE_KM2 = 10** (the primary graph — unsuffixed columns) and **ROUTE_KM2 = 50**
+  (a coarser routing that keeps only larger streams — `_upa50`-suffixed columns). Every exposure is
+  run at **both**, so the whole battery answers "does the result survive changing which channels
+  count as rivers?" (This wires in the alt `_upa50` flow graph that `b_03c`/`b_03d` have long
+  produced but no Q1 design previously used — see `event_study_design.md`.)
+
+Restricted (2026-07-09, at the user's request, to keep the fit count in check) to **EVI peak
+(annual max)** only, over just two masks: **`veg_narrow`** (the "productive green" mask — dense
+cropland ∪ tree cover) and **`no-mine-crop`** (pixels never classified as Barenblitt mining —
+isolates spillover onto surrounding land from the mechanical on-mine VI collapse). SEs clustered on
+real HydroBASINS level-9 sub-basins (`basin_num`; falls back to a 25 km centroid-block stand-in if
+absent — see `load-panel`).
+
+---
+
+# Conceptual framework — neighbour definitions
+
+```{r schematic-neighbours, fig.width=9, fig.height=8, echo=FALSE}
+# Five-group schematic: focal / upstream-all / upstream-1-hop / lateral / downstream-1-hop /
+# downstream-all. Roles match the event-study exposure columns used throughout this document.
+# (Illustrative synthetic 5 km grid + synthetic river — no real data.)
+
+bbox_sfc <- st_as_sfc(st_bbox(c(xmin = 0, ymin = 0, xmax = 20000, ymax = 28000)))
+st_crs(bbox_sfc) <- 32630
+
+hex_ex <- st_sf(geometry = st_make_grid(bbox_sfc, cellsize = 5000, square = FALSE)) |>
+  mutate(hex_id = paste0("h", row_number()),
+         cx = st_coordinates(st_centroid(geometry))[, 1],
+         cy = st_coordinates(st_centroid(geometry))[, 2])
+
+mid_cx <- median(hex_ex$cx); mid_cy <- median(hex_ex$cy)
+
+river_pts <- matrix(c(mid_cx - 400, 0, mid_cx + 900, 7000, mid_cx - 200, 14000,
+                      mid_cx + 700, 21000, mid_cx - 100, 28000), ncol = 2, byrow = TRUE)
+river_ex_sf <- st_sf(geometry = st_sfc(st_linestring(river_pts), crs = 32630))
+
+focal_i     <- which.min((hex_ex$cx - mid_cx)^2 + (hex_ex$cy - (mid_cy - 2000))^2)
+focal_id_ex <- hex_ex$hex_id[focal_i]
+focal_cy_ex <- hex_ex$cy[focal_i]
+
+river_hits <- which(lengths(st_intersects(hex_ex, river_ex_sf)) > 0)
+river_ids  <- hex_ex$hex_id[river_hits]
+up_hits    <- river_hits[hex_ex$cy[river_hits] > focal_cy_ex]
+dn_hits    <- river_hits[hex_ex$cy[river_hits] < focal_cy_ex]
+up_all_ids <- hex_ex$hex_id[up_hits]
+dn_all_ids <- hex_ex$hex_id[dn_hits]
+near_up_id <- if (length(up_all_ids) > 0) up_all_ids[which.min(hex_ex$cy[up_hits])] else character(0)
+near_dn_id <- if (length(dn_all_ids) > 0) dn_all_ids[which.max(hex_ex$cy[dn_hits])] else character(0)
+
+nb_ex       <- poly2nb(hex_ex, queen = TRUE)
+neigh_i     <- nb_ex[[focal_i]]
+lateral_ids <- hex_ex$hex_id[neigh_i][!hex_ex$hex_id[neigh_i] %in% river_ids]
+
+hex_ex <- hex_ex |>
+  mutate(role = case_when(
+    hex_id == focal_id_ex   ~ "Focal (mine onset)",
+    hex_id == near_up_id    ~ "Upstream — 1-hop",
+    hex_id %in% up_all_ids  ~ "Upstream — all reachable",
+    hex_id %in% lateral_ids ~ "Lateral",
+    hex_id == near_dn_id    ~ "Downstream — 1-hop",
+    hex_id %in% dn_all_ids  ~ "Downstream — all reachable",
+    TRUE                    ~ "Other hex"))
+
+role_order <- c("Focal (mine onset)", "Upstream — all reachable", "Upstream — 1-hop", "Lateral",
+                "Downstream — 1-hop", "Downstream — all reachable", "Other hex")
+role_colours_ex <- c("Focal (mine onset)" = "#721F81", "Upstream — all reachable" = "#4292C6",
+                     "Upstream — 1-hop" = "#08306B", "Lateral" = "#238B45",
+                     "Downstream — 1-hop" = "#D94701", "Downstream — all reachable" = "#FDAE6B",
+                     "Other hex" = "#F0F0F0")
+legend_labels <- c("Focal (mine onset)" = "Focal — mine onset",
+                   "Upstream — all reachable" = "Upstream all reachable   [treatment]",
+                   "Upstream — 1-hop" = "Upstream nearest 1-hop   [treatment, variant]",
+                   "Lateral" = "Lateral (queen, off-flow)  [comparison]",
+                   "Downstream — 1-hop" = "Downstream nearest 1-hop  [placebo]",
+                   "Downstream — all reachable" = "Downstream all reachable  [placebo]",
+                   "Other hex" = "Other hex")
+label_map <- c("Focal (mine onset)" = "ONSET", "Upstream — all reachable" = "UP",
+               "Upstream — 1-hop" = "UP\n1-hop", "Lateral" = "LAT",
+               "Downstream — 1-hop" = "DN\n1-hop", "Downstream — all reachable" = "DN")
+label_df_ex <- hex_ex |> st_drop_geometry() |> filter(role %in% names(label_map)) |>
+  mutate(label = label_map[role],
+         txt_col = if_else(role == "Downstream — all reachable", "grey20", "white"))
+
+arrow_x_ex   <- max(hex_ex$cx) + 2500
+arrow_top_ex <- mid_cy + 5500
+arrow_bot_ex <- mid_cy - 5500
+
+p_schem <- ggplot() +
+  geom_sf(data = hex_ex, aes(fill = role), colour = "grey55", linewidth = 0.45) +
+  geom_sf(data = river_ex_sf, colour = "#3B8ED0", linewidth = 1.4) +
+  geom_text(data = label_df_ex, aes(x = cx, y = cy, label = label, colour = txt_col),
+            fontface = "bold", size = 2.8, lineheight = 0.9) +
+  scale_colour_identity(guide = "none") +
+  annotate("segment", x = arrow_x_ex, xend = arrow_x_ex, y = arrow_top_ex, yend = arrow_bot_ex,
+           arrow = arrow(length = unit(0.3, "cm"), type = "closed"),
+           colour = "#3B8ED0", linewidth = 1.1) +
+  annotate("text", x = arrow_x_ex, y = arrow_top_ex + 1400, label = "Flow\ndirection",
+           colour = "#3B8ED0", size = 3, hjust = 0.5) +
+  scale_fill_manual(values = role_colours_ex, breaks = role_order, labels = legend_labels, name = NULL) +
+  labs(title = "Neighbour-role schematic: directed flow exposures",
+       subtitle = paste0(
+         "ONSET: focal hex where mine opens.\n",
+         "Upstream (treatment): all hexes reachable upstream via D8 flow graph; 1-hop = immediate predecessor; ≤3 hops (headline) = cumulative within three hops, between the two.\n",
+         "Lateral (comparison): queen-adjacent hexes NOT on the D8 flow path — no water link to focal.\n",
+         "Downstream (placebo): hexes reachable downstream via D8 flow graph; should show null effects."),
+       caption = "Schematic only — synthetic 5 km hex grid, northing-based flow path. No real data.") +
+  coord_sf(clip = "off") +
+  theme_void(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey30", size = 9, lineheight = 1.4),
+        plot.caption = element_text(colour = "grey50", size = 7),
+        plot.margin = margin(5, 80, 5, 5),
+        legend.position = "right", legend.text = element_text(size = 8.5))
+p_schem
+save_es(p_schem, "d2e_schematic.png", width = 9, height = 8)
+```
+
+---
+
+# Data foundations
+
+```{r load-panel}
+es <- readRDS(here("data", "processed", sprintf("event_panel_%dkm.rds", params$resolution_km)))
+panel  <- es$panel
+hex_sf <- es$hex_sf
+
+# Spatial clustering key: real HydroBASINS level-9 sub-basins (basin_id/basin_num from
+# d_07_hydrobasins.R via b_03e) when present, else the 25 km centroid-block stand-in. Aliased onto
+# block_id/block_num so downstream code (run_cs clustervars = "block_num") needs one name only.
+has_basin <- all(c("basin_id", "basin_num") %in% names(panel)) && !all(is.na(panel$basin_num))
+if (has_basin) {
+  panel <- panel |> mutate(block_id = as.character(basin_id), block_num = basin_num)
+  message(sprintf("Clustering on %d HydroBASINS level-9 sub-basins (basin_num).",
+                  n_distinct(panel$block_num)))
+} else {
+  warning("basin_id/basin_num not found in this panel -- falling back to the 25 km centroid-block ",
+          "SE-clustering stand-in. Run d_07_hydrobasins.R then b_03e_assemble_eventpanel.R for ",
+          "this resolution to get real sub-basin clustering.")
+  cent   <- sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(hex_sf))))
+  blocks <- tibble(hex_id = hex_sf$hex_id,
+                   block_id = paste0("b_", round(cent[, 1] / 25000), "_", round(cent[, 2] / 25000)))
+  panel  <- left_join(panel, blocks, by = "hex_id") |>
+    mutate(block_num = as.integer(factor(block_id)))
+}
+
+has_upstream <- !all(is.na(panel$up_onset_year))
+has_terrain  <- all(c("elev_mean", "slope_mean") %in% names(panel)) && !all(is.na(panel$elev_mean))
+xf <- if (has_terrain) ~ elev_mean + slope_mean else ~ 1
+
+c(upstream_columns_present   = has_upstream,
+  terrain_covariates_present = has_terrain,
+  hydrobasins_clustering     = has_basin,
+  n_clusters                 = n_distinct(panel$block_num))
+```
+
+```{r derive-le3}
+# Cumulative "within 3 hops" flow exposure = sum of the three DISJOINT rings (ring 1 = nearest_*,
+# plus hop2 + hop3), built for both routings when the ring columns exist. Motivation: at higher
+# mbar the treatment clock is set by the aggregate of the three hexes rather than ring 1 alone --
+# at mbar = 20 ha only 27.5% of within-3 onsets are set by ring 1, and 35% of treated hexes are
+# invisible to the 1-hop definition (diagnostic in event_study_design.md's hop-ring note). The
+# three ring stock columns share one NA pattern (same flow graph), so a plain rowSums propagates
+# the off-graph NA correctly; le3 onset = earliest ring onset (pmin). up_le3 = treatment,
+# down_le3 = symmetric placebo. Adding these two columns is all that's needed -- resolve_exposures()
+# and the whole C&S sweep pick them up from the EXPOSURES table below.
+add_le3 <- function(df, dir, suffix) {
+  stem   <- c(sprintf("nearest_%s", dir), sprintf("%s_hop2", dir), sprintf("%s_hop3", dir))
+  cols_s <- paste0(stem, "_stock_ha",   suffix)
+  cols_o <- paste0(stem, "_onset_year", suffix)
+  if (!all(cols_s %in% names(df))) return(df)   # rings not built for this routing/resolution
+  df[[paste0(dir, "_le3_stock_ha", suffix)]] <- rowSums(df[cols_s])                # NA-propagating
+  onset <- suppressWarnings(do.call(pmin, c(df[cols_o], na.rm = TRUE)))            # earliest ring onset
+  onset[is.infinite(onset)] <- NA_real_                                           # never-onset -> NA (pmin gives Inf)
+  df[[paste0(dir, "_le3_onset_year", suffix)]] <- as.integer(onset)
+  df
+}
+for (S in c("", "_upa50")) for (d in c("up", "down")) panel <- add_le3(panel, d, S)
+
+c(up_le3_present   = "up_le3_stock_ha"   %in% names(panel),
+  down_le3_present = "down_le3_stock_ha" %in% names(panel))
+```
+
+```{r outcomes-setup}
+# Restricted 2026-07-09 to EVI peak (annual max) only, over two masks: veg_narrow (the "productive
+# green" mask -- dense cropland ∪ tree cover, from b_03a_vi_panel.R's CCI_MASKS) and no-mine-crop
+# (pixels never classified as Barenblitt mining). EVI-only + 2 masks keeps the 2-routing x 7-exposure
+# x 4-mbar C&S sweep tractable. veg_narrow is listed first and is the headline.
+OUTCOMES <- c(
+  evi_modis_veg_narrow_max = "EVI (peak, veg-narrow)",
+  evi_modis_nominecrop_max = "EVI (peak, no-mine-crop)"
+)
+OUTCOMES <- OUTCOMES[names(OUTCOMES) %in% names(panel)]
+OUTCOMES <- OUTCOMES[vapply(names(OUTCOMES), \(c) !all(is.na(panel[[c]])), logical(1))]
+
+# NA share of each retained outcome (both are low-NA masks: no-mine-crop ~0.1%, veg_narrow a usable
+# middle mask -- see event_study_design.md's missingness note).
+tibble(outcome  = unname(OUTCOMES),
+       na_share = vapply(names(OUTCOMES), \(c) mean(is.na(panel[[c]])), numeric(1))) |>
+  kbl(digits = 3, caption = "Retained EVI-peak outcomes and their hex-year NA share.") |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r overlap, results='asis'}
+ndvi_years   <- es$ndvi_years
+mining_years <- es$mining_years
+overlap_txt <- sprintf(
+  "The VI stack covers %d–%d; Barenblitt mining spans %d–%d; the usable event window (their overlap) is **%d–%d**.",
+  min(ndvi_years), max(ndvi_years), min(mining_years), max(mining_years),
+  max(min(ndvi_years), min(mining_years)), min(max(ndvi_years), max(mining_years)))
+writeLines(overlap_txt, file.path(out_es, "es_overlap_window.md"))
+cat(overlap_txt)
+```
+
+## Exposure definitions
+
+Seven directed exposures, grouped by role. **Treatment** = mining *upstream* of the focal hex on the
+MERIT D8 flow graph (galamsey pollutes downstream, so upstream mining should depress the focal hex's
+downstream vegetation). **Placebo** = mining *downstream* (should show no effect — water doesn't flow
+uphill). **Comparison** = `lateral` (off-flow) neighbours, a land-use-adjacency control with no water
+link.
+
+Each upstream/downstream role comes at three spatial radii, so the effect can be read as a function of
+hydrological distance:
+
+- **1-hop** (`nearest_up_*` / `nearest_down_*`) — the immediately adjacent hex on the flow graph.
+- **≤3 hops** (`up_le3_*` / `down_le3_*`) — **cumulative mining within three flow hops**: the sum of
+  the three *disjoint* rings (1-hop + exactly-2-hops + exactly-3-hops), built above in the
+  `derive-le3` chunk as `rowSums` of the ring stocks with onset = earliest ring onset. This is the
+  headline "neighbourhood" treatment. Rationale: a hop is not a distance but waterborne sediment and
+  mercury travel several hexes, and — crucially — at higher stock thresholds the treatment *clock* is
+  set by the aggregate of the three hexes, not ring 1 alone. Ring-1 dominance of the within-3 onset
+  falls **57% → 27%** as $\bar m$ goes 0 → 20 ha, and at $\bar m \ge 10$ roughly a third of treated
+  hexes are invisible to the 1-hop definition (ring 1 never crosses) while another third have their
+  onset pulled earlier by rings 2–3. So `≤3 hops` is a genuinely different design from 1-hop at the
+  higher thresholds, not a dose rescaling. See `ring1_dominance_diagnostic.R` and
+  `event_study_design.md`'s hop-ring note. (The disjoint rings `up_hop{2,3}_*` also sit in the panel
+  from `b_03e`, should you want to enter them separately to trace attenuation.)
+- **all reachable** (`up_*` / `down_*`) — the full catchment ($k = \infty$, via `subcomponent()`).
+
+**Caveat carried from the build:** hops are hydrological topology, so their physical length scales
+with the grid (~3 km at 1 km, ~15 km at 5 km) — hop-based coefficients are **not comparable across
+resolutions**.
+
+```{r exposure-spec}
+# Seven directed exposures, each a (stock, onset) column pair. All are flow-graph-derived and hence
+# routing-dependent, so each has a "_upa50" sibling (ROUTE_KM2 = 50). Three radii per flow direction:
+# 1-hop (nearest_*), cumulative <=3 hops (*_le3_*, summed from the disjoint rings in derive-le3), and
+# full catchment (up_*/down_*). We deliberately use `lateral_*` (queen minus the within-3 up/down set)
+# as the middle comparison group, NOT plain queen adjacency (`adj_*`) -- plain adjacency mixes
+# upstream + lateral + downstream and has no _upa50 variant anyway. See event_study_design.md's V2
+# note and hop-ring note.
+EXPOSURES <- tibble::tribble(
+  ~key,      ~stock,                  ~onset,                    ~label,                       ~role,
+  "up",      "up_stock_ha",           "up_onset_year",           "upstream — all reachable",   "treatment",
+  "near_up", "nearest_up_stock_ha",   "nearest_up_onset_year",   "upstream — 1-hop",           "treatment",
+  "up_le3",  "up_le3_stock_ha",       "up_le3_onset_year",       "upstream — ≤3 hops",         "treatment",
+  "lat",     "lateral_stock_ha",      "lateral_onset_year",      "lateral (off-flow)",         "comparison",
+  "near_dn", "nearest_down_stock_ha", "nearest_down_onset_year", "downstream — 1-hop",         "placebo",
+  "dn_le3",  "down_le3_stock_ha",     "down_le3_onset_year",     "downstream — ≤3 hops",       "placebo",
+  "dn",      "down_stock_ha",         "down_onset_year",         "downstream — all reachable", "placebo"
+)
+role_lvls     <- c("treatment", "comparison", "placebo")
+exposure_lvls <- EXPOSURES$label
+# Palette by exposure (matches the schematic role colours: upstream = blues, lateral = green,
+# downstream = oranges).
+exposure_cols <- c("upstream — all reachable"   = "#4292C6",
+                   "upstream — 1-hop"           = "#08306B",
+                   "upstream — ≤3 hops"         = "#2171B5",
+                   "lateral (off-flow)"         = "#238B45",
+                   "downstream — 1-hop"         = "#D94701",
+                   "downstream — ≤3 hops"       = "#F16913",
+                   "downstream — all reachable" = "#FDAE6B")
+
+# Two routing cut-offs: primary (ROUTE_KM2 = 10, unsuffixed) and alt (ROUTE_KM2 = 50, "_upa50").
+ROUTINGS    <- c(upa10 = "", upa50 = "_upa50")
+routing_lab <- c(upa10 = "ROUTE_KM2 = 10 (primary)", upa50 = "ROUTE_KM2 = 50 (robustness)")
+
+# resolve_exposures(): the EXPOSURES table with columns suffixed for a routing, keeping only pairs
+# whose stock column is present and not all-NA in THIS panel (upa50 columns are absent if
+# hex_{N}km_flow_exposure_upa50.rds was never built).
+resolve_exposures <- function(suffix) {
+  EXPOSURES |>
+    mutate(stock = paste0(stock, suffix), onset = paste0(onset, suffix), routing_suffix = suffix) |>
+    filter(stock %in% names(panel),
+           vapply(stock, \(c) !all(is.na(panel[[c]])), logical(1)))
+}
+
+# Which routings are actually available (upa50 may be absent for this resolution).
+ROUTINGS_OK <- ROUTINGS[vapply(ROUTINGS, \(s) nrow(resolve_exposures(s)) > 0, logical(1))]
+tibble(routing     = names(ROUTINGS_OK),
+       definition  = routing_lab[names(ROUTINGS_OK)],
+       n_exposures = vapply(ROUTINGS_OK, \(s) nrow(resolve_exposures(s)), integer(1))) |>
+  kbl(caption = "Routing cut-offs available in this panel and how many of the 7 exposures resolve.") |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r helpers}
+mbar_grid <- c(0, 5, 10, 20)    # ha thresholds for the C&S stock-threshold sweep; mbar = 0 == "any
+                                # upstream mining" (onset crossing).
+mbar_cols <- c(">0 ha" = "#6A3D9A", ">5 ha" = "#2171B5", ">10 ha" = "#E67E22", ">20 ha" = "#27AE60")
+
+# C&S event-study wrapper (identical to Q0's). `gcol` = numeric col in `data` (0 = never-treated,
+# else first-treat year). Returns att_gt + dynamic (event-time) + overall (group) aggregations.
+run_cs <- function(data, yname, gcol, xformla = xf, cluster = "block_num",
+                   control = "notyettreated", min_e = -5, max_e = 5) {
+  data <- data |> filter(is.finite(.data[[yname]]))
+  att <- did::att_gt(
+    yname = yname, tname = "year", idname = "hex_num", gname = gcol,
+    control_group = control, xformla = xformla, clustervars = cluster,
+    data = as.data.frame(data), est_method = "dr",
+    base_period = "universal", allow_unbalanced_panel = TRUE, bstrap = TRUE)
+  list(att     = att,
+       dynamic = did::aggte(att, type = "dynamic", min_e = min_e, max_e = max_e, na.rm = TRUE),
+       overall = did::aggte(att, type = "group", na.rm = TRUE))
+}
+# tryCatch wrapper: high-mbar x sparse-exposure cells can leave too few treated units for att_gt.
+# Return NULL rather than aborting the whole sweep.
+safe_cs <- function(...) tryCatch(run_cs(...),
+  error = function(e) { message("run_cs failed: ", conditionMessage(e)); NULL })
+
+# first-treat column from a "stock crosses mbar" rule (0 = never crosses = C&S never-treated).
+first_cross <- function(df, stock_col, mbar) {
+  df |> group_by(hex_id) |>
+    mutate(g_thr = { col <- .data[[stock_col]]; y <- year[!is.na(col) & col > mbar]
+                     if (length(y)) min(y) else 0L }) |>
+    ungroup()
+}
+
+# tidy_dyn: one C&S dynamic aggregation -> tidy event-time frame.
+tidy_dyn <- function(dyn)
+  tibble(event_time = dyn$egt, att = dyn$att.egt, se = dyn$se.egt) |>
+  mutate(ci_lo = att - 1.96 * se, ci_hi = att + 1.96 * se)
+
+# dyn_overlay: overlay a tidy dynamic frame's ATT paths, coloured by `group_col` (already a column
+# in `df`). Used both for the exposure overlay (Q1 headline: treatment vs placebo) and the mbar
+# overlay (threshold-stability robustness).
+dyn_overlay <- function(df, group_col, palette, title, subtitle, legend, ylab = "ATT on EVI") {
+  df <- df |> mutate(.grp = .data[[group_col]])
+  ggplot(df, aes(event_time, att, colour = .grp, fill = .grp)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+    geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.10, colour = NA) +
+    geom_line() + geom_point(size = 1.6) +
+    scale_colour_manual(values = palette) + scale_fill_manual(values = palette) +
+    labs(title = title, subtitle = subtitle,
+         x = "Event time (years relative to treatment)", y = ylab,
+         colour = legend, fill = legend) +
+    theme_bw(base_size = 11)
+}
+
+# dyn_overlay_interactive: turn a dyn_overlay() ggplot into a toggleable plotly widget. ggplotly
+# explodes each group into separate ribbon/line/point traces, so we re-key every trace to a shared
+# legendgroup (the group token, recovered from the ggplotly trace name) and show the legend only on
+# the first trace per group -- then one legend click hides/shows the whole series and a double-click
+# isolates it. Returned widget is emitted with htmltools::renderTags()$html in the asis loops.
+dyn_overlay_interactive <- function(p) {
+  gp   <- plotly::ggplotly(p, tooltip = c("colour", "x", "y"))
+  seen <- character(0)
+  for (i in seq_along(gp$x$data)) {
+    nm  <- gp$x$data[[i]]$name
+    if (is.null(nm)) next
+    grp <- sub(",.*$", "", sub("^\\(", "", nm))    # "(upstream — 1-hop,1)" -> "upstream — 1-hop"
+    gp$x$data[[i]]$legendgroup <- grp
+    gp$x$data[[i]]$name        <- grp
+    gp$x$data[[i]]$showlegend  <- !(grp %in% seen)
+    seen <- union(seen, grp)
+  }
+  gp
+}
+
+# show_overlay: display an overlay ggplot either as an interactive widget (HTML) or static print,
+# governed by the INTERACTIVE flag. Used inside results='asis' loops, so the widget branch cat()s a
+# self-contained HTML fragment (plotly.js already injected by the widget-dep chunk).
+show_overlay <- function(p) {
+  if (INTERACTIVE) cat(htmltools::renderTags(dyn_overlay_interactive(p))$html) else print(p)
+}
+```
+
+## Control-pool composition (own-mining contamination)
+
+For each exposure, how many ever-exposed hexes were **already mining themselves** when the exposure
+fired (contaminated), vs. clean spillover cases? Reported for the primary routing (ROUTE_KM2 = 10);
+the `_upa50` graph reshuffles which hexes count as up/downstream but the qualitative picture is the
+same.
+
+```{r control-pool-composition}
+cat_order <- c("Never mined themselves",
+               "Started mining after exposure onset",
+               "Already mining when exposure started")
+
+pool_breakdown <- function(onset_col, label) {
+  n_treated <- n_distinct(panel$hex_id[!is.na(panel[[onset_col]])])
+  panel |>
+    mutate(treat_onset = .data[[onset_col]]) |>
+    distinct(hex_id, own_onset_year, treat_onset) |>
+    filter(!is.na(treat_onset)) |>
+    mutate(category = case_when(
+      is.na(own_onset_year)         ~ "Never mined themselves",
+      own_onset_year > treat_onset  ~ "Started mining after exposure onset",
+      own_onset_year <= treat_onset ~ "Already mining when exposure started")) |>
+    count(category, name = "n_hexes") |>
+    mutate(n_total = n_treated, share = round(n_hexes / n_treated, 3), exposure = label) |>
+    arrange(match(category, cat_order))
+}
+
+ex10 <- resolve_exposures("")
+pool_combined <- bind_rows(lapply(seq_len(nrow(ex10)), \(i)
+  pool_breakdown(ex10$onset[i], sprintf("%s (%s)", ex10$label[i], ex10$role[i]))))
+
+save_md_grouped(pool_combined |> select(exposure, category, n_hexes, n_total, share),
+                "es_q1_control_pool_composition.md", group_col = "exposure", digits = 3)
+
+grp_sizes  <- pool_combined |> count(exposure) |> pull(n)
+grp_labels <- pool_combined |> distinct(exposure) |> pull(exposure)
+pool_combined |>
+  select(exposure, category, n_hexes, n_total, share) |>
+  kbl(caption = paste0(
+    "Own-mining composition of ever-exposed hexes, by exposure (ROUTE_KM2 = 10). ",
+    "'Never mined themselves' is the cleanest spillover sample; 'Already mining' is contaminated. ",
+    "n_total = all ever-exposed hexes for that definition; share = n_hexes / n_total.")) |>
+  kable_styling(full_width = FALSE) |>
+  pack_rows(index = setNames(grp_sizes, grp_labels))
+```
+
+## Treatment structure (panelviews, primary routing)
+
+Treatment clock = first year the exposure stock crosses $\bar m$, shown for the two **upstream
+(treatment)** exposures at $\bar m = 0$ (any onset) and $\bar m = 20$ ha, on the headline outcome
+(`evi_modis_veg_narrow_max`), restricted to hexes complete over the Barenblitt window (2007–2017).
+
+```{r panelview-thresholds, fig.height=6, fig.width=10, eval=has_upstream}
+pv_outcome <- names(OUTCOMES)[1]
+pv_complete_ids <- panel |>
+  filter(year >= 2007, year <= 2017) |>
+  group_by(hex_id) |> filter(!any(is.na(.data[[pv_outcome]]))) |>
+  ungroup() |> distinct(hex_id)
+
+pv_show <- function(stock_col, mbar, main, file) {
+  d <- panel |>
+    filter(year >= 2007, year <= 2017) |>
+    semi_join(pv_complete_ids, by = "hex_id") |>
+    group_by(hex_id) |>
+    mutate(g_thr = { col <- .data[[stock_col]]; y <- year[!is.na(col) & col > mbar]
+                     if (length(y)) min(y) else NA_integer_ }) |>
+    ungroup() |>
+    mutate(D = as.integer(!is.na(g_thr) & year >= g_thr))
+  p <- panelview(as.formula(paste(pv_outcome, "~ D")), data = d, index = c("hex_id", "year"),
+                 main = main, legend.labs = c("Control", "Pre-treatment", "Post-treatment"),
+                 pre.post = TRUE, by.timing = TRUE, collapse.history = TRUE,
+                 display.all = TRUE, report.missing = FALSE, background = "white")
+  print(p); save_es(p, file, width = 10, height = 6); invisible(p)
+}
+
+pv_specs <- list(
+  list("up_stock_ha",         0,  "Upstream (all reachable) — any onset (mbar = 0)",      "es_q1_panelview_up_mbar0.png"),
+  list("up_stock_ha",         20, "Upstream (all reachable) — stock > 20 ha (mbar = 20)", "es_q1_panelview_up_mbar20.png"),
+  list("nearest_up_stock_ha", 0,  "Upstream 1-hop — any onset (mbar = 0)",                "es_q1_panelview_nearup_mbar0.png"),
+  list("nearest_up_stock_ha", 20, "Upstream 1-hop — stock > 20 ha (mbar = 20)",           "es_q1_panelview_nearup_mbar20.png"))
+pv_specs <- Filter(\(s) s[[1]] %in% names(panel) && !all(is.na(panel[[s[[1]]]])), pv_specs)
+for (s in pv_specs) pv_show(s[[1]], s[[2]], s[[3]], s[[4]])
+```
+
+---
+
+# Control variables in the C&S estimator
+
+`did::att_gt` uses `xformla` in both legs of the doubly-robust (DR) estimator: the propensity-score
+model (what predicts a hex's treatment cohort) and the outcome regression (what predicts EVI
+conditional on pre-treatment covariates). DR is consistent if *either* leg is correctly specified.
+
+**Currently used:** `xf = ~ elev_mean + slope_mean` (or `~ 1` when terrain is absent) — topographic
+accessibility (high, steep terrain is harder to mine and has systematically different vegetation).
+
+---
+
+# Estimator 1 — Callaway & Sant'Anna (absorbing treatment, mbar sweep)
+
+Treatment clock = first year the exposure's mining **stock** crosses $\bar m \in \{0, 5, 10, 20\}$
+ha; C&S with not-yet-treated controls, DR estimator, EVI peak in levels. Run for all seven exposures,
+both routing cut-offs, and both outcomes. **Read it as treatment-vs-placebo:** upstream (treatment)
+should be negative and significant while downstream (placebo) stays null; lateral is the off-flow
+comparison. A real effect should also be stable across the $\bar m$ sweep.
+
+```{r cs-fit, eval=has_upstream}
+# Compute every C&S fit once (routing x exposure x outcome x mbar), storing only the tidy dynamic
+# frame + overall ATT row per cell. safe_cs() returns NULL for cells too sparse to fit; those are
+# dropped. Fit count = length(ROUTINGS_OK) x n_exposures x length(OUTCOMES) x length(mbar_grid).
+cs_dyn <- list(); cs_ovr <- list()
+for (rt in names(ROUTINGS_OK)) {
+  ex <- resolve_exposures(ROUTINGS_OK[[rt]])
+  for (i in seq_len(nrow(ex))) for (oc in names(OUTCOMES)) for (mb in mbar_grid) {
+    fit <- safe_cs(first_cross(panel, ex$stock[i], mb), oc, "g_thr")
+    if (is.null(fit)) next
+    key  <- paste(rt, ex$key[i], oc, mb, sep = "|")
+    meta <- list(routing = rt, exposure = ex$label[i], role = ex$role[i],
+                 outcome = oc, outcome_lab = OUTCOMES[[oc]], mbar = mb)
+    cs_dyn[[key]] <- tidy_dyn(fit$dynamic) |> mutate(!!!meta)
+    cs_ovr[[key]] <- tibble(!!!meta, att = fit$overall$overall.att, se = fit$overall$overall.se)
+  }
+}
+cs_dyn_all <- bind_rows(cs_dyn) |>
+  mutate(exposure = factor(exposure, levels = exposure_lvls),
+         role     = factor(role, levels = role_lvls),
+         mbar_lab = factor(paste0(">", mbar, " ha"), levels = names(mbar_cols)))
+cs_ovr_all <- bind_rows(cs_ovr) |>
+  mutate(exposure = factor(exposure, levels = exposure_lvls),
+         role     = factor(role, levels = role_lvls))
+c(cs_fits_kept = length(cs_ovr))
+```
+
+## Overall ATT — all exposures, thresholds, routings
+
+```{r cs-overall-table, eval=has_upstream}
+cs_wide <- cs_ovr_all |>
+  mutate(cell = sprintf("%+.4f (%.4f)", att, se), mbar_lab = paste0(">", mbar, " ha")) |>
+  select(routing, outcome_lab, role, exposure, mbar_lab, cell) |>
+  pivot_wider(names_from = mbar_lab, values_from = cell) |>
+  arrange(routing, outcome_lab, role, exposure) |>
+  mutate(routing = routing_lab[routing]) |>
+  select(routing, outcome_lab, role, exposure, any_of(names(mbar_cols)))
+
+save_md_grouped(cs_wide, "es_q1_cs_overall.md", group_col = "routing")
+kbl(cs_wide, caption = paste0(
+  "Overall ATT (SE) of each directed exposure's mining stock on EVI, across mbar thresholds, both ",
+  "routing cut-offs, and both outcomes. Treatment (upstream) rows should be negative; placebo ",
+  "(downstream) rows should sit near zero; lateral is the off-flow comparison.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+## Exposure overlay — treatment vs placebo {.tabset}
+
+The Q1 headline plot: at each threshold, all seven exposures on one axis so upstream (treatment) can
+be read directly against downstream (placebo) and lateral (comparison).
+
+```{r cs-exposure-overlay, eval=has_upstream, fig.height=4.5, results='asis'}
+for (rt in names(ROUTINGS_OK)) {
+  cat(sprintf("\n\n### %s\n\n", routing_lab[rt]))
+  for (oc in names(OUTCOMES)) {
+    cat(sprintf("\n\n#### %s\n\n", OUTCOMES[[oc]]))
+    for (mb in mbar_grid) {
+      d <- cs_dyn_all |> filter(routing == rt, outcome == oc, mbar == mb)
+      if (!nrow(d)) next
+      p <- dyn_overlay(d, "exposure", exposure_cols,
+        sprintf("Q1 — directed-exposure ATT on %s — stock > %d ha", OUTCOMES[[oc]], mb),
+        sprintf("C&S dynamic ATT, not-yet-treated controls; %s; one line per exposure; 95%% CI",
+                routing_lab[rt]),
+        legend = "Exposure")
+      save_es(p, sprintf("es_q1_cs_expoverlay_%s_%s_mbar%d.png", rt, oc, mb), height = 4.5)
+      show_overlay(p)
+    }
+  }
+}
+```
+
+## Threshold stability — upstream treatment exposures {.tabset}
+
+Robustness cut: for each upstream (treatment) exposure, overlay the four $\bar m$ thresholds. A
+credible effect is stable in sign/shape across the sweep.
+
+```{r cs-mbar-overlay, eval=has_upstream, fig.height=4.5, results='asis'}
+treat_keys <- EXPOSURES$key[EXPOSURES$role == "treatment"]
+for (rt in names(ROUTINGS_OK)) {
+  cat(sprintf("\n\n### %s\n\n", routing_lab[rt]))
+  ex <- resolve_exposures(ROUTINGS_OK[[rt]])
+  for (oc in names(OUTCOMES)) {
+    for (k in intersect(treat_keys, ex$key)) {
+      lab <- ex$label[ex$key == k]
+      d   <- cs_dyn_all |> filter(routing == rt, outcome == oc, exposure == lab)
+      if (!nrow(d)) next
+      p <- dyn_overlay(d, "mbar_lab", mbar_cols,
+        sprintf("Q1 — %s — %s across stock thresholds", lab, OUTCOMES[[oc]]),
+        sprintf("C&S dynamic ATT; %s; one line per stock threshold (0/5/10/20 ha); 95%% CI",
+                routing_lab[rt]),
+        legend = "Stock threshold")
+      save_es(p, sprintf("es_q1_cs_mbaroverlay_%s_%s_%s.png", rt, k, oc), height = 4.5)
+      show_overlay(p)
+    }
+  }
+}
+```
+
+## Restricted sample — hexes never mined themselves
+
+The full-sample sweep keeps ever-exposed hexes even when they were **also mining themselves** (the
+`control-pool composition` table above quantifies this: e.g. only ~43% of ≤3-hop-exposed hexes never
+mined). For those contaminated hexes the downstream-vegetation outcome partly reflects the hex's
+*own* land clearing, not upstream spillover. This cut re-runs Estimator 1 on the **clean spillover
+sample** — hexes with `own_onset_year` all-NA (never mined themselves) — so a surviving upstream
+(treatment) effect is unambiguously downstream spillover. It is the hex-level complement to the
+pixel-level `nominecrop` mask; on these hexes `veg_narrow` and `nominecrop` nearly coincide (no
+Barenblitt-mined pixels to exclude), so the cut runs on the headline `veg_narrow` outcome only, but
+keeps all exposures, both routings, and the full $\bar m$ sweep.
+
+```{r cs-fit-clean, eval=has_upstream}
+# Clean spillover sample: drop every hex that ever mined itself (own_onset_year is per-hex constant,
+# NA <=> never mined). All available routings x all exposures x mbar sweep, headline outcome only.
+panel_clean <- panel |> filter(is.na(own_onset_year))
+clean_oc    <- names(OUTCOMES)[1]
+
+cs_dyn_cl <- list(); cs_ovr_cl <- list()
+for (rt in names(ROUTINGS_OK)) {
+  ex <- resolve_exposures(ROUTINGS_OK[[rt]])
+  for (i in seq_len(nrow(ex))) for (mb in mbar_grid) {
+    fit <- safe_cs(first_cross(panel_clean, ex$stock[i], mb), clean_oc, "g_thr")
+    if (is.null(fit)) next
+    key  <- paste(rt, ex$key[i], mb, sep = "|")
+    meta <- list(routing = rt, exposure = ex$label[i], role = ex$role[i], mbar = mb)
+    cs_dyn_cl[[key]] <- tidy_dyn(fit$dynamic) |> mutate(!!!meta)
+    cs_ovr_cl[[key]] <- tibble(!!!meta, att = fit$overall$overall.att, se = fit$overall$overall.se)
+  }
+}
+cs_dyn_cl_all <- bind_rows(cs_dyn_cl) |>
+  mutate(exposure = factor(exposure, levels = exposure_lvls),
+         role     = factor(role, levels = role_lvls),
+         mbar_lab = factor(paste0(">", mbar, " ha"), levels = names(mbar_cols)))
+cs_ovr_cl_all <- bind_rows(cs_ovr_cl) |>
+  mutate(exposure = factor(exposure, levels = exposure_lvls),
+         role     = factor(role, levels = role_lvls))
+
+c(clean_hexes        = n_distinct(panel_clean$hex_id),
+  full_hexes         = n_distinct(panel$hex_id),
+  dropped_self_mined = n_distinct(panel$hex_id) - n_distinct(panel_clean$hex_id),
+  clean_fits         = length(cs_ovr_cl))
+```
+
+```{r cs-clean-table, eval=has_upstream}
+cs_cl_wide <- cs_ovr_cl_all |>
+  mutate(cell = sprintf("%+.4f (%.4f)", att, se), mbar_lab = paste0(">", mbar, " ha")) |>
+  select(routing, role, exposure, mbar_lab, cell) |>
+  pivot_wider(names_from = mbar_lab, values_from = cell) |>
+  arrange(routing, role, exposure) |>
+  mutate(routing = routing_lab[routing]) |>
+  select(routing, role, exposure, any_of(names(mbar_cols)))
+
+save_md_grouped(cs_cl_wide, "es_q1_cs_overall_cleansample.md", group_col = "routing")
+kbl(cs_cl_wide, caption = paste0(
+  "Overall ATT (SE) on the headline outcome (", OUTCOMES[[clean_oc]], "), RESTRICTED to hexes that ",
+  "never mined themselves. Compare the upstream (treatment) rows against the full-sample table above: ",
+  "a surviving negative ATT is clean downstream spillover, not the hex's own land clearing.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+### Exposure overlay — clean sample {.tabset}
+
+```{r cs-clean-overlay, eval=has_upstream, fig.height=4.5, results='asis'}
+for (rt in names(ROUTINGS_OK)) {
+  cat(sprintf("\n\n#### %s\n\n", routing_lab[rt]))
+  for (mb in mbar_grid) {
+    d <- cs_dyn_cl_all |> filter(routing == rt, mbar == mb)
+    if (!nrow(d)) next
+    p <- dyn_overlay(d, "exposure", exposure_cols,
+      sprintf("Q1 (clean sample) — directed-exposure ATT on %s — stock > %d ha", OUTCOMES[[clean_oc]], mb),
+      sprintf("C&S dynamic ATT, not-yet-treated controls; hexes never mined themselves; %s; 95%% CI",
+              routing_lab[rt]),
+      legend = "Exposure")
+    save_es(p, sprintf("es_q1_cs_expoverlay_clean_%s_mbar%d.png", rt, mb), height = 4.5)
+    show_overlay(p)
+  }
+}
+```
+
+---
+
+# Estimator 2 — dCDH continuous dose → `a_05_event_study_2b.Rmd`
+
+The continuous-dose robustness check (de Chaisemartin & D'Haultfœuille `did_multiplegt_dyn`, treating
+each exposure's mining stock as a continuous dose rather than discretising it at $\bar m$) lives in
+its companion file **[`a_05_event_study_2b.Rmd`](a_05_event_study_2b.Rmd)**. It was split out
+2026-07-09: `did_multiplegt_dyn` runs on polars (Rust) and exhausted memory
+(`memory allocation … failed`) when chained after this file's ~80 C&S bootstrap fits in one session
+at 2 km. Knitting it separately gives it a clean R process, and it hands polars only the five columns
+it needs (not the full panel), keeping the footprint down.
+
+---
+
+# Static exports for the presentation deck
+
+Every figure and table above is also written to `outputs/figures/event_study/` so
+`4_presentation/galamsey_motivation.qmd` can embed them without re-running any estimation.
+
+```{r export-manifest}
+tibble(file = list.files(out_es, pattern = "\\.(png|md)$")) |>
+  mutate(kind = ifelse(grepl("\\.png$", file), "figure", "table")) |>
+  arrange(kind, file) |>
+  kbl(caption = "Static event-study outputs found in outputs/figures/event_study/.") |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# Caveats & next steps
+
+- **Two routing cut-offs.** The `_upa50` (ROUTE_KM2 = 50) columns implement the alt flow graph that
+  `b_03c`/`b_03d` have always produced but no Q1 design previously used. A coarser routing keeps only
+  larger streams, so it reassigns some hexes' up/downstream status and drops the smallest channels —
+  compare upa10 vs upa50 in the overall table and exposure-overlay plots as a "which channels count
+  as rivers?" robustness cut. Off-network galamsey (~5.5% of mined ha at ROUTE_KM2 = 10, more at 50)
+  is unattributed upstream in either graph. If the `_upa50` columns are absent for this resolution,
+  that routing is silently dropped (`ROUTINGS_OK`) and only upa10 runs.
+- **Lateral, not adjacency, is the middle comparison.** Plain queen adjacency (`adj_*`) mixes
+  upstream + lateral + downstream neighbours into one number and has no routing (`_upa50`) variant;
+  `lateral_*` (queen minus 1-hop up/down) is the clean off-flow comparison and is what this file
+  uses, per `event_study_design.md`'s V2 note.
+- **Sub-basin clustering** uses real HydroBASINS level-9 sub-basins (`basin_num`) when present; falls
+  back to the 25 km centroid-block stand-in — with a warning — for a resolution `d_07_hydrobasins.R`
+  hasn't been run for. Note the clustering key is time-invariant per hex and identical across the two
+  routing cut-offs — it adjusts for *where* a hex sits, not for its flow-graph exposure.
+- **Window / coverage / accuracy.** Barenblitt is 2007–2017, SW-Ghana only, 75.6% producer accuracy;
+  the usable event window is the overlap with the VI stack; onsets before VI coverage have no
+  pre-period and are dropped by `did`; "never-treated" conflates "never surveyed" → prefer
+  not-yet-treated controls (the `run_cs` default).
+- **Outcome restriction (2026-07-09).** EVI peak only, two masks (`veg_narrow`, `no-mine-crop`), to
+  bound the fit count (2 routings × 7 exposures × 2 outcomes × 4 mbar = up to 112 C&S fits). Add NDVI,
+  `cropland`/`forest`/`veg_broad`, or the `mean` stats back in `outcomes-setup` for a fuller (slower)
+  run. NDVI vs EVI ATT *magnitudes* are not directly comparable (different index scales) — compare
+  sign/significance/event-time shape.
+- **ESA CCI year clamp** — `veg_narrow` is ESA-CCI-derived and reuses the 2022 classification for
+  2023–2025 (`b_03a`'s `mask_vi_year()` clamps rather than going NA); `no-mine-crop` is a
+  Barenblitt-derived mask, not subject to the clamp.
+- **Split across two files (2026-07-09).** This file is the C&S mbar sweep; the dCDH continuous-dose
+  robustness is in [`a_05_event_study_2b.Rmd`](a_05_event_study_2b.Rmd). They were separated because
+  chaining `did_multiplegt_dyn` after the ~80 C&S bootstrap fits exhausted polars/Rust memory at 2 km.
+- **Package footprint** — relative to the previous combined `_2`, this rebuild drops `fixest`,
+  `igraph`, and `broom` (no more TWFE distributed-lag / two-clock designs) and no longer loads
+  `DIDmultiplegtDYN`/`polars` (those live in `_2b`); it keeps `spdep` (schematic +
+  lateral-definition context), `did`, and `panelView` (treatment-structure panelviews).
+- **See also** [`a_05_event_study_1.Rmd`](a_05_event_study_1.Rmd) (Q0, mechanics baseline) and
+  [`a_05_event_study_3.Rmd`](a_05_event_study_3.Rmd) (Q2, diffusion design).

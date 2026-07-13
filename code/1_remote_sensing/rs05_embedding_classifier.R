@@ -51,7 +51,7 @@ mining_2019 <- st_read(
   st_make_valid()
 
 artisanal_sf <- mining_2019 |>
-  filter(minetype == 1) |>
+  filter(mine_type == 1) |>
   select(geometry)
 
 message(sprintf("Artisanal mine polygons loaded: %d", nrow(artisanal_sf)))
@@ -59,12 +59,14 @@ message(sprintf("Artisanal mine polygons loaded: %d", nrow(artisanal_sf)))
 # Study area = convex hull of all Barenblitt polygons (SW Ghana survey extent)
 # This constrains both positive and negative sampling to the Barenblitt region,
 # avoiding extrapolation to northern Ghana where there are no training negatives.
+sf_use_s2(FALSE)
+
 study_area_sf <- mining_2019 |>
   st_union() |>
   st_convex_hull() |>
   st_sf() |>
   mutate(id = 1L) |>
-  select(id, geometry)
+  rename("mining_2019" = "st_convex_hull.st_union.mining_2019..")
 
 # Convert to EE objects
 artisanal_ee  <- sf_as_ee(artisanal_sf)

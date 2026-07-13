@@ -22,17 +22,32 @@
 #   [25 VI/urban cols from b_03a]
 #   own_new_ha, own_stock_ha, own_onset_year, event_time_own, ever_mined, first_treat_own
 #   adj_new_ha, adj_stock_ha, adj_onset_year, first_treat_adj
-#   up_new_ha,   up_stock_ha,   up_onset_year,   nearest_up_onset_year          [ROUTE_KM2=10, headline]
-#   nearest_up_new_ha,   nearest_up_stock_ha                           [if flow graph present]
-#   down_new_ha, down_stock_ha, down_onset_year, nearest_down_onset_year
-#   nearest_down_new_ha, nearest_down_stock_ha                         [if flow graph present]
-#   lateral_new_ha, lateral_stock_ha, lateral_onset_year               [if flow graph present]
-#   <all of the above 15 up/down/lateral cols again with an "_upa50" suffix>  [ROUTE_KM2=50, robustness;
-#     present only when hex_{N}km_flow_exposure_upa50.rds exists]
+#
+#   Flow exposure (ROUTE_KM2=10, headline). Every *_new_ha column emitted by b_03d gets a matching
+#   *_stock_ha (within-hex cumsum) and *_onset_year (first year the new_ha column is > 0) here, so
+#   the set below is discovered from the cache rather than hardcoded — raising K_HOPS in b_03d
+#   propagates automatically:
+#     up_new_ha,   up_stock_ha,   up_onset_year          — full reachable catchment (k = Inf)
+#     nearest_up_new_ha,   nearest_up_stock_ha,   nearest_up_onset_year     — upstream ring 1
+#     up_hop{k}_new_ha,    up_hop{k}_stock_ha,    up_hop{k}_onset_year      — upstream ring k >= 2
+#     down_* / nearest_down_* / down_hop{k}_*                               — mirror, downstream
+#     lateral_new_ha, lateral_stock_ha, lateral_onset_year                  — queen ring 1, off-flow
+#     lateral_hop{k}_*                                                      — queen ring k >= 2, off-flow
+#   <all of the above again with an "_upa50" suffix>  [ROUTE_KM2=50, robustness; present only when
+#     hex_{N}km_flow_exposure_upa50.rds exists]
+#
 #   elev_mean, slope_mean, gold_suit_share, dist_river_km
 #   basin_id, main_basin, pfaf_id, basin_num   [SE-clustering keys; present only when
 #     hydrobasins/hex_basin_{N}km.csv exists. basin_num = compact 1..K factor of the level-9 HYBAS_ID
 #     for the did/polars backend; main_basin = coarser HydroBASINS main-basin id for a robustness cut]
+#
+# HOP RINGS ARE DISJOINT (shortest-path distance exactly k; see b_03d header). The cumulative
+# "within k hops" exposure is therefore recovered here or in the analysis scripts by summing rings:
+#   up_le3_new_ha   <- nearest_up_new_ha   + up_hop2_new_ha   + up_hop3_new_ha
+#   up_le3_stock_ha <- nearest_up_stock_ha + up_hop2_stock_ha + up_hop3_stock_ha
+#   up_le3_onset_year <- pmin(nearest_up_onset_year, up_hop2_onset_year, up_hop3_onset_year, na.rm = TRUE)
+# Note the cumulative ONSET is a min over rings and so is dominated by ring 1 for most hexes — a
+# cumulative C&S cohort structure is close to the 1-hop one, and differs mainly in dose, not clock.
 
 RESOLUTIONS <- c(1, 2, 5)
 
@@ -57,69 +72,77 @@ all_vi_cols <- as.vector(t(outer(
 # urban_share (fraction of hex CCI pixels that are urban, class 190) also travels in the VI panel.
 all_vi_cols <- c(all_vi_cols, "urban_share")
 
+stock_of <- function(cn) sub("_new_ha$", "_stock_ha",   cn)
+onset_of <- function(cn) sub("_new_ha$", "_onset_year", cn)
+
+# Max hop ring present in a b_03d exposure cache, inferred from the "*_hop{k}_new_ha" names.
+# 1 when only the historical ring-1 names (nearest_*, lateral_*) are present.
+detect_k_hops <- function(new_cols) {
+  hops <- grep("_hop[0-9]+_new_ha$", new_cols, value = TRUE)
+  if (!length(hops)) return(1L)
+  max(as.integer(sub("^.*_hop([0-9]+)_new_ha$", "\\1", hops)))
+}
+
+# Canonical column order: for each exposure dimension, its (new_ha, stock_ha, onset_year) triplet.
+# Upstream group first (catchment, then rings 1..K), then downstream, then lateral (no catchment).
+flow_col_order <- function(new_cols) {
+  K   <- detect_k_hops(new_cols)
+  rng <- if (K > 1L) 2:K else integer(0)
+  ordered_new <- c(
+    "up_new_ha",      "nearest_up_new_ha",      paste0("up_hop",      rng, "_new_ha"),
+    "down_new_ha",    "nearest_down_new_ha",    paste0("down_hop",    rng, "_new_ha"),
+    "lateral_new_ha",                           paste0("lateral_hop", rng, "_new_ha")
+  )
+  ordered_new <- base::intersect(ordered_new, new_cols)
+  as.vector(t(cbind(ordered_new, stock_of(ordered_new), onset_of(ordered_new))))
+}
+
 # Flow-exposure columns produced by b_03d for ONE threshold's flow_r: expand to the full hex x year
 # spine, compute stocks (cumulative new_ha) and onset years. Shared by the ROUTE_KM2=10 (primary)
 # and ROUTE_KM2=50 (alt) exposure caches — called once per threshold, then the alt call's columns
 # get an "_upa50" suffix before joining so both live in the same panel without colliding.
+#
+# Every *_new_ha column in flow_r is handled by the same code path, whatever the ring depth, so
+# raising K_HOPS in b_03d needs no edit here. A column that is entirely NA in the cache (the flow
+# stub, or lateral_* when the crosssection cache was missing) stays NA rather than becoming a run
+# of zeroes from cumsum(replace_na(., 0)).
 compute_flow_cols <- function(flow_r, hex_ids, panel_years) {
-  has_flow        <- !all(is.na(flow_r$up_new_ha))
-  has_near_flow   <- has_flow && all(c("nearest_up_new_ha", "nearest_down_new_ha") %in% names(flow_r))
-  has_lateral_col <- has_flow && "lateral_new_ha" %in% names(flow_r)
+  new_cols <- grep("_new_ha$", names(flow_r), value = TRUE)
+  has_flow <- !all(is.na(flow_r$up_new_ha))
+  all_na   <- vapply(new_cols, \(cn) all(is.na(flow_r[[cn]])), logical(1))
 
   flow_exp <- expand_grid(hex_id = hex_ids, year = panel_years) |>
-    left_join(
-      dplyr::select(flow_r, hex_id, year, up_new_ha, down_new_ha,
-                    any_of(c("nearest_up_new_ha", "nearest_down_new_ha", "lateral_new_ha"))),
-      by = c("hex_id", "year")
-    ) |>
+    left_join(dplyr::select(flow_r, hex_id, year, all_of(new_cols)), by = c("hex_id", "year")) |>
     arrange(hex_id, year) |>
     group_by(hex_id) |>
-    mutate(
-      up_stock_ha           = if (has_flow)        cumsum(replace_na(up_new_ha,          0)) else NA_real_,
-      down_stock_ha         = if (has_flow)        cumsum(replace_na(down_new_ha,         0)) else NA_real_,
-      nearest_up_stock_ha   = if (has_near_flow)   cumsum(replace_na(nearest_up_new_ha,   0)) else NA_real_,
-      nearest_down_stock_ha = if (has_near_flow)   cumsum(replace_na(nearest_down_new_ha, 0)) else NA_real_,
-      lateral_stock_ha      = if (has_lateral_col) cumsum(replace_na(lateral_new_ha,      0)) else NA_real_
-    ) |>
-    ungroup()
+    mutate(across(all_of(new_cols), \(x) cumsum(replace_na(x, 0)), .names = "stock__{.col}")) |>
+    ungroup() |>
+    rename_with(\(nm) stock_of(sub("^stock__", "", nm)), starts_with("stock__"))
 
-  up_onset_r <- if (has_flow)
-    flow_r |> dplyr::filter(up_new_ha   > 0) |>
-      group_by(hex_id) |> summarise(up_onset_year   = min(year), .groups = "drop")
-  else tibble(hex_id = character(0), up_onset_year = integer(0))
+  for (cn in new_cols[all_na]) flow_exp[[stock_of(cn)]] <- NA_real_
 
-  down_onset_r <- if (has_flow)
-    flow_r |> dplyr::filter(down_new_ha > 0) |>
-      group_by(hex_id) |> summarise(down_onset_year = min(year), .groups = "drop")
-  else tibble(hex_id = character(0), down_onset_year = integer(0))
+  # onset = first year the exposure column turns positive. For the ring columns this equals the
+  # min own_onset_year over the ring's members (own_new_ha >= 0), which is how b_03d used to
+  # compute nearest_up_onset_year / nearest_down_onset_year directly.
+  onset_tbl <- function(cn) {
+    on <- onset_of(cn)
+    if (all_na[[cn]]) return(setNames(tibble(character(0), numeric(0)), c("hex_id", on)))
+    flow_r |>
+      dplyr::filter(.data[[cn]] > 0) |>
+      group_by(hex_id) |>
+      summarise(!!on := min(year), .groups = "drop")
+  }
+  onset_cols_r <- Reduce(\(a, b) full_join(a, b, by = "hex_id"), lapply(new_cols, onset_tbl))
 
-  lateral_onset_r <- if (has_lateral_col)
-    flow_r |> dplyr::filter(lateral_new_ha > 0) |>
-      group_by(hex_id) |> summarise(lateral_onset_year = min(year), .groups = "drop")
-  else tibble(hex_id = character(0), lateral_onset_year = integer(0))
-
-  nearest_up_r <- if (has_flow)
-    flow_r |> dplyr::filter(!is.na(nearest_up_onset_year)) |>
-      distinct(hex_id, nearest_up_onset_year)
-  else tibble(hex_id = character(0), nearest_up_onset_year = numeric(0))
-
-  nearest_down_r <- if (has_flow && "nearest_down_onset_year" %in% names(flow_r))
-    flow_r |> dplyr::filter(!is.na(nearest_down_onset_year)) |>
-      distinct(hex_id, nearest_down_onset_year)
-  else tibble(hex_id = character(0), nearest_down_onset_year = numeric(0))
-
+  col_order   <- flow_col_order(new_cols)
   year_cols_r <- flow_exp |>
-    dplyr::select(hex_id, year, up_new_ha, up_stock_ha, down_new_ha, down_stock_ha,
-                  any_of(c("nearest_up_new_ha",   "nearest_up_stock_ha",
-                           "nearest_down_new_ha", "nearest_down_stock_ha",
-                           "lateral_new_ha",      "lateral_stock_ha")))
+    dplyr::select(hex_id, year, any_of(base::intersect(col_order, names(flow_exp))))
 
-  onset_cols_r <- Reduce(\(a, b) full_join(a, b, by = "hex_id"),
-                         list(up_onset_r, down_onset_r, lateral_onset_r, nearest_up_r, nearest_down_r))
-  if (!has_flow) onset_cols_r <- onset_cols_r |>
-    mutate(up_onset_year = NA_real_, down_onset_year = NA_real_, lateral_onset_year = NA_real_)
-
-  list(has_flow = has_flow, year_cols = year_cols_r, onset_cols = onset_cols_r)
+  list(has_flow  = has_flow,
+       k_hops    = detect_k_hops(new_cols),
+       col_order = col_order,
+       year_cols = year_cols_r,
+       onset_cols = onset_cols_r)
 }
 
 for (res_km in RESOLUTIONS) {
@@ -249,15 +272,11 @@ for (res_km in RESOLUTIONS) {
 
   ####4. Final column order ####
 
-  # The upa50 (ROUTE_KM2=50) robustness set mirrors the 15 primary up/down/lateral columns,
-  # each with an "_upa50" suffix — build that name list once rather than typing it twice.
-  upa50_cols <- paste0(
-    c("up_new_ha", "up_stock_ha", "up_onset_year", "nearest_up_onset_year",
-      "nearest_up_new_ha", "nearest_up_stock_ha",
-      "down_new_ha", "down_stock_ha", "down_onset_year", "nearest_down_onset_year",
-      "nearest_down_new_ha", "nearest_down_stock_ha",
-      "lateral_new_ha", "lateral_stock_ha", "lateral_onset_year"),
-    "_upa50")
+  # Both thresholds emit the same exposure columns; the upa50 (ROUTE_KM2=50) robustness set is
+  # just the primary order with an "_upa50" suffix. Taken from flow_primary$col_order so ring
+  # depth is never spelled out twice.
+  flow_cols  <- flow_primary$col_order
+  upa50_cols <- paste0(flow_cols, "_upa50")
 
   panel_r <- panel_r |>
     arrange(hex_id, year) |>
@@ -266,11 +285,7 @@ for (res_km in RESOLUTIONS) {
       any_of(all_vi_cols),
       own_new_ha, own_stock_ha, own_onset_year, event_time_own, ever_mined, first_treat_own,
       adj_new_ha, adj_stock_ha, adj_onset_year, first_treat_adj,
-      up_new_ha,   up_stock_ha,   up_onset_year,   nearest_up_onset_year,
-        any_of(c("nearest_up_new_ha",   "nearest_up_stock_ha")),
-      down_new_ha, down_stock_ha, down_onset_year, any_of("nearest_down_onset_year"),
-        any_of(c("nearest_down_new_ha", "nearest_down_stock_ha")),
-      any_of(c("lateral_new_ha", "lateral_stock_ha", "lateral_onset_year")),
+      any_of(flow_cols),
       any_of(upa50_cols),
       any_of(c("elev_mean", "slope_mean", "gold_suit_share", "dist_river_km")),
       any_of(c("basin_id", "main_basin", "pfaf_id", "basin_num"))
@@ -292,10 +307,18 @@ for (res_km in RESOLUTIONS) {
   cat(sprintf("  Treated (ever-mined) = %d | never-mined = %d\n", n_treat, n_total - n_treat))
   cat(sprintf("  Hexes with adj mining: %d\n",
               n_distinct(panel_r$hex_id[!is.na(panel_r$adj_onset_year)])))
-  cat(sprintf("  Upstream/downstream (ROUTE_KM2=10): %s\n",
-              if (flow_primary$has_flow) "populated" else "NA (flow edges absent)"))
+  cat(sprintf("  Upstream/downstream (ROUTE_KM2=10): %s | hop rings k = 1..%d\n",
+              if (flow_primary$has_flow) "populated" else "NA (flow edges absent)",
+              flow_primary$k_hops))
   cat(sprintf("  Upstream/downstream (ROUTE_KM2=50): %s\n",
               if (!is.null(year_cols_50)) "populated" else "absent — upa50 file not found"))
+
+  if (flow_primary$has_flow) {
+    cat("  Hexes with any exposure, by ring (onset year non-missing):\n")
+    ring_onsets <- base::intersect(onset_of(grep("_new_ha$", flow_cols, value = TRUE)),
+                                   names(panel_r))
+    print(sapply(ring_onsets, \(v) n_distinct(panel_r$hex_id[!is.na(panel_r[[v]])])))
+  }
   cat(sprintf("  Sub-basin SE clusters (HydroBASINS L9): %s\n",
               if (!is.null(basin_r))
                 sprintf("%d basins / %d main-basins", n_distinct(basin_r$basin_id),

@@ -1,0 +1,431 @@
+---
+title: "Galamsey event study — Q2: neighbour mining → own mining"
+author: "Sree Ayyar, Till Meissner"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+params:
+  resolution_km: 2   # set to 1, 2, or 5; or override via rmarkdown::render(params=list(resolution_km=5))
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 5, dpi = 120)
+pacman::p_load(tidyverse, sf, spdep, fixest, did, here, kableExtra)
+
+# ---- Static-output export --------------------------------------------------
+# Every headline figure and table is also written to outputs/figures/event_study/
+# so galamsey_motivation.qmd can embed them without re-running any estimation.
+# Figures -> PNG via save_es(); tables -> GitHub-flavoured markdown via save_md()
+# (the deck reads these with cat(readLines(...))). All saves are guarded so an
+# export hiccup never aborts the knit.
+out_es <- here("outputs", "figures", "event_study")
+dir.create(out_es, recursive = TRUE, showWarnings = FALSE)
+
+save_es <- function(plot, file, width = 9, height = 5, dpi = 150) {
+  tryCatch(
+    ggplot2::ggsave(file.path(out_es, file), plot, width = width, height = height, dpi = dpi),
+    error = function(e) message("save_es skipped ", file, ": ", conditionMessage(e)))
+  invisible(plot)
+}
+
+save_md <- function(df, file, digits = 4, caption = NULL) {
+  tryCatch({
+    md <- knitr::kable(as.data.frame(df), format = "pipe", digits = digits, caption = caption)
+    writeLines(md, file.path(out_es, file))
+  }, error = function(e) message("save_md skipped ", file, ": ", conditionMessage(e)))
+  invisible(df)
+}
+```
+
+This document **implements Q2** of the three-part event-study battery specified in
+[`event_study_design.md`](event_study_design.md). It was split out of the original combined
+`a_05_event_study.Rmd` on 2026-07-08 into three self-contained, independently-knittable files so
+each question can be run on its own:
+
+- [`a_05_event_study_1.Rmd`](a_05_event_study_1.Rmd) — **Q0**: own-hex mining → own-hex vegetation
+  (mechanics sanity check; read this one first).
+- [`a_05_event_study_2.Rmd`](a_05_event_study_2.Rmd) — **Q1**: upstream mining → downstream vegetation.
+- **`a_05_event_study_3.Rmd`** (this file) — **Q2**: neighbour mining → own mining.
+
+**Q2 was restored to working order in this split** (2026-07-08) — it had been entirely disabled
+(HTML-commented, `eval=FALSE`) since 2026-06-30 in the combined document while Q1 was the active
+focus. All chunks below are live again.
+
+**Q2 — Mining diffusion.** Outcome = own-hex mining (intensity + onset); treatment = **neighbour**
+mining onset; right neighbour = adjacency (queen) + upstream as a river-corridor variant; placebo =
+downstream onset.
+
+Estimator: **Callaway & Sant'Anna** (`did::att_gt` → `aggte(type="dynamic")`) with
+**not-yet-treated** controls. SEs clustered on real HydroBASINS level-9 sub-basins (`basin_num`,
+from `d_07_hydrobasins.R`; falls back to a 25 km centroid-block stand-in if absent for this
+resolution — see `load-panel` chunk and caveats).
+
+---
+
+# Conceptual framework — neighbour definitions
+
+```{r schematic-neighbours, fig.width=9, fig.height=8, echo=FALSE}
+# Five-group schematic: focal / upstream-all / upstream-1-hop / lateral /
+# downstream-1-hop / downstream-all. Roles match the event-study treatment
+# columns used throughout this document.
+
+bbox_sfc <- st_as_sfc(st_bbox(c(xmin = 0, ymin = 0, xmax = 20000, ymax = 28000)))
+st_crs(bbox_sfc) <- 32630
+
+hex_ex <- st_sf(
+  geometry = st_make_grid(bbox_sfc, cellsize = 5000, square = FALSE)
+) |>
+  mutate(
+    hex_id = paste0("h", row_number()),
+    cx     = st_coordinates(st_centroid(geometry))[, 1],
+    cy     = st_coordinates(st_centroid(geometry))[, 2]
+  )
+
+mid_cx <- median(hex_ex$cx)
+mid_cy <- median(hex_ex$cy)
+
+# River linestring (flowing south → north = increasing y)
+river_pts <- matrix(c(
+  mid_cx - 400,      0,
+  mid_cx + 900,   7000,
+  mid_cx - 200,  14000,
+  mid_cx + 700,  21000,
+  mid_cx - 100,  28000
+), ncol = 2, byrow = TRUE)
+river_ex_sf <- st_sf(geometry = st_sfc(st_linestring(river_pts), crs = 32630))
+
+# Focal hex = slightly below grid midpoint: 2+ upstream hexes and 2 downstream hexes visible
+focal_i     <- which.min((hex_ex$cx - mid_cx)^2 + (hex_ex$cy - (mid_cy - 2000))^2)
+focal_id_ex <- hex_ex$hex_id[focal_i]
+focal_cy_ex <- hex_ex$cy[focal_i]
+
+# Hexes the river intersects
+river_hits <- which(lengths(st_intersects(hex_ex, river_ex_sf)) > 0)
+river_ids  <- hex_ex$hex_id[river_hits]
+
+# Upstream = river hexes strictly above focal; downstream = strictly below
+up_hits    <- river_hits[hex_ex$cy[river_hits] > focal_cy_ex]
+dn_hits    <- river_hits[hex_ex$cy[river_hits] < focal_cy_ex]
+up_all_ids <- hex_ex$hex_id[up_hits]
+dn_all_ids <- hex_ex$hex_id[dn_hits]
+
+# Nearest (1-hop): river hex immediately adjacent to focal in each direction
+near_up_id <- if (length(up_all_ids) > 0) up_all_ids[which.min(hex_ex$cy[up_hits])] else character(0)
+near_dn_id <- if (length(dn_all_ids) > 0) dn_all_ids[which.max(hex_ex$cy[dn_hits])] else character(0)
+
+# Lateral = queen-adjacent to focal but NOT on the flow path
+nb_ex       <- poly2nb(hex_ex, queen = TRUE)
+neigh_i     <- nb_ex[[focal_i]]
+lateral_ids <- hex_ex$hex_id[neigh_i][!hex_ex$hex_id[neigh_i] %in% river_ids]
+
+# Assign roles; nearest subsets take priority over "all reachable"
+hex_ex <- hex_ex |>
+  mutate(role = case_when(
+    hex_id == focal_id_ex   ~ "Focal (mine onset)",
+    hex_id == near_up_id    ~ "Upstream — 1-hop",
+    hex_id %in% up_all_ids  ~ "Upstream — all reachable",
+    hex_id %in% lateral_ids ~ "Lateral",
+    hex_id == near_dn_id    ~ "Downstream — 1-hop",
+    hex_id %in% dn_all_ids  ~ "Downstream — all reachable",
+    TRUE                    ~ "Other hex"
+  ))
+
+role_order <- c(
+  "Focal (mine onset)",
+  "Upstream — all reachable",
+  "Upstream — 1-hop",
+  "Lateral",
+  "Downstream — 1-hop",
+  "Downstream — all reachable",
+  "Other hex"
+)
+role_colours_ex <- c(
+  "Focal (mine onset)"         = "#721F81",
+  "Upstream — all reachable"   = "#4292C6",
+  "Upstream — 1-hop"           = "#08306B",
+  "Lateral"                    = "#238B45",
+  "Downstream — 1-hop"         = "#D94701",
+  "Downstream — all reachable" = "#FDAE6B",
+  "Other hex"                  = "#F0F0F0"
+)
+legend_labels <- c(
+  "Focal (mine onset)"         = "Focal — mine onset",
+  "Upstream — all reachable"   = "Upstream all reachable   [treatment]",
+  "Upstream — 1-hop"           = "Upstream nearest 1-hop   [treatment, variant]",
+  "Lateral"                    = "Lateral (queen, off-flow)  [comparison]",
+  "Downstream — 1-hop"         = "Downstream nearest 1-hop  [placebo]",
+  "Downstream — all reachable" = "Downstream all reachable  [placebo]",
+  "Other hex"                  = "Other hex"
+)
+
+label_map <- c(
+  "Focal (mine onset)"         = "ONSET",
+  "Upstream — all reachable"   = "UP",
+  "Upstream — 1-hop"           = "UP\n1-hop",
+  "Lateral"                    = "LAT",
+  "Downstream — 1-hop"         = "DN\n1-hop",
+  "Downstream — all reachable" = "DN"
+)
+label_df_ex <- hex_ex |>
+  st_drop_geometry() |>
+  filter(role %in% names(label_map)) |>
+  mutate(label   = label_map[role],
+         txt_col = if_else(role == "Downstream — all reachable", "grey20", "white"))
+
+arrow_x_ex   <- max(hex_ex$cx) + 2500
+arrow_top_ex <- mid_cy + 5500
+arrow_bot_ex <- mid_cy - 5500
+
+p_schem <- ggplot() +
+  geom_sf(data = hex_ex, aes(fill = role), colour = "grey55", linewidth = 0.45) +
+  geom_sf(data = river_ex_sf, colour = "#3B8ED0", linewidth = 1.4) +
+  geom_text(data = label_df_ex, aes(x = cx, y = cy, label = label, colour = txt_col),
+            fontface = "bold", size = 2.8, lineheight = 0.9) +
+  scale_colour_identity(guide = "none") +
+  annotate("segment",
+           x = arrow_x_ex, xend = arrow_x_ex,
+           y = arrow_top_ex, yend = arrow_bot_ex,
+           arrow = arrow(length = unit(0.3, "cm"), type = "closed"),
+           colour = "#3B8ED0", linewidth = 1.1) +
+  annotate("text", x = arrow_x_ex, y = arrow_top_ex + 1400,
+           label = "Flow\ndirection", colour = "#3B8ED0", size = 3, hjust = 0.5) +
+  scale_fill_manual(values = role_colours_ex, breaks = role_order,
+                    labels = legend_labels, name = NULL) +
+  labs(title   = "Neighbour-role schematic: five treatment groups",
+       subtitle = paste0(
+         "ONSET: focal hex where mine opens.\n",
+         "Upstream (treatment): all hexes reachable upstream via D8 flow graph; 1-hop = immediate predecessor only.\n",
+         "Lateral (comparison): queen-adjacent hexes NOT on the D8 flow path — no water link to focal.\n",
+         "Downstream (placebo): hexes reachable downstream via D8 flow graph; should show null effects."
+       ),
+       caption = "Schematic only — synthetic 5 km hex grid, northing-based flow path. No real data.") +
+  coord_sf(clip = "off") +
+  theme_void(base_size = 11) +
+  theme(plot.title      = element_text(face = "bold"),
+        plot.subtitle   = element_text(colour = "grey30", size = 9, lineheight = 1.4),
+        plot.caption    = element_text(colour = "grey50", size = 7),
+        plot.margin     = margin(5, 80, 5, 5),
+        legend.position = "right",
+        legend.text     = element_text(size = 8.5))
+
+p_schem
+```
+
+# Data foundations
+
+```{r load-panel}
+es <- readRDS(here("data", "processed", sprintf("event_panel_%dkm.rds", params$resolution_km)))
+panel  <- es$panel
+hex_sf <- es$hex_sf
+
+# Spatial clustering key: real HydroBASINS level-9 sub-basins (from d_07_hydrobasins.R via
+# b_03e_assemble_eventpanel.R's `basin_id`/`basin_num` columns) when present, replacing the
+# 25 km centroid-block stand-in used before 2026-07-06. `block_id`/`block_num` names are kept
+# unchanged downstream (feols `cluster = ~block_id`, did::att_gt `clustervars = "block_num"`) so
+# no other chunk needs to change. Falls back to the centroid-block stand-in — with a warning — if
+# `basin_num` isn't in this panel (e.g. a resolution `d_07_hydrobasins.R` hasn't been run for yet).
+has_basin <- all(c("basin_id", "basin_num") %in% names(panel)) && !all(is.na(panel$basin_num))
+
+if (has_basin) {
+  panel <- panel |> mutate(block_id = as.character(basin_id), block_num = basin_num)
+  message(sprintf("Clustering on %d HydroBASINS level-9 sub-basins (basin_num).",
+                  n_distinct(panel$block_num)))
+} else {
+  warning("basin_id/basin_num not found in this panel -- falling back to the 25 km centroid-block ",
+          "SE-clustering stand-in. Run d_07_hydrobasins.R then b_03e_assemble_eventpanel.R for ",
+          "this resolution to get real sub-basin clustering.")
+  cent <- sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(hex_sf))))
+  blocks <- tibble(hex_id   = hex_sf$hex_id,
+                   block_id = paste0("b_", round(cent[, 1] / 25000), "_",
+                                     round(cent[, 2] / 25000)))
+  panel <- left_join(panel, blocks, by = "hex_id") |>
+    mutate(block_num = as.integer(factor(block_id)))
+}
+
+has_upstream <- !all(is.na(panel$up_onset_year))
+has_terrain  <- all(c("elev_mean", "slope_mean") %in% names(panel)) &&
+                !all(is.na(panel$elev_mean))
+xf <- if (has_terrain) ~ elev_mean + slope_mean else ~ 1
+
+c(upstream_columns_present  = has_upstream,
+  terrain_covariates_present = has_terrain,
+  hydrobasins_clustering     = has_basin,
+  n_clusters                 = n_distinct(panel$block_num))
+```
+
+---
+
+# Control variables in the C&S estimator
+
+`did::att_gt` uses `xformla` in both legs of the doubly-robust (DR) estimator: the propensity
+score model (what predicts a hex's treatment cohort) and the outcome regression (what predicts
+own-hex mining conditional on pre-treatment covariates). DR is consistent if *either* leg is
+correctly specified — but adding the right pre-treatment predictors of treatment timing
+strengthens the propensity score and makes treated/control groups more comparable.
+
+**Currently used:** `xf = ~ elev_mean + slope_mean` (or `~ 1` when terrain is absent). These
+capture topographic accessibility: high, steep terrain is harder to mine.
+
+```{r helpers}
+# C&S event study wrapper. `gcol` is a numeric column in `data` (0 = never-treated, else first-treat
+# year). Returns the att_gt object + dynamic (event-time) and overall aggregations.
+run_cs <- function(data, yname, gcol, xformla = xf, cluster = "block_num",
+                   control = "notyettreated", min_e = -5, max_e = 5) {
+  data <- data |> filter(is.finite(.data[[yname]]))
+  att <- did::att_gt(
+    yname = yname, tname = "year", idname = "hex_num", gname = gcol,
+    control_group = control, xformla = xformla, clustervars = cluster,
+    data = as.data.frame(data), est_method = "dr",
+    base_period = "universal", allow_unbalanced_panel = TRUE, bstrap = TRUE
+  )
+  list(att     = att,
+       dynamic = did::aggte(att, type = "dynamic", min_e = min_e, max_e = max_e, na.rm = TRUE),
+       overall = did::aggte(att, type = "group", na.rm = TRUE))
+}
+```
+
+---
+
+# Q2 — Neighbour mining → own mining (D2d, upgraded) {.tabset}
+
+Does mining **spread**? Outcome = own-hex mining; treatment = neighbour mining onset. Two neighbour
+definitions: **adjacency** (standard land-use contagion, symmetric) and **upstream** (river-corridor
+/ placer-following, directed — the cleaner causal test, with downstream as placebo).
+
+> **Identification caveats (carried in the doc):** own and neighbour mining share gold-geology +
+> river fundamentals (reflection / common suitability — the very confound `d03`'s geography-weighted
+> Moran null addressed); mining is spatially clustered, so neighbour- and own-onset co-move
+> mechanically. The **pre-trends** are the defence: flat pre + jump post = diffusion; co-trending =
+> common fundamentals. Adjacency is symmetric (can't separate A→B from B→A); the **directed
+> upstream** design is the clean diffusion test.
+
+## D2d reproduction (naïve TWFE — the "before")
+
+The original `d03` D2d: new mining (and any-mining LPM) on the neighbour stock at $t-1$. Kept here as
+the baseline the event study improves on; its coefficient is *not* a clean causal effect.
+
+```{r q2-d2d}
+d2d <- panel |> arrange(hex_id, year) |> group_by(hex_id) |>
+  mutate(adj_stock_lag = dplyr::lag(adj_stock_ha)) |> ungroup() |>
+  mutate(any_own_new = as.integer(own_new_ha > 0))
+m_d2d <- feols(c(own_new_ha, any_own_new) ~ adj_stock_lag | hex_id + year,
+      d2d, cluster = ~ block_id)
+etable(m_d2d, headers = c("Own new (ha)", "Any own mining (LPM)"))
+
+d2d_headers <- c("Own new (ha)", "Any own mining (LPM)")
+d2d_md <- imap_dfr(m_d2d, function(m, i) {
+  ct <- as.data.frame(fixest::coeftable(m))
+  tibble(term = rownames(ct), col = d2d_headers[i],
+         val = sprintf("%.4f (%.4f)", ct[[1]], ct[[2]]))
+}) |> tidyr::pivot_wider(names_from = col, values_from = val)
+save_md(d2d_md, "es_q2_d2d.md")
+```
+
+## Directed: upstream onset → own mining (headline)
+
+```{r q2-up, eval=has_upstream}
+d_up <- panel |> mutate(g_up = replace_na(up_onset_year, 0L), g_down = replace_na(down_onset_year, 0L))
+q2_up   <- run_cs(d_up, "own_new_ha", "g_up")
+q2_down <- run_cs(d_up, "own_new_ha", "g_down")  # placebo: downstream onset should not "cause" own mining
+
+q2_tbl <- bind_rows(
+  tibble(treatment = "upstream onset",   att = q2_up$overall$overall.att,   se = q2_up$overall$overall.se),
+  tibble(treatment = "downstream (plac)", att = q2_down$overall$overall.att, se = q2_down$overall$overall.se)
+)
+save_md(q2_tbl, "es_q2_upstream_vs_downstream.md")
+q2_tbl |>
+  kbl(digits = 3, caption = "Own mining (ha) response to upstream vs downstream neighbour onset.") |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r q2-up-plot, eval=has_upstream, fig.height=4.5}
+p_q2_up <- did::ggdid(q2_up$dynamic) +
+  ggplot2::labs(title = "Q2 — own mining (ha) vs upstream-neighbour onset",
+                subtitle = "Pre-period flat + post jump = diffusion along the river corridor")
+p_q2_up
+save_es(p_q2_up, "es_q2_upstream.png", height = 4.5)
+```
+
+```{r q2-down-plot, eval=has_upstream, fig.height=4.5}
+p_q2_down <- did::ggdid(q2_down$dynamic) +
+  ggplot2::labs(title = "Q2 placebo — own mining (ha) vs downstream-neighbour onset",
+                subtitle = "Should be null pre AND post: downstream onset cannot cause upstream mining")
+p_q2_down
+save_es(p_q2_down, "es_q2_downstream_placebo.png", height = 4.5)
+```
+
+## Adjacency benchmark (symmetric)
+
+```{r q2-adj}
+d_adj <- panel |> mutate(g_adj = first_treat_adj)
+q2_adj <- run_cs(d_adj, "own_new_ha", "g_adj")
+p_q2_adj <- did::ggdid(q2_adj$dynamic) +
+  ggplot2::labs(title = "Q2 — own mining (ha) vs adjacency-neighbour onset (symmetric)",
+                subtitle = "Interpret pre-trends with the reflection caveat in mind")
+p_q2_adj
+save_es(p_q2_adj, "es_q2_adjacency.png", height = 4.5)
+```
+
+## Extensive margin — onset hazard (transparent TWFE LPM)
+
+Among hex-years still **at risk** (before own onset, inclusive of the onset year), does an
+already-active neighbour raise the probability the hex itself starts mining this year?
+
+```{r q2-hazard, eval=has_upstream}
+hz <- panel |>
+  filter(is.na(own_onset_year) | year <= own_onset_year) |>          # risk set: up to + incl onset
+  mutate(own_onset_event = as.integer(!is.na(own_onset_year) & year == own_onset_year),
+         up_active        = as.integer(!is.na(up_onset_year)  & year >= up_onset_year),
+         adj_active       = as.integer(!is.na(adj_onset_year) & year >= adj_onset_year))
+m_hz <- feols(own_onset_event ~ up_active + adj_active | hex_id + year, hz, cluster = ~ block_id)
+etable(m_hz, headers = "P(own onset this year)")
+```
+
+---
+
+# Static exports for the presentation deck
+
+Every figure and table above is also written to `outputs/figures/event_study/` so
+`4_presentation/galamsey_motivation.qmd` can embed them (`.png` via `include_graphics`, `.md`
+via `cat(readLines(...))`) without re-running any estimation. The manifest below lists what the
+last knit of *this file* (and any sibling `_1`/`_2` knit into the same session's `out_es`
+directory) produced.
+
+```{r export-manifest}
+tibble(file = list.files(out_es, pattern = "\\.(png|md)$")) |>
+  mutate(kind = ifelse(grepl("\\.png$", file), "figure", "table")) |>
+  arrange(kind, file) |>
+  kbl(caption = "Static event-study outputs found in outputs/figures/event_study/.") |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# Caveats & next steps
+
+- **Restored 2026-07-08.** This design was disabled (HTML-commented, `eval=FALSE`) from
+  2026-06-30 while Q1 was the active focus in the combined `a_05_event_study.Rmd`; it has not
+  been re-run/re-reviewed against the current panel since restoration — treat first-knit output
+  here as provisional until checked.
+- **Reflection / common-fundamentals confound.** Own and neighbour mining share gold-geology and
+  river-proximity fundamentals — the same confound `a_02_spatial_clustering.R`'s
+  geography-weighted Moran null addressed. Mining is spatially clustered, so neighbour- and
+  own-onset co-move mechanically even absent true diffusion. Read pre-trends as the identifying
+  defence: flat pre + jump post = diffusion; co-trending pre-period = common fundamentals, not
+  contagion.
+- **Adjacency is symmetric** — queen adjacency cannot separate "A's mining caused B's" from "B's
+  caused A's"; the **directed upstream** design (river-corridor, with downstream as a directional
+  placebo) is the cleaner causal test and should be read as the headline of this file.
+- **Sub-basin clustering** now uses real HydroBASINS level-9 sub-basins (`basin_num`, from
+  `d_07_hydrobasins.R`) when present for this resolution (see `load-panel`); falls back to the old
+  25 km centroid-block stand-in — with a warning — for a resolution that hasn't been run yet.
+- **Window / coverage**: Barenblitt is SW-Ghana only (2007–2017), 75.6% producer accuracy → onset
+  measured with error and "never-treated" conflates "never surveyed"; prefer not-yet-treated
+  controls, as `run_cs` already does by default.
+- **See also** [`a_05_event_study_1.Rmd`](a_05_event_study_1.Rmd) (Q0, mechanics baseline) and
+  [`a_05_event_study_2.Rmd`](a_05_event_study_2.Rmd) (Q1, waterborne-degradation design).

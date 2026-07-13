@@ -1,0 +1,319 @@
+---
+title: "Galamsey event study — Q1 (part 2): upstream mining → downstream vegetation (dCDH continuous dose)"
+author: "Sree Ayyar, Till Meissner"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+params:
+  resolution_km: 2   # set to 1, 2, or 5; or override via rmarkdown::render(params=list(resolution_km=5))
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 5, dpi = 120)
+pacman::p_load(tidyverse, here, kableExtra, callr)
+# did_multiplegt_dyn lives in DIDmultiplegtDYN. DIDmultiplegtDYN 2.3.0 calls polars via the bare
+# symbol `pl` but does NOT import polars in its NAMESPACE, so `pl` is only resolvable when polars is
+# *attached* (library) on the search path — otherwise did_multiplegt_dyn dies with "object 'pl' not
+# found" inside $with_columns(). We attach polars INSIDE each callr subprocess (see dcdh-fit).
+# callr is required too: each did_multiplegt_dyn fit runs in its own R subprocess so a polars/Rust
+# *panic* (not an R error, so uncatchable by tryCatch in-process — it aborts the whole knit) crashes
+# only that subprocess and surfaces as a catchable error here. See the dcdh-fit chunk.
+HAS_DCDH <- requireNamespace("DIDmultiplegtDYN", quietly = TRUE) &&
+            requireNamespace("polars", quietly = TRUE) &&
+            requireNamespace("callr", quietly = TRUE)
+
+out_es <- here("outputs", "figures", "event_study")
+dir.create(out_es, recursive = TRUE, showWarnings = FALSE)
+
+save_es <- function(plot, file, width = 9, height = 5, dpi = 150) {
+  tryCatch(
+    ggplot2::ggsave(file.path(out_es, file), plot, width = width, height = height, dpi = dpi),
+    error = function(e) message("save_es skipped ", file, ": ", conditionMessage(e)))
+  invisible(plot)
+}
+
+save_md <- function(df, file, digits = 4, caption = NULL) {
+  tryCatch({
+    md <- knitr::kable(as.data.frame(df), format = "pipe", digits = digits, caption = caption)
+    writeLines(md, file.path(out_es, file))
+  }, error = function(e) message("save_md skipped ", file, ": ", conditionMessage(e)))
+  invisible(df)
+}
+```
+
+This is **Q1 part 2**: the **dCDH continuous-dose robustness** for the same design as
+[`a_05_event_study_2.Rmd`](a_05_event_study_2.Rmd) (Q1 part 1, the Callaway & Sant'Anna mbar sweep).
+It was split out of that file **2026-07-09** because `did_multiplegt_dyn` runs on polars (Rust) and
+exhausted memory (`memory allocation … failed`) when chained after the ~80 C&S bootstrap fits in a
+single session at 2 km. Running it as its own document gives it a clean R process, and the
+`dcdh-fit` chunk below hands polars **only the five columns each fit needs** (not the full
+~80-column panel) — the two changes that make the full battery fit in memory **at 2 km**.
+
+**Estimator.** de Chaisemartin & D'Haultfœuille `did_multiplegt_dyn` treats each exposure's mining
+**stock** as a continuous treatment intensity and estimates the effect of *changes in dose*, pooling
+across dose levels — a robustness check against Q1 part 1's discretisation of the stock at
+$\bar m \in \{0, 5, 10, 20\}$ ha. One fit per **(routing × exposure × outcome)**:
+
+- **Two directed exposures to start** (2026-07-09 simplification): **upstream 1-hop** (treatment) vs
+  **downstream 1-hop** (placebo) — the cleanest treatment-vs-placebo contrast, and few enough fits
+  (2 × 2 × 2 = 8) to stay under polars' memory ceiling at 2 km. The other three exposures
+  (all-reachable upstream, lateral, all-reachable downstream) are commented out in `exposure-spec`;
+  re-add them once this runs cleanly.
+- **Two routing cut-offs:** ROUTE_KM2 = 10 (primary, unsuffixed columns) and ROUTE_KM2 = 50
+  (`_upa50`, robustness) — see `event_study_design.md`.
+- **Two outcomes:** EVI peak (annual max) over the `veg_narrow` and `no-mine-crop` masks.
+
+SEs clustered on real HydroBASINS level-9 sub-basins (`basin_num`; falls back to a 25 km
+centroid-block stand-in if absent — see `load-panel`). Requires `DIDmultiplegtDYN` **and** `polars`
+installed (`HAS_DCDH = `r HAS_DCDH`).
+
+---
+
+# Data foundations
+
+```{r load-panel}
+es    <- readRDS(here("data", "processed", sprintf("event_panel_%dkm.rds", params$resolution_km)))
+panel <- es$panel
+
+# Spatial clustering key: real HydroBASINS level-9 sub-basins (basin_num) when present, else a 25 km
+# centroid-block stand-in. Aliased onto block_num so the dCDH cluster arg needs one name only.
+has_basin <- all(c("basin_id", "basin_num") %in% names(panel)) && !all(is.na(panel$basin_num))
+if (has_basin) {
+  panel <- panel |> mutate(block_num = basin_num)
+  message(sprintf("Clustering on %d HydroBASINS level-9 sub-basins (basin_num).",
+                  n_distinct(panel$block_num)))
+} else {
+  warning("basin_id/basin_num not found -- falling back to the 25 km centroid-block SE-clustering ",
+          "stand-in. Run d_07_hydrobasins.R then b_03e_assemble_eventpanel.R for real clustering.")
+  hex_sf <- es$hex_sf
+  cent   <- sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(hex_sf))))
+  blocks <- tibble(hex_id = hex_sf$hex_id,
+                   block_id = paste0("b_", round(cent[, 1] / 25000), "_", round(cent[, 2] / 25000)))
+  panel  <- left_join(panel, blocks, by = "hex_id") |>
+    mutate(block_num = as.integer(factor(block_id)))
+}
+
+has_upstream <- !all(is.na(panel$up_onset_year))
+c(upstream_columns_present = has_upstream,
+  hydrobasins_clustering   = has_basin,
+  n_clusters               = n_distinct(panel$block_num))
+```
+
+```{r outcomes-setup}
+# EVI peak (annual max) over veg_narrow (headline) and no-mine-crop -- same restriction as Q1 part 1.
+OUTCOMES <- c(
+  evi_modis_veg_narrow_max = "EVI (peak, veg-narrow)",
+  evi_modis_nominecrop_max = "EVI (peak, no-mine-crop)"
+)
+OUTCOMES <- OUTCOMES[names(OUTCOMES) %in% names(panel)]
+OUTCOMES <- OUTCOMES[vapply(names(OUTCOMES), \(c) !all(is.na(panel[[c]])), logical(1))]
+names(OUTCOMES)
+```
+
+## Exposure definitions
+
+```{r exposure-spec}
+# SIMPLIFIED START (2026-07-09): begin with just the two 1-hop exposures — upstream 1-hop
+# (treatment) vs downstream 1-hop (placebo), the cleanest treatment-vs-placebo contrast. This cuts
+# the dCDH battery from 5x2x2 = 20 fits to 2x2x2 = 8, which — together with the callr subprocess
+# isolation below — is what lets it survive polars' memory ceiling at 2 km. The other three exposures
+# (up all-reachable, lateral, down all-reachable) are commented out; re-add rows to expand once this
+# runs. Each is flow-graph-derived, so each has a "_upa50" (ROUTE_KM2 = 50) sibling.
+EXPOSURES <- tibble::tribble(
+  ~key,      ~stock,                  ~label,                       ~role,
+  "near_up", "nearest_up_stock_ha",   "upstream — 1-hop",           "treatment",
+  "near_dn", "nearest_down_stock_ha", "downstream — 1-hop",         "placebo"
+  # "up",   "up_stock_ha",           "upstream — all reachable",   "treatment",
+  # "lat",  "lateral_stock_ha",      "lateral (off-flow)",         "comparison",
+  # "dn",   "down_stock_ha",         "downstream — all reachable", "placebo"
+)
+role_lvls     <- c("treatment", "comparison", "placebo")
+exposure_lvls <- EXPOSURES$label
+exposure_cols <- c("upstream — all reachable"   = "#4292C6",
+                   "upstream — 1-hop"           = "#08306B",
+                   "lateral (off-flow)"         = "#238B45",
+                   "downstream — 1-hop"         = "#D94701",
+                   "downstream — all reachable" = "#FDAE6B")
+
+ROUTINGS    <- c(upa10 = "", upa50 = "_upa50")
+routing_lab <- c(upa10 = "ROUTE_KM2 = 10 (primary)", upa50 = "ROUTE_KM2 = 50 (robustness)")
+
+resolve_exposures <- function(suffix) {
+  EXPOSURES |>
+    mutate(stock = paste0(stock, suffix), routing_suffix = suffix) |>
+    filter(stock %in% names(panel),
+           vapply(stock, \(c) !all(is.na(panel[[c]])), logical(1)))
+}
+ROUTINGS_OK <- ROUTINGS[vapply(ROUTINGS, \(s) nrow(resolve_exposures(s)) > 0, logical(1))]
+tibble(routing     = names(ROUTINGS_OK),
+       definition  = routing_lab[names(ROUTINGS_OK)],
+       n_exposures = vapply(ROUTINGS_OK, \(s) nrow(resolve_exposures(s)), integer(1))) |>
+  kbl(caption = "Routing cut-offs available in this panel and how many of the 5 exposures resolve.") |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# dCDH continuous dose (`did_multiplegt_dyn`)
+
+```{r dcdh-guard, results='asis'}
+if (!HAS_DCDH)
+  cat("> **dCDH skipped** — `DIDmultiplegtDYN` and/or `polars` are not installed. ",
+      "Install both to run the continuous-dose robustness check.\n")
+```
+
+```{r dcdh-fit, eval=(HAS_DCDH && has_upstream)}
+# MEMORY / PANIC ISOLATION (the reason for the split + subprocess). did_multiplegt_dyn ingests the
+# WHOLE data frame into a polars (Rust) frame; on the ~632k-row 2 km panel this hits the machine's
+# memory ceiling, and polars then *panics* (`called Result::unwrap() on an Err … memory allocation
+# … failed`). A Rust panic is NOT an R error, so an in-process tryCatch can't catch it — it aborts
+# the whole knit. Two defences:
+#   1. Hand it ONLY the five columns a fit needs (group/time/cluster/outcome/treatment), not the
+#      full ~80-column panel — a fraction of the RAM.
+#   2. Run each fit in a FRESH R subprocess via callr::r(). A panic/OOM crashes only the child,
+#      which callr reports back as a catchable error here; the child also releases all polars Rust
+#      memory on exit, so nothing accumulates across the battery.
+run_dcdh <- function(yname, treat_col) {
+  d <- as.data.frame(panel[, c("hex_id", "year", "block_num", yname, treat_col)])
+  # A constant (all-equal) treatment column makes did_multiplegt_dyn panic in polars — skip it.
+  if (length(unique(d[[treat_col]])) < 2) {
+    message("dCDH skipped (constant treatment): ", treat_col, " / ", yname); return(NULL)
+  }
+  tryCatch(
+    callr::r(
+      function(d, yname, treat_col) {
+        library(polars)   # must be ATTACHED for DIDmultiplegtDYN 2.3.0's bare `pl` symbol
+        m <- DIDmultiplegtDYN::did_multiplegt_dyn(
+          df = d, outcome = yname, group = "hex_id", time = "year",
+          treatment = treat_col, effects = 5, placebo = 3, cluster = "block_num", graph_off = TRUE)
+        list(results = m$results)
+      },
+      args = list(d = d, yname = yname, treat_col = treat_col)),
+    error = function(e) { message("dCDH failed (", treat_col, ", ", yname, "): ",
+                                  conditionMessage(e)); NULL })
+}
+
+dcdh_fits <- list()
+for (rt in names(ROUTINGS_OK)) {
+  ex <- resolve_exposures(ROUTINGS_OK[[rt]])
+  for (i in seq_len(nrow(ex))) for (oc in names(OUTCOMES)) {
+    key <- paste(rt, ex$key[i], oc, sep = "|")
+    fit <- run_dcdh(oc, ex$stock[i])
+    if (!is.null(fit)) dcdh_fits[[key]] <- list(
+      fit = fit, routing = rt, exposure = ex$label[i], role = ex$role[i],
+      outcome = oc, outcome_lab = OUTCOMES[[oc]], key = ex$key[i])
+  }
+}
+c(dcdh_fits_kept = length(dcdh_fits))
+```
+
+## Event-time plots {.tabset}
+
+```{r dcdh-plot, eval=(HAS_DCDH && has_upstream), fig.height=4.2, results='asis'}
+# dCDH convention: Effect_l -> event time +l (post), Placebo_l -> -l (pre), reference at 0.
+tidy_dcdh <- function(obj) {
+  mk <- function(mat, sgn) {
+    if (is.null(mat) || !nrow(mat)) return(NULL)
+    tibble(event_time = sgn * seq_len(nrow(mat)),
+           est = mat[, "Estimate"], lo = mat[, "LB CI"], hi = mat[, "UB CI"])
+  }
+  bind_rows(mk(obj$results$Effects, 1L), mk(obj$results$Placebos, -1L),
+            tibble(event_time = 0L, est = 0, lo = NA_real_, hi = NA_real_)) |>
+    arrange(event_time)
+}
+
+for (rt in names(ROUTINGS_OK)) {
+  cat(sprintf("\n\n### %s\n\n", routing_lab[rt]))
+  for (oc in names(OUTCOMES)) {
+    cat(sprintf("\n\n#### %s\n\n", OUTCOMES[[oc]]))
+    for (k in EXPOSURES$key) {
+      key <- paste(rt, k, oc, sep = "|")
+      if (is.null(dcdh_fits[[key]])) next
+      meta <- dcdh_fits[[key]]
+      d    <- tidy_dcdh(meta$fit)
+      col  <- if (meta$exposure %in% names(exposure_cols)) exposure_cols[[meta$exposure]] else "#721F81"
+      p <- ggplot(d, aes(event_time, est)) +
+        geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+        geom_vline(xintercept = -0.5, linetype = "dotted", colour = "grey40") +
+        geom_line(colour = col) + geom_point(colour = col, size = 1.9) +
+        geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.18, colour = col) +
+        scale_x_continuous(breaks = sort(unique(d$event_time))) +
+        labs(title = sprintf("dCDH — %s stock → %s", meta$exposure, OUTCOMES[[oc]]),
+             subtitle = sprintf("Continuous-dose (stock) estimator; %s (%s); 95%% CI",
+                                routing_lab[rt], meta$role),
+             x = "Event time (years relative to stock-dose change)",
+             y = paste0("Effect on ", OUTCOMES[[oc]])) +
+        theme_bw(base_size = 11)
+      print(p)
+      save_es(p, sprintf("es_q1_dcdh_%s_%s_%s.png", rt, k, oc), height = 4.2)
+    }
+  }
+}
+```
+
+## Summary table
+
+```{r dcdh-table, eval=(HAS_DCDH && has_upstream)}
+scl  <- function(x) if (is.null(x)) NA_real_ else as.numeric(x)
+pick <- function(a, col) if (is.matrix(a)) a[1, col] else a[[col]]
+dcdh_summary <- function(obj) {
+  a <- obj$results$ATE
+  tibble(ate = pick(a, "Estimate"), ci_lo = pick(a, "LB CI"), ci_hi = pick(a, "UB CI"),
+         p_pre = scl(obj$results$p_jointplacebo), p_effects = scl(obj$results$p_jointeffects),
+         switchers = pick(a, "Switchers"))
+}
+
+dcdh_tab <- bind_rows(lapply(dcdh_fits, \(m)
+  dcdh_summary(m$fit) |> mutate(routing = routing_lab[m$routing], role = m$role,
+                                exposure = m$exposure, outcome = m$outcome_lab, .before = 1))) |>
+  mutate(`ATE [95% CI]` = sprintf("%.4f [%.4f, %.4f]", ate, ci_lo, ci_hi),
+         `p(pre-trend)` = sprintf("%.3f", p_pre),
+         `p(effects)`   = sprintf("%.3f", p_effects)) |>
+  arrange(routing, outcome, factor(role, levels = role_lvls),
+          factor(exposure, levels = exposure_lvls))
+
+save_md(dcdh_tab |> select(routing, outcome, exposure, `ATE [95% CI]`,
+                           `p(pre-trend)`, `p(effects)`, switchers),
+        "es_q1_dcdh_summary.md")
+dcdh_tab |>
+  select(routing, outcome, exposure, `ATE [95% CI]`, `p(pre-trend)`, `p(effects)`, switchers) |>
+  kbl(caption = paste0(
+    "dCDH summary (continuous exposure-stock dose). ATE = average total effect on EVI; ",
+    "p(pre-trend) = joint placebo test (high = pre-trends flat, design credible); ",
+    "p(effects) = joint test that dynamic effects are zero; Switchers = hexes identifying the ATE.")) |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# Static exports
+
+```{r export-manifest}
+tibble(file = list.files(out_es, pattern = "es_q1_dcdh.*\\.(png|md)$")) |>
+  mutate(kind = ifelse(grepl("\\.png$", file), "figure", "table")) |>
+  arrange(kind, file) |>
+  kbl(caption = "dCDH static outputs written to outputs/figures/event_study/.") |>
+  kable_styling(full_width = FALSE)
+```
+
+---
+
+# Caveats & next steps
+
+- **Why this is a separate file (2026-07-09).** `did_multiplegt_dyn` (polars/Rust) OOM'd when run in
+  the same session as Q1 part 1's ~80 C&S bootstrap fits at 2 km. Two fixes let the full battery run
+  at 2 km: (1) its own R process (this file), and (2) `run_dcdh` passes polars only the five columns
+  a fit needs, not the full panel. If it still fails at 2 km, run at 5 km
+  (`params=list(resolution_km=5)`) or trim `OUTCOMES` / a routing.
+- **Interpretation mirrors Q1 part 1.** Upstream (treatment) negative and significant while
+  downstream (placebo) sits near zero, stable across the two routing cut-offs, is the robust
+  waterborne signal; lateral is the off-flow comparison. High `p(pre-trend)` = credible design.
+- **Sub-basin clustering / window / coverage / masks / routing** — identical caveats to Q1 part 1;
+  see [`a_05_event_study_2.Rmd`](a_05_event_study_2.Rmd).
+- **NDVI vs EVI magnitudes** are not directly comparable across indices; here everything is EVI, so
+  cross-mask (veg_narrow vs no-mine-crop) and cross-exposure comparisons are the meaningful reads.
