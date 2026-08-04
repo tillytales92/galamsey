@@ -100,9 +100,11 @@ admin0 <- if (file.exists(admin0_path)) {
           geom_sf(data = maus_gha, fill = "#2171B5", colour = NA, alpha = 0.75) +
             coord_sf(xlim = c(bb["xmin"], bb["xmax"]), ylim = c(bb["ymin"], bb["ymax"])) +
               labs(title = "Maus et al. global mining polygons — Ghana subset",
-                     subtitle = sprintf("%d polygons, %.0f ha total (all mining land use -- not gold-specific, no artisanal/industrial split)",
+                     subtitle = sprintf("%d polygons, %.0f ha total (all mining land use -- not gold-specific,
+                                        no artisanal/industrial split)",
                                                nrow(maus_gha), sum(maus_utm$area_ha_geom)),
-                                                      caption  = "Maus et al. (2022), global mining-area polygons v2. Till Meissner.") +
+                                                      caption  = "Maus et al. (2022), global mining-area polygons v2.
+                                                      Till Meissner.") +
                                                         theme_minimal(base_size = 10) +
                                                           theme(plot.title = element_text(face = "bold"),
                                                                   axis.text = element_blank(), axis.title = element_blank(),

@@ -72,33 +72,51 @@ directly comparable to `rs01`.
 
 ## rs05_embedding_classifier.R
 
-**Purpose:** The **production mine detector**. Trains a Random Forest on Google's AlphaEarth
-satellite embeddings using Barenblitt 2019 artisanal polygons as positive labels, then applies it to
-each year 2017–2024 to produce annual mine-**probability** maps. This is the script whose output is
-intended to become the RS mine panel.
+**Purpose:** The **production mine detector**. Trains Random Forests on Google's AlphaEarth
+satellite embeddings using the harmonised multi-source labels from `rs07_labels.R`
+(Barenblitt / Maus / Tang), runs a source ablation scored on held-out SmallMinesDS 2022, then
+applies the final classifier to each year 2017–2025 to produce annual mine-**probability** maps.
+This is the script whose output is intended to become the RS mine panel.
+
+**Two spatial frames (SW/national split, 2026-07-16):**
+- **Ablation frame** = convex hull of the Barenblitt-source positives + 10 km (`study_area_utm`,
+  SW belt): dense labels + the SmallMinesDS validation set live here, so ablation numbers stay
+  comparable across runs (SW sampling is seeded and bit-identical to pre-split runs).
+- **Final-model frame** = Ghana admin0 outline (`ghana_utm`): the final classifier keeps the
+  northern Maus/Tang positives (capped at `N_POS_NORTH = 500`/source), trains against *nationally*
+  sampled negatives (savanna / bare soil / farmland the SW never shows it), and the probability
+  maps are exported for **all of Ghana** — the point is to test whether the approach picks up
+  northern mining absent from existing datasets. **Northern predictions are unvalidated** (no
+  reference data up there): check high-probability northern patches against imagery / Africa
+  Mining Watch (d_08) before use.
 
 **Workflow:**
-1. Load Barenblitt 2019 **artisanal** polygons (`minetype == 1`) as positive training labels;
-   study area = the convex hull of **all** Barenblitt 2019 polygons (artisanal + industrial, not
-   just the artisanal training subset) — constrains sampling to the SW-Ghana survey region so
-   negatives are real not-mine, not unsurveyed northern Ghana.
-2. Build a binary label raster (1 = confirmed mine, 0 = non-mine in-study-area) and stack it with
-   the 64-band `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` mosaic for the 2019 training year.
-3. `stratifiedSample()` draws 2,000 mine + 6,000 non-mine points (1:3 ratio).
-4. Train two `smileRandomForest(200)` classifiers — one binary (for maps), one PROBABILITY (for
-   thresholding).
-5. Assess accuracy on a random 80/20 split (confusion matrix, kappa, per-class producer/consumer
-   accuracy). **Caveat flagged in-script:** the random split overstates accuracy under spatial
-   autocorrelation — real spatial CV by district is a to-do (export the training CSV and run it in R).
-6. Apply the probability classifier to each year 2017–2024 → single-band `mine_prob` maps, clipped
-   to the study area, exported to Drive.
+1. Load rs07 artifacts (positives by source, exclusion mask, SmallMinesDS validation points).
+2. Sample training-point *locations* locally in R (positives area-weighted per source at fixed
+   counts, 2,000/1,000/1,000; negatives 1:3 outside the exclusion mask — one SW pool for the
+   ablation, one national pool for the final model), upload points + both frames + validation
+   points as EE assets, then read each vintage's embedding (2019 barenblitt/maus, 2021 tang) at
+   the points. Every sample carries `cls`/`source`/`vintage`/`region` (`sw`/`north`/`national`).
+3. **Ablation** (SW only): RF per source combo (barenblitt / maus / tang / human / all) + local
+   cosine-similarity baselines, all scored on balanced SmallMinesDS 2022 points →
+   `outputs/tables/rs05_ablation_smallminesds2022.csv`.
+4. Train the final binary + PROBABILITY `smileRandomForest(200)` classifiers on the national set
+   (all positives + national negatives; SW ablation negatives excluded to avoid double-weighting
+   the SW and skewing the class ratio). In-sample 80/20 check is reported but flagged as inflated —
+   the honest score is the SmallMinesDS ablation row; spatial CV runs locally on the exported
+   training CSV.
+5. Apply the probability classifier to each year 2017–2025 → single-band uint8 `mine_prob`
+   (integer percent) maps clipped to Ghana, exported to EE assets
+   (`ghana_mining/mine_prob_ghana_{yr}`; Drive export behind `PROB_TO_DRIVE`, currently off).
 
-**Parameters:** `EMBED_YEARS = 2017:2024`, `TRAIN_YEAR = 2019`, `N_TREES = 200`,
-`EXPORT_SCALE = 10 m`, `SEED = 42`.
+**Parameters:** `EMBED_YEARS = 2017:2025`, `N_POS = c(barenblitt=2000, maus=1000, tang=1000)`,
+`N_POS_NORTH = 500`, `NEG_RATIO = 3`, `N_TREES = 200`, `EXPORT_SCALE = 10 m`, `SEED = 42`.
 
-**Outputs (to Google Drive → `data/raw/embedding/`):** `mine_prob_ghana_{2017..2024}.tif` +
-`mine_embedding_training_samples.csv`. Section 10 (commented) stacks the downloaded probability maps
-into `mine_prob_stack`, per its own comment "for `rs06_embedding_panel.R`" — that script does not
-exist yet in this folder, so Section 10's output is currently unconsumed until it's written.
+**Outputs:** EE assets `mine_prob_ghana_{2017..2025}` (national, uint8 percent); Drive →
+`data/raw/embedding/`: `mine_embedding_training_samples.csv` (full national training set with 64
+bands + `cls`/`source`/`vintage`/`region`, for local spatial CV),
+`rs05_pos_embeddings_trainpts.csv` + `rs05_val_embeddings_2022.csv` (SW positives / validation
+embeddings for the local similarity baselines; cached — delete to force re-export);
+`outputs/tables/rs05_ablation_smallminesds2022.csv`.
 
 **Design notes:** `code/1_remote_sensing/rs03_embedding_classifier_design.md`.
