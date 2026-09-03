@@ -1,6 +1,6 @@
 ---
-title: "Detecting galamsey with satellite embeddings: the rs05 approach"
-subtitle: "How we build the labels, train the classifier, and prove it works — a plain-language companion to `rs07_labels.R` and `rs05_embedding_classifier.R`"
+title: "Detecting galamsey with satellite embeddings: the build_02 approach"
+subtitle: "How we build the labels, train the classifier, and prove it works — a plain-language companion to `build_01_labels.R` and `build_02_embedding_classifier.R`"
 date: "2026-07-15"
 author: "Ghana galamsey project · Till Meissner"
 output:
@@ -13,20 +13,20 @@ output:
 
 ## 1. What we are trying to do
 
-We want a **map of artisanal gold mining (galamsey) for every year 2017–2024**, covering the
+We want a **map of artisanal gold mining (galamsey) for every year 2017–2025**, covering the
 south-west Ghana mining belt, built from satellite data. No such annual map exists: the best
 available dataset (Barenblitt et al. 2021) stops in 2019, and every other mining inventory is a
 one-off snapshot. The economic analysis in Part 2 of this project needs a *panel* — mining
-presence by location by year — and rs05 is the machine that produces it.
+presence by location by year — and build_02_embedding_classifier.R is the machine that produces it.
 
-The output of rs05 is one **probability raster per year** (each 10 m pixel gets a score
-"how mine-like does this pixel look this year?"). A later step (`rs07_embedding_panel`)
+The output of build_02 is one **probability raster per year** (each 10 m pixel gets a score
+"how mine-like does this pixel look this year?"). A later step (`build_03_embedding_panel`)
 thresholds those into binary mine/no-mine maps and aggregates them to the hex panel.
 
 The whole approach stands on three legs, each covered below:
 
 1. **Features** — what the classifier looks at (AlphaEarth satellite embeddings, §2)
-2. **Labels** — how it learns what a mine looks like (`rs07_labels.R`, §4–5)
+2. **Labels** — how it learns what a mine looks like (`build_01_labels.R`, §4–5)
 3. **Validation** — how we know whether to believe it (held-out SmallMinesDS + ablation, §7–8)
 
 ### Why not just use the existing mining shapefiles?
@@ -89,43 +89,43 @@ Landsat-based phase (see §9).
 ## 3. The pipeline at a glance
 
 ```
-                        DATA (data/raw/)
+                          DATA (data/raw/)
    Barenblitt 2019   Maus 2022    Tang & Werner 2023    SmallMinesDS
    (RF map, SW      (global      (global polygons,      (expert masks,
     Ghana, has       polygons,    drawn on 0.15-10 m     Jan 2016 + Jan 2022)
     artisanal flag)  2019 mosaic) imagery ~2019-22)           |
         |               |               |                     | NEVER touches
         v               v               v                     | training
-   +---------------------------------------------+           |
-   | rs07_labels.R  (offline label harmonisation)|           |
-   |  - erode polygons inward per source         |           |
-   |  - salvage vanished small sites as points   |           |
-   |  - union + 1 km buffer -> exclusion mask    |           |
-   |  - extract validation points from the masks <-----------+
-   +---------------------------------------------+
+   +-----------------------------------------------------+   |
+   | build_01_labels.R  (offline label harmonisation)     |   |
+   |  - erode polygons inward per source                  |   |
+   |  - salvage vanished small sites as points             |   |
+   |  - union + 1 km buffer -> exclusion mask              |   |
+   |  - extract validation points from the masks <-------------+
+   +-----------------------------------------------------+
         |  data/processed/labels/*.rds
         v
-   +---------------------------------------------+
-   | rs05_embedding_classifier.R  (GEE, rgee)    |
-   |  1 sample positives per source from its     |
-   |    vintage-matched embedding year           |
-   |  2 sample negatives outside exclusion mask  |
-   |  3 ABLATION: RF per source combo + two      |
-   |    similarity baselines, ALL scored on      |
-   |    SmallMinesDS-2022  -> ablation table     |
-   |  4 final RF (all sources) -> annual         |
-   |    probability maps 2017-2024 -> Drive      |
-   +---------------------------------------------+
-        |  mine_prob_ghana_{2017..2024}.tif
+   +-----------------------------------------------------+
+   | build_02_embedding_classifier.R  (GEE, rgee)         |
+   |  1 sample positives per source from its              |
+   |    vintage-matched embedding year                    |
+   |  2 sample negatives outside exclusion mask           |
+   |  3 ABLATION: RF per source combo + two               |
+   |    similarity baselines, ALL scored on               |
+   |    SmallMinesDS-2022  -> ablation table              |
+   |  4 final RF (all sources) -> annual                  |
+   |    probability maps 2017-2025 -> Drive/EE asset      |
+   +-----------------------------------------------------+
+        |  mine_prob_ghana_{2017..2025}.tif / EE assets
         v
-   rs07_embedding_panel (next step, not yet built):
+   build_03_embedding_panel (next step, not yet built):
    threshold -> optional NDWI pond corroboration ->
    min-patch filter -> vectorise -> hex x year panel
 ```
 
 ---
 
-## 4. Getting to the labels (`rs07_labels.R`)
+## 4. Getting to the labels (`build_01_labels.R`)
 
 No single ground-truth dataset is good enough on its own, so we harmonise three **positive**
 sources and hold a fourth back as the referee:
@@ -141,7 +141,7 @@ sources and hold a fourth back as the referee:
 
 Polygon *borders* are where all these datasets are least trustworthy (digitising slop,
 positional error, mixed pixels). And *absence* of a polygon never means "no mining" — every
-source has known omissions. rs07 turns both problems into geometry:
+source has known omissions. build_01 turns both problems into geometry:
 
 1. **Erode inward.** Training positives are sampled only from the polygon *core*: Maus shrunk
    by 50 m, Tang by 40 m (matching their measured error scales), Barenblitt kept as-is (its 30 m
@@ -154,7 +154,7 @@ source has known omissions. rs07 turns both problems into geometry:
    sampled only *outside* it. So a spot may only teach the model "this is what no-mining looks
    like" if *no dataset we have* places mining anywhere near it.
 
-![](../../outputs/figures/rs05_explainer/fig1_erosion_exclusion_schematic.png)
+![](../../outputs/figures/embedding_classifier_explainer/fig1_erosion_exclusion_schematic.png)
 
 The result: **9,690 positive polygons + 185 salvage points**, each carrying its source and
 vintage. The full label set over Ghana (interactive version:
@@ -181,11 +181,11 @@ This is a point the SmallMinesDS paper makes explicitly: it criticises Maus and 
 *by name* for lacking acquisition dates, "prohibiting their use as labels for machine
 learning". Vintage-pairing is our answer to that critique.
 
-![](../../outputs/figures/rs05_explainer/fig2_vintage_timeline.png)
+![](../../outputs/figures/embedding_classifier_explainer/fig2_vintage_timeline.png)
 
 ---
 
-## 6. Training (`rs05_embedding_classifier.R`)
+## 6. Training (`build_02_embedding_classifier.R`)
 
 With labels and features in place, training is deliberately simple:
 
@@ -217,7 +217,7 @@ a good referee because its errors are plausibly *uncorrelated* with ours:
 
 ### From masks to a test set
 
-rs07 §12 converts the 2,135 held-out 2022 mask patches into point labels a GEE error matrix can
+build_01 §12 converts the 2,135 held-out 2022 mask patches into point labels a GEE error matrix can
 consume: per patch, up to 5 *core* mining pixels and up to 2 *core* non-mining pixels — "core"
 meaning a 3×3 neighbourhood erosion per class, so no test point sits on a mask edge (mixed
 10 m pixels). Both classes are then downsampled to the minority count, giving a **balanced test
@@ -278,20 +278,26 @@ argument.
   under-sampled), so "outside the mask" still contains some unlabelled mining — some negatives
   are secretly positives. This biases the classifier towards *missing* mines, not inventing
   them.
-- **SW Ghana only (for now).** The study area is the labelled belt; the north is unlabelled,
-  not mine-free. Scaling up means widening `STUDY_BUFFER_KM` or swapping in the national
-  boundary — and accepting that no validation data exists up there.
+- **SW belt validated, north is not.** The ablation/validation stays inside the SW study area
+  (the labelled belt) for comparability; the final model was extended nationally 2026-07-16
+  (northern Maus/Tang positives + nationally sampled negatives), specifically to test whether
+  it picks up northern mining existing datasets miss — but no validation data exists up there,
+  so northern predictions must be checked against imagery/Africa Mining Watch before use.
 - **Nothing before 2017.** The embedding era starts 2017. The 1995/2000–2016 history is a
-  separate planned phase (Landsat + CCDC/LandTrendr change detection), for which the
-  SmallMinesDS Jan-2016 masks are being reserved as *its* validation set.
+  separate phase (Landsat + CCDC change detection, dating each ever-mined pixel's conversion
+  break rather than classifying — see `build_04_backdating_prototype.js`, an unrun GEE
+  Code Editor prototype as of 2026-08-04), for which the SmallMinesDS Jan-2016 masks are
+  being reserved as *its* validation set.
 - **What a "mine" is differs by source.** Maus draws broad "mining lands", Tang draws tight
   feature contours, Barenblitt maps spectral conversion — the same site gets different
   footprints. Erosion narrows the gap but the definitions never fully align.
 - **Licences.** Maus and SmallMinesDS are CC-BY-SA (share-alike): fine for internal
   training/validation; check before redistributing derived label datasets.
-- **Not yet run.** As of 2026-07-15 the rewired rs05 script is written but awaits an
-  interactive GEE run (`ee_Authenticate()` blocks on a browser login), so the ablation table
-  and probability maps don't exist yet.
+- **Status as of 2026-08-04.** The ablation ran 2026-07-15 (OA .84–.88 across source combos;
+  `all` is the final model, mine PA .896/UA .862 — circularity concern defused, `human`
+  works without Barenblitt; see CHANGELOG). The national probability-map export is a
+  work in progress: some years already exist as EE assets, others are still being filled
+  in (Section 9 skips years that already exist rather than re-running them).
 
 ---
 
@@ -299,14 +305,15 @@ argument.
 
 | Piece | Path |
 |---|---|
-| Label harmonisation script | `code/1_remote_sensing/rs07_labels.R` |
-| Classifier + ablation script | `code/1_remote_sensing/rs05_embedding_classifier.R` |
-| Design notes (embedding classifier) | `code/1_remote_sensing/rs03_embedding_classifier_design.md` |
+| Label harmonisation script | `code/1_remote_sensing/build_01_labels.R` |
+| Classifier + ablation script | `code/1_remote_sensing/build_02_embedding_classifier.R` |
+| Backdating prototype (pre-2017 phase) | `code/1_remote_sensing/build_04_backdating_prototype.js` (unrun GEE Code Editor prototype) |
+| Design notes (embedding classifier, archived) | `notes/archive/rs03_embedding_classifier_design.md` |
 | Literature + feasibility review | `literature/rs/remote_sensing_overview.md` |
 | Label artifacts | `data/processed/labels/labels_positives_{polygons,points}.rds`, `labels_exclusion_mask.rds`, `smallminesds_validation_points_{2016,2022}.rds`, `labels_qa.gpkg` |
 | Label QA maps | `outputs/figures/labels/labels_overview_map.{png,html}` |
-| Ablation table (after the GEE run) | `outputs/tables/rs05_ablation_smallminesds2022.csv` |
-| Probability maps (after the GEE run) | `data/raw/embedding/mine_prob_ghana_{2017..2024}.tif` |
+| Ablation table | `outputs/tables/rs05_ablation_smallminesds2022.csv` (filename kept stable — see build_02's header note) |
+| Probability maps | EE assets `mine_prob_ghana_{2017..2025}` (national) — Drive export behind a flag, off by default |
 
 *Data sources: Barenblitt et al. (2021); Maus et al. (2022); Tang & Werner (2023);
 Ofori-Ampofo et al. (2025); Brown et al. (2025). Document: Till Meissner.*

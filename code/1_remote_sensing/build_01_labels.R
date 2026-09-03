@@ -1,6 +1,9 @@
-# rs07_labels.R
+# build_01_labels.R
 # Harmonise external mining-label sources into artifacts the embedding classifier
-# (rs05) can consume. Offline script (no GEE / no auth).
+# (build_02_embedding_classifier.R) can consume. Offline script (no GEE / no auth).
+#
+# Renamed from rs07_labels.R (2026-08-04) to sort correctly BEFORE the classifier it
+# feeds — the old rs07/rs05 numbering ran the pipeline's dependency order backwards.
 #
 # Sources (see literature/rs/remote_sensing_overview.md §2B for methodology + caveats):
 #   1. Barenblitt 2019 extent  — data/raw/barenblitt/FullConversiontoMiningExtent2019.shp
@@ -14,7 +17,7 @@
 #      vintage ~2019–2022; positional RMSE 39.7 m → erode ~40 m; commodity in
 #      `Name`, no country field → filtered spatially to Ghana here)
 #   4. SmallMinesDS            — data/raw/smallminesds/.../{2016,2022}/MASK/*.tif
-#      (independent expert masks; STRICTLY HELD OUT for validation — rs07 only
+#      (independent expert masks; STRICTLY HELD OUT for validation — this script only
 #      extracts patch footprints so training sampling can avoid them)
 #
 # Outputs → data/processed/labels/:
@@ -32,7 +35,7 @@
 # Plus QA maps → outputs/figures/labels/labels_overview_map.png (static)
 #              → outputs/figures/labels/labels_overview_map.html (interactive leaflet)
 #
-# How rs05 should consume this (not done here):
+# How build_02_embedding_classifier.R should consume this (not done here):
 #   - positives: rasterise labels_positives_polygons (+ points) instead of / alongside
 #     the raw Barenblitt paint(); pair each source with its vintage embedding year
 #     (Barenblitt & Maus → 2019; Tang → ~2021) rather than one TRAIN_YEAR.
@@ -41,7 +44,7 @@
 #   - SmallMinesDS: validation only — 2022 masks test the embedding classifier,
 #     2016 masks are reserved for the Phase-2 Landsat/CCDC historical stack.
 #
-# NOT included: Africa Mining Watch (d_08) — candidate for the exclusion union once
+# NOT included: Africa Mining Watch (validate_africa_mining_watch.R) — candidate for the exclusion union once
 # its precision is assessed; licences: Maus + SmallMinesDS are CC-BY-SA (share-alike)
 # — fine for internal training/validation, check before redistributing derived labels.
 
@@ -58,7 +61,7 @@ UTM30N <- 32630
 ####1. Parameters ####
 
 ERODE_M <- c(
-  barenblitt = 0,    # Landsat-native 30 m labels, already used raw in rs05
+  barenblitt = 0,    # Landsat-native 30 m labels, already used raw in build_02_embedding_classifier.R
   maus       = 50,   # 54.5% of their validation errors sit < 50 m from borders
   tang       = 40    # Google Earth positional RMSE 39.7 m (~4 Sentinel pixels)
 )
@@ -101,7 +104,7 @@ barenblitt_all <- st_read(barenblitt_path, quiet = TRUE) |>
   st_transform(UTM30N)
 
 barenblitt_pos <- barenblitt_all |>
-  filter(mine_type == 1) |>          # artisanal only, as in rs05
+  filter(mine_type == 1) |>          # artisanal only, as in build_02_embedding_classifier.R
   transmute(source       = "barenblitt",
             source_id    = as.character(row_number()),
             commodity    = "Au",
@@ -351,11 +354,11 @@ tryCatch(
   error = function(e) htmlwidgets::saveWidget(m_qa, html_out, selfcontained = FALSE))
 message("  Leaflet QA map written to: ", html_out)
 
-####12. SmallMinesDS validation POINTS (for the rs05 ablation scorer) ####
+####12. SmallMinesDS validation POINTS (for the build_02 ablation scorer) ####
 # Turns the held-out masks into point labels GEE can score against: per patch,
 # sample up to K_POS core-mining and K_NEG core-non-mining pixel centres.
 # "Core" = a 3x3 focal erosion on each class, so no point sits on a mask edge
-# (mixed 10 m pixels). These are VALIDATION-ONLY points — rs05 uploads the 2022
+# (mixed 10 m pixels). These are VALIDATION-ONLY points — build_02_embedding_classifier.R uploads the 2022
 # set, samples the 2022 embedding at them, and computes per-combo error matrices.
 # 2016 points are written too, reserved for the Phase-2 Landsat/CCDC stack.
 
@@ -395,4 +398,4 @@ for (yr in c(2016, 2022)) {
           file.path(out_dir, sprintf("smallminesds_validation_points_%d.rds", yr)))
 }
 
-message("\n=== rs07_labels.R complete — artifacts in data/processed/labels/ ===")
+message("\n=== build_01_labels.R complete — artifacts in data/processed/labels/ ===")

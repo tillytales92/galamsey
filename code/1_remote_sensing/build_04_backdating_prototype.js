@@ -1,4 +1,6 @@
-// rs09_backdating_prototype.js  — GEE CODE EDITOR PROTOTYPE (JavaScript)
+// build_04_backdating_prototype.js  — GEE CODE EDITOR PROTOTYPE (JavaScript)
+// (renamed from rs09_backdating_prototype.js, 2026-08-04 — reserved slot in the build_
+// sequence after build_02_embedding_classifier.R; still a prototype, not yet ported to R)
 // =========================================================================
 // Backdate the 2017–2025 embedding-classifier mine footprint to 2000–2016
 // by dating each ever-mined pixel's conversion break in the Landsat archive
@@ -8,7 +10,7 @@
 //
 // LOGIC
 //   1. ever-mined mask = max over mine_prob_ghana_{2017..2025} >= 50
-//      (uint8 integer-percent assets written by rs05 Section 9)
+//      (uint8 integer-percent assets written by build_02_embedding_classifier.R Section 9)
 //   2. Landsat 5/7/8 C2 L2 stack 1997–2018, cloud-masked, harmonised to
 //      common band names (1997 start gives CCDC a stable pre-2000 baseline;
 //      2018 end gives it enough post-break observations to confirm breaks
@@ -39,7 +41,7 @@
 // ---------- 0. Config ----------
 var ASSET_HOME  = 'projects/rgee-auth-tillam/assets/ghana_mining';
 var PROB_YEARS  = [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025];
-var PROB_THRESH = 50;      // uint8 percent, mirrors rs05 downstream threshold
+var PROB_THRESH = 50;      // uint8 percent, mirrors build_02's downstream threshold
 var ONSET_START = 2000.0;  // fractional-year window for accepted breaks
 var ONSET_END   = 2017.0;
 
@@ -49,7 +51,7 @@ var TUNE_AOI = ee.Geometry.Rectangle([-2.05, 5.98, -1.87, 6.15]);  // Awomaso
 var ghana = ee.FeatureCollection(ASSET_HOME + '/rs05_ghana').geometry();
 var aoi   = TUNE ? TUNE_AOI : ghana;
 
-// ---------- 1. Ever-mined mask from the rs05 probability assets ----------
+// ---------- 1. Ever-mined mask from the build_02 probability assets ----------
 var probStack = ee.ImageCollection(
   PROB_YEARS.map(function (yr) {
     return ee.Image(ASSET_HOME + '/mine_prob_ghana_' + yr);
@@ -185,11 +187,11 @@ Export.image.toAsset({
 
 // ---------- 7. Validation hook (needs one more asset) ----------
 // Upload data/raw/barenblitt/MiningConversion_2007-2017Vec.shp as
-// ghana_mining/barenblitt_conversion_0717 (rs09 R port will do this like
-// rs05's upload_as_asset), then:
+// ghana_mining/barenblitt_conversion_0717 (build_04's R port will do this like
+// build_02's upload_as_asset), then:
 // var conv = ee.FeatureCollection(ASSET_HOME + '/barenblitt_conversion_0717');
 // var sampled = onsetYear.sampleRegions({
 //   collection: conv, properties: ['classifica'], scale: 30, tileScale: 8});
 // Export.table.toDrive({collection: sampled, folder: 'ghana_mining_gee_exports',
-//   description: 'rs09_onset_vs_barenblitt', fileFormat: 'CSV'});
-// -> score onset_year against 2000 + classifica in R (rs09 port).
+//   description: 'build_04_onset_vs_barenblitt', fileFormat: 'CSV'});
+// -> score onset_year against 2000 + classifica in R (build_04's port).
