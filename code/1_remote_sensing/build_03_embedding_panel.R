@@ -77,6 +77,11 @@ APPLY_MIN_PATCH_FILTER     <- FALSE   # TODO: flip on once validate_min_patch_si
 MIN_PATCH_SIZE             <- NA_real_  # TODO: fill in from that script's result (connectedPixelCount threshold)
 APPLY_TEMPORAL_CONSISTENCY <- FALSE   # TODO: rule undesigned past ">=2 consecutive years" -- placeholder only
 
+APPLY_INDUSTRIAL           <- TRUE    # subtract large-scale mining -- see Section 7 (gate + confirm)
+IND_LEASES_GPKG    <- here("data", "processed", "mining_repository", "active_licenses_clean.gpkg")
+IND_MAUS_GPKG      <- here("data", "raw", "mining_mausetal", "global_mining_polygons_v2.gpkg")
+IND_BARENBLITT_SHP <- here("data", "raw", "barenblitt", "FullConversiontoMiningExtent2019.shp")
+
 out_ee_ok <- function(id) tryCatch({ ee$data$getAsset(id); TRUE }, error = function(e) FALSE)
 
 ####4. Rebuild the export tile grid (must mirror build_02 Section 10a exactly) ####
@@ -136,7 +141,7 @@ build_year_mask <- function(yr) {
 
   built_100m  <- built_surface_for_year(yr)
   urban_mask  <- built_100m$gt(URBAN_THRESHOLD_100M)   # 1 = urban, mask OUT
-  mine_masked <- mine_bin$updateMask(urban_mask$not())
+  mine_masked <- mine_bin$updateMask(urban_mask$Not())   # $Not() -- 'not' is reserved in Python EE
 
   # Hybrid rule (mine_prob > urban_prob) DELIBERATELY DROPPED -- confirmed redundant vs. the GHSL
   # mask alone at cutoff 45 (identical result in the Kumasi test, 2026-08-18). Do not reintroduce
@@ -165,27 +170,63 @@ if (APPLY_TEMPORAL_CONSISTENCY) {
 # over year_masks, keeping a pixel only where it's masked-in in >=2 consecutive years. Left
 # unimplemented deliberately.
 
-####7. Industrial-mine exclusion (Barenblitt minetype==2) ####
-# Galamsey/artisanal mining is the research target -- industrial operations (minetype==2) get
-# subtracted from the final mask. Barenblitt is SW-Ghana-only (see CLAUDE.md caveats), so this
-# only affects pixels within its coverage; outside it, nothing is excluded (silent, not a bug --
-# there's no data to exclude with up there).
-barenblitt_industrial <- st_read(here("data", "raw", "barenblitt",
-                                      "FullConversiontoMiningExtent2019.shp"), quiet = TRUE) |>
-  st_make_valid() |>
-  filter(minetype == 2) |>
-  select(geometry) |>
-  st_transform(4326)
-message(sprintf("Barenblitt industrial-mine polygons: %d features", nrow(barenblitt_industrial)))
+####7. Industrial-mine exclusion -- (Maus GH U Barenblitt mine_type==2) INT large-scale Mining Leases ####
+# Galamsey/artisanal mining is the research target; large-scale operations are subtracted from the
+# final mask. The OLD filter (Barenblitt mine_type==2 alone) was SW-Ghana-only and ~50 km2 --
+# missing Ahafo/Kenyasi, Chirano, Bibiani and ~1/3 of the big-miner concessions. This "gate +
+# confirm" version (chosen 2026-09-08; local analysis in notes/, see project_rs_pipeline_next_steps):
+#   gate    = d_12 Minerals Commission "Mining Lease" concessions -- the large-scale class ONLY
+#             (NOT "Restricted Mining Lease": that's sand & gravel / <25 acres / small-scale).
+#   confirm = a mapped industrial DISTURBANCE footprint inside the gate: Maus et al. 2022 v2
+#             (Ghana subset) UNION Barenblitt mine_type==2.
+#   exclude where BOTH hold -> ~472 km2 nationally, covers 33/44 major-miner leases, and leaves
+#   alone galamsey that sits outside a mapped footprint or outside a granted large-scale lease.
+if (APPLY_INDUSTRIAL) {
+  ind_old_s2 <- sf_use_s2(); suppressMessages(sf_use_s2(FALSE))   # lease gpkg has degenerate 2-pt rings
 
-# Direct sf_as_ee (no chunked upload_as_asset() dance like build_02's positive labels) -- the
-# industrial-only subset is far smaller than the full 7,391-feature Barenblitt file it's filtered
-# from, should be well under the 10 MB inline-request limit. If it isn't, reuse build_02's chunked
-# upload_as_asset() pattern (Section 5) rather than raising this limit some other way.
-industrial_ee   <- sf_as_ee(barenblitt_industrial)
-industrial_mask <- ee$Image()$byte()$paint(industrial_ee, 1)$unmask(0)$not()   # 1 = keep, 0 = industrial
+  # -> valid, polygon-only, sliver-free (EE's geometry parser rejects 2-point rings, which
+  # st_simplify(preserveTopology = FALSE) would otherwise create from tiny concession slivers).
+  clean_utm <- function(g, min_m2 = 100) {
+    g <- st_make_valid(g)
+    if (inherits(g, "sfc")) g <- st_sf(geometry = g)
+    if (any(st_geometry_type(g) == "GEOMETRYCOLLECTION"))
+      g <- suppressWarnings(st_collection_extract(g, "POLYGON"))
+    g <- g[!st_is_empty(g), , drop = FALSE]
+    a <- as.numeric(st_area(g)); g <- g[!is.na(a) & a >= min_m2, , drop = FALSE]
+    st_make_valid(g)
+  }
+  diss <- function(g) st_union(st_geometry(clean_utm(g)))
 
-year_masks_final <- map(year_masks, ~ .x$updateMask(industrial_mask))
+  bar_ind <- st_read(IND_BARENBLITT_SHP, quiet = TRUE) |>
+    janitor::clean_names() |> filter(mine_type == 2) |> st_zm(drop = TRUE) |> st_transform(UTM30N)
+
+  maus_lyr <- sf::st_layers(IND_MAUS_GPKG)$name[1]
+  maus_gh  <- st_read(IND_MAUS_GPKG, quiet = TRUE,
+                      query = sprintf("SELECT * FROM \"%s\" WHERE ISO3_CODE = 'GHA'", maus_lyr)) |>
+    st_zm(drop = TRUE) |> st_transform(UTM30N)
+
+  leases <- st_read(IND_LEASES_GPKG, quiet = TRUE) |>
+    filter(type_simplified == "Mining Lease") |> st_zm(drop = TRUE) |> st_transform(UTM30N)
+  message(sprintf("Industrial: %d Barenblitt-ind + %d Maus-GH polys, %d large-scale Mining Leases",
+                  nrow(bar_ind), nrow(maus_gh), nrow(leases)))
+
+  footprint <- st_union(c(diss(maus_gh), diss(bar_ind)))          # Maus U Barenblitt-industrial
+  candidate <- st_intersection(footprint, diss(leases)) |>        # gate + confirm
+    clean_utm() |> st_geometry() |> st_union() |>
+    st_simplify(dTolerance = 20, preserveTopology = TRUE)
+  candidate <- clean_utm(candidate) |> st_transform(4326)
+  message(sprintf("Industrial-exclusion polygon: %.1f km2",
+                  as.numeric(sum(st_area(st_transform(candidate, UTM30N)))) / 1e6))
+
+  suppressMessages(sf_use_s2(ind_old_s2))
+
+  industrial_ee   <- sf_as_ee(candidate)
+  industrial_mask <- ee$Image()$byte()$paint(industrial_ee, 1)$unmask(0)$Not()   # 1 = keep, 0 = industrial
+  year_masks_final <- map(year_masks, ~ .x$updateMask(industrial_mask))
+} else {
+  message("APPLY_INDUSTRIAL is FALSE -- no large-scale-mine exclusion")
+  year_masks_final <- year_masks
+}
 
 ####8. Persist the annual mine mask per year (EE assets) ####
 # National, single export per year (not tiled -- see the Section 5 comment on why this should be
