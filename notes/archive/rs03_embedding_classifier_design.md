@@ -1,5 +1,10 @@
 # rs03 — Galamsey Detection via Satellite Embeddings: Design Notes
 
+**ARCHIVED 2026-08-04**: superseded now that `build_02_embedding_classifier.R` implements
+this plan and `code/1_remote_sensing/rs05_approach_explainer.md` is the up-to-date
+plain-language summary of the (since-evolved) approach. Kept here for the original
+design rationale, not as current documentation.
+
 **Status:** planning  
 **Last updated:** 2026-06-09
 

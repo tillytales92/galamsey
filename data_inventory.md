@@ -32,9 +32,9 @@ is the current source; the two remote-sensing detectors below are being develope
 |---------|--------|----------|-------|--------|-----|--------|
 | Barenblitt — annual mining extent | Barenblitt et al. (2021), RF on Landsat | SW Ghana | 2007–2017 | ✅ | Current | `2_build/b_01_cross_section.R` |
 | Barenblitt — full mining extent 2019 | Barenblitt et al. (2021) | SW Ghana | 2019 (cross-section) | ✅ | Current | `2_build/b_01_cross_section.R` |
-| RS embedding mine-probability panel | Google AlphaEarth embeddings + RF (this project) | SW Ghana study area | 2017–2024 (annual) | 🔄 | Potential (will replace Barenblitt) | `1_remote_sensing/rs05_embedding_classifier.R` |
-| Africa Mining Watch — early detections | MLP detector (GeoJSON boxes + rectpolys) | SW Ghana (pilot bbox, not national) | 2025 snapshot | ✅ | Potential | `0_data/d_08_africa_mining_watch.R` |
-| Maus et al. — global mining polygons | Maus et al. (2022), global mining-footprint delineation | Ghana subset (577 of 44,929 global polygons) | static snapshot | ✅ | Potential | `0_data/d_09_mining_mausetal.R` |
+| RS embedding mine-probability panel | Google AlphaEarth embeddings + RF (this project) | All Ghana (ablation validated on SW study area only) | 2017–2025 (annual) | 🔄 | Potential (will replace Barenblitt) | `1_remote_sensing/build_02_embedding_classifier.R` |
+| Africa Mining Watch — early detections | MLP detector (GeoJSON boxes + rectpolys) | SW Ghana (pilot bbox, not national) | 2025 snapshot | ✅ | Potential | `1_remote_sensing/validate_africa_mining_watch.R` |
+| Maus et al. — global mining polygons | Maus et al. (2022), global mining-footprint delineation | Ghana subset (577 of 44,929 global polygons) | static snapshot | ✅ | Potential | `1_remote_sensing/validate_mausetal.R` |
 
 **Why several:** Barenblitt is the validated benchmark but is **positive-labels-only** at 75.6%
 producer accuracy and covers SW Ghana only. `rs05` (AlphaEarth embeddings) is the intended production
@@ -227,9 +227,9 @@ The source imagery/embeddings feeding the mine detectors in §1.
 
 | Dataset | Source (GEE collection) | Coverage | Years | Resolution | Status | Use | Script |
 |---------|-------------------------|----------|-------|-----------|--------|-----|--------|
-| Landsat 5/7/8/9 surface reflectance | `LANDSAT/LC0{8,9}/C02/T1_L2` (+ archive) | All Ghana | 1995–2025 | 30 m | 🔄 | Current (Part 1) | `1_remote_sensing/rs01_landsat_gee.R` |
-| Sentinel-2 surface reflectance | `COPERNICUS/S2_SR_HARMONIZED` | All Ghana | 2015–2025 | 10 m | 🔄 | Current (Part 1) | `1_remote_sensing/rs02_sentinel2_gee.R` |
-| AlphaEarth satellite embeddings | `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` | All Ghana | 2017–2024 | 10 m, 64-band | 🔄 | Current (Part 1) | `1_remote_sensing/rs05_embedding_classifier.R` |
+| Landsat 5/7/8/9 surface reflectance | `LANDSAT/LC0{8,9}/C02/T1_L2` (+ archive) | All Ghana | 1995–2025 | 30 m | 🔄 | Current (Part 1) | `1_remote_sensing/explore_landsat_sentinel.R` |
+| Sentinel-2 surface reflectance | `COPERNICUS/S2_SR_HARMONIZED` | All Ghana | 2015–2025 | 10 m | 🔄 | Current (Part 1) | `1_remote_sensing/explore_landsat_sentinel.R` |
+| AlphaEarth satellite embeddings | `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` | All Ghana | 2017–2025 | 10 m, 64-band | 🔄 | Current (Part 1) | `1_remote_sensing/build_02_embedding_classifier.R` |
 
 **Why several:** Landsat gives the long historical archive; Sentinel-2 the finest recent imagery
 (from mid-2015, full revisit from mid-2017); the AlphaEarth **embeddings** are the feature space for

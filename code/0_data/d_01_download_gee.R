@@ -393,7 +393,7 @@ message("  Submitted: hydrobasins_hybas9_studyarea (table export)")
 #   datamask      — 0 = no data, 1 = mapped land, 2 = permanent water. Use to exclude water from
 #     any zonal stats (loss/lossyear are meaningless over water).
 # National extent (`ghana_bounds`, not `export_region`) — the Maus polygons this feeds into are
-# NOT restricted to the SW-Ghana study area (see d_09_mining_mausetal.R's Ghana map). Exported at
+# NOT restricted to the SW-Ghana study area (see 1_remote_sensing/validate_mausetal.R's Ghana map). Exported at
 # native ~30 m; GEE will auto-shard into multiple GeoTIFFs if needed, same as the Sec 5 Landsat
 # exports at national scale.
 

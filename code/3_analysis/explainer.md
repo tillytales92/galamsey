@@ -148,3 +148,12 @@ control/clustering choices are specified in [`event_study_design.md`](event_stud
 explained method-by-method in the methodology file. **Run order:** the panel must be built by the
 `b_03a → b_03e` sub-pipeline first (which itself needs the `d_04` flow graph for the upstream
 columns).
+
+---
+
+## a_06_awomaso_case_study.R — moved out (2026-08-05)
+
+Relocated to `code/1_remote_sensing/validate_awomaso_case_study.R` — on reflection it's a
+single-site visual QA check on the classifier's own output (does Awomaso's before/after look
+plausible?), not a descriptive/causal result for the paper/deck like the rest of this folder.
+Briefly lived here 2026-08-04–2026-08-05 (moved from the former `rs08_visualisation.R`).

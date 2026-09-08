@@ -12,9 +12,12 @@
 # This is the newer merged WDPA+WDOECM schema (site-based: SITE_ID/SITE_PID, plus
 # OECM_ASMT), not the older WDPAID-keyed schema -- no WDPAID/MARINE fields here.
 #
-# Outputs: outputs/figures/protected_areas/*.png (diagnostic plots only); no processed
-# data artifacts yet (this is the first EDA pass -- see script header in future b_0N work
-# for whatever downstream covariate gets built from this).
+# Outputs (all derived -- data/raw/ stays exactly as downloaded, i.e. just the 3 zips):
+#   data/processed/protected_areas/unzipped/part_{0,1,2}/ (raw unzip of each part, kept for
+#     replicability / re-inspection without re-unzipping)
+#   data/processed/protected_areas/protected_areas_{poly,points}.shp (merged layers,
+#     WGS84, one feature per SITE_ID -- the b_0N-stage covariate build reads these)
+#   outputs/figures/protected_areas/*.png (diagnostic plots)
 
 pacman::p_load(sf, here, janitor, tidyverse, scales, conflicted)
 conflicts_prefer(
@@ -25,17 +28,20 @@ conflicts_prefer(
 )
 UTM30N <- 32630
 
-raw_dir <- here("data", "raw", "gh_protectedareas", "WDPA_WDOECM_Jul2026_Public_GHA_shp")
-zip_ids <- 0:2
+raw_dir  <- here("data", "raw", "gh_protectedareas", "WDPA_WDOECM_Jul2026_Public_GHA_shp")
+proc_dir <- here("data", "processed", "protected_areas")
+zip_ids  <- 0:2
 
 fig_dir <- here("outputs", "figures", "protected_areas")
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(proc_dir, recursive = TRUE, showWarnings = FALSE)
 
-####1. Unzip each part (each zip has identically-named files, so each gets its own subfolder) ####
+####1. Unzip each part into data/processed/ -- data/raw/ stays untouched as-downloaded ####
+# (each zip has identically-named files, so each part gets its own subfolder)
 
 for (i in zip_ids) {
   zip_path <- file.path(raw_dir, sprintf("WDPA_WDOECM_Jul2026_Public_GHA_shp_%d.zip", i))
-  out_dir  <- file.path(raw_dir, "unzipped", sprintf("part_%d", i))
+  out_dir  <- file.path(proc_dir, "unzipped", sprintf("part_%d", i))
   stopifnot("zip part not found" = file.exists(zip_path))
   if (!dir.exists(out_dir) || length(list.files(out_dir)) == 0) {
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -53,7 +59,7 @@ for (i in zip_ids) {
 # the SITE_IDs disjoint (a clean row-wise split) or overlapping (a spatial tile split)?
 
 read_part <- function(i, suffix) {
-  path <- file.path(raw_dir, "unzipped", sprintf("part_%d", i),
+  path <- file.path(proc_dir, "unzipped", sprintf("part_%d", i),
                      sprintf("WDPA_WDOECM_Jul2026_Public_GHA_shp-%s.shp", suffix))
   st_read(path, quiet = TRUE) |> mutate(wdpa_part = i)
 }
@@ -100,7 +106,7 @@ stopifnot("duplicate SITE_ID across parts -- parts are not disjoint as expected"
 message(sprintf("\nMerged: %d protected-area polygons (%d unique sites) and %d points across %d parts.",
                 nrow(pa_poly), n_distinct(pa_poly$SITE_ID), nrow(pa_points), length(zip_ids)))
 
-####3. Basic EDA ####
+####4. Basic EDA ####
 
 cat("\n=== Fields ===\n"); print(names(pa_poly))
 
@@ -130,7 +136,7 @@ p_area <- ggplot(pa_utm, aes(area_ha_geom)) +
 p_area
 ggsave(file.path(fig_dir, "protected_areas_area_hist.png"), p_area, width = 7, height = 5, dpi = 150)
 
-####4. Spatial map ####
+####5. Spatial map ####
 
 admin0_path <- here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin0.shp")
 admin0 <- if (file.exists(admin0_path)) {
@@ -154,5 +160,14 @@ p_map <- ggplot() +
         plot.caption = element_text(colour = "grey50", size = 7))
 p_map
 ggsave(file.path(fig_dir, "protected_areas_map.png"), p_map, width = 8, height = 8, dpi = 150)
+
+####6. Save merged layers to data/processed/ ####
+
+st_write(pa_poly, file.path(proc_dir, "protected_areas_poly.shp"),
+          delete_layer = TRUE, quiet = TRUE)
+st_write(pa_points, file.path(proc_dir, "protected_areas_points.shp"),
+          delete_layer = TRUE, quiet = TRUE)
+
+message(sprintf("\nWrote merged layers to %s", proc_dir))
 
 message("\n=== d_11_protected_areas.R complete ===")

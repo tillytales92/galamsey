@@ -3,7 +3,7 @@
 # polygon, validated against Barenblitt's own per-parcel conversion years where they overlap.
 #
 # Motivation (from a_05/galamsey_tasklist.md discussion, 2026-07-07): Maus et al.'s global mining
-# polygons (d_09_mining_mausetal.R) are a single static footprint -- unlike Barenblitt, they carry
+# polygons (1_remote_sensing/validate_mausetal.R) are a single static footprint -- unlike Barenblitt, they carry
 # no year. Barenblitt got a per-year time series by training a separate classifier on Landsat for
 # EACH year 2007-2017. This script asks the same "when did mining begin here" question a cheaper
 # way: Hansen GFC already ships a per-pixel change-detection result (`lossyear`, its own
@@ -28,7 +28,7 @@
 #     (bands: treecover2000, loss, lossyear, gain, datamask; NOT YET DOWNLOADED as of 2026-07-07 --
 #     run d_01's Hansen export + Drive download first, this script will stop with a clear message
 #     if the file is absent)
-#   data/raw/mining_mausetal/global_mining_polygons_v2.gpkg -- Ghana subset, as in d_09
+#   data/raw/mining_mausetal/global_mining_polygons_v2.gpkg -- Ghana subset, as in validate_mausetal.R
 #   data/raw/barenblitt/MiningConversion_2007-2017Vec.shp   -- validation only (optional; each
 #     feature's `classifica` field is a 2-digit year = the year THAT PARCEL was first classified as
 #     mining, i.e. already a per-feature onset year -- no cumulative-union logic needed, just join
@@ -105,7 +105,7 @@ maus_gha <- st_transform(maus_gha, UTM30N) |>
 ####2. Zonal extraction -- per pixel, area-weighted (small polygons vs. 30 m grid) ####
 # exact = TRUE returns a `fraction` column: the share of each intersecting raster cell covered by
 # the polygon. Needed here because many Maus polygons are only a few pixels across (10.24 ha
-# minimum found in d_09 ~= 3-4 pixels), so an unweighted per-pixel extract would be noisy.
+# minimum found in validate_mausetal.R ~= 3-4 pixels), so an unweighted per-pixel extract would be noisy.
 
 maus_vect <- terra::vect(maus_gha)
 ex <- terra::extract(hansen, maus_vect, exact = TRUE, ID = TRUE)
