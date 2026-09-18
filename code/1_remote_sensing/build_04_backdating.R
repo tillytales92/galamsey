@@ -1,5 +1,4 @@
 # build_04_backdating.R  -- SKETCH, RUN INTERACTIVELY, EXPECT TO DEBUG THE ARRAY OPS
-# =============================================================================
 # Backdate the 2017-2025 embedding-classifier mine footprint (build_03's
 # mine_mask_ghana_c4_{yr}) to per-pixel ONSET YEARS for 2000-2016, by dating
 # each ever-mined pixel's vegetation-loss break in the Landsat archive.
@@ -42,7 +41,6 @@
 # Run INTERACTIVELY: ee_Authenticate()/ee_Initialize() block on a browser login.
 # Keep TUNE <- TRUE (clips to a small AOI) while checking the Section 6/7 array
 # extraction against a known site; flip to FALSE only for the national export.
-# =============================================================================
 
 ####1. Environment ####
 rgee_env_dir <- "C:\\Users\\ADMIN\\AppData\\Local\\r-miniconda\\envs\\rgee_py\\"
@@ -92,9 +90,16 @@ LT_MIN_MAGNITUDE <- 100            # min drop in inverted-NBR*1000 units to acce
 # Barenblitt (v0) ---------------------------------------------------------------
 # no tunables -- the method is fixed by their script (3yr MA, first difference).
 
-TUNE     <- TRUE
-TUNE_AOI <- ee$Geometry$Rectangle(c(-2.05, 5.98, -1.87, 6.15))   # Awomaso
-RUN_VALIDATION <- FALSE            # Section 8: score onset vs Barenblitt classifica
+TUNE     <- FALSE          # 2026-09-17: bconv_c01-c06 chunk uploads finally COMPLETED -- flipped
+                            # to FALSE so `aoi <- ghana` below, not the small Awomaso TUNE_AOI. The
+                            # ~54k Barenblitt conversion points are scattered across the SW hull;
+                            # left at TUNE <- TRUE, onset_year would be masked everywhere outside
+                            # the tiny AOI and Section 8's sampleRegions() would silently return
+                            # mostly-NA rows instead of erroring. EE is lazy about unrequested
+                            # pixels, so this does NOT trigger a national raster computation -- only
+                            # the ~54k point locations actually get evaluated.
+TUNE_AOI <- ee$Geometry$Rectangle(c(-2.05, 5.98, -1.87, 6.15))   # Awomaso -- unused while TUNE FALSE
+RUN_VALIDATION <- TRUE     # 2026-09-17: chunks are up -- Section 8 will merge them + sample + export
 
 OUT_ASSET <- sprintf("%s/mine_onset_year_2000_2016_%s", EE_ASSET_HOME, METHOD)
 
@@ -181,9 +186,7 @@ annual_composite <- function(yr, band, reducer) {
 # check before trusting any onset year.
 n_obs <- landsat$select("NIR")$count()
 
-# =============================================================================
 ####6. METHOD "landtrendr" -- onset = year of largest FITTED NBR drop ####
-# =============================================================================
 if (METHOD == "landtrendr") {
 
   # LandTrendr wants the segmentation index oriented so vegetation LOSS = an
@@ -213,13 +216,19 @@ if (METHOD == "landtrendr") {
   # deliberately the same "argmax of the derivative" extraction Barenblitt use --
   # just on the LandTrendr-fitted trajectory instead of a 3yr moving average.
   arr    <- lt$select("LandTrendr")
-  years  <- arr$arraySlice(0L, 0L, 1L)                 # 1 x nYears
-  fitted <- arr$arraySlice(0L, 2L, 3L)                 # 1 x nYears
+  # arraySlice(0, ...) leaves a redundant length-1 axis-0 (the "which row" axis
+  # collapsed to 1, not removed) -- arrayProject(1) drops it so these become true
+  # 1D per-pixel time series (length nYears), not [1, nYears] 2D arrays. Without
+  # this, arrayArgmax() below returns a 2-coordinate result (one index per axis)
+  # and arrayFlatten(list(list("i"))) -- built for 1 dimension -- errors with
+  # "Coordinate labels had 1 lists of names, but image has 2 dimensions".
+  years  <- arr$arraySlice(0L, 0L, 1L)$arrayProject(list(1L))   # nYears
+  fitted <- arr$arraySlice(0L, 2L, 3L)$arrayProject(list(1L))   # nYears
 
-  fit_lo <- fitted$arraySlice(1L, 0L, -1L)             # years 0..n-2
-  fit_hi <- fitted$arraySlice(1L, 1L)                  # years 1..n-1
+  fit_lo <- fitted$arraySlice(0L, 0L, -1L)             # years 0..n-2
+  fit_hi <- fitted$arraySlice(0L, 1L)                  # years 1..n-1
   delta  <- fit_hi$subtract(fit_lo)                    # loss between t-1 and t (+ = loss)
-  d_year <- years$arraySlice(1L, 1L)                   # the later year t
+  d_year <- years$arraySlice(0L, 1L)                   # the later year t
 
   in_win  <- d_year$gte(ONSET_MIN + 1L)$And(d_year$lte(ONSET_MAX))
   delta_w <- delta$arrayMask(in_win)
@@ -235,9 +244,8 @@ if (METHOD == "landtrendr") {
     round()$toInt16()
 }
 
-# =============================================================================
 ####6b. METHOD "barenblitt" -- their "NDVI Anomaly Timeline", C1 -> C2 ####
-# =============================================================================
+
 if (METHOD == "barenblitt") {
 
   # Their step 4: annual MAX-NDVI (greenest pixel of the year).
@@ -290,31 +298,34 @@ message("Inspect a known site: onset should match the visible clearing year in a
 # (07..17 -> 2007..2017). Overlap with our window is 2007-2016. Upload the annual
 # polygons as POINTS (point-on-surface, tiny) once, then sample our onset raster.
 if (RUN_VALIDATION) {
-  pts_id <- file.path(EE_ASSET_HOME, "barenblitt_conversion_pts")
-  if (!asset_exists(pts_id)) {
+  pts_base <- file.path(EE_ASSET_HOME, "barenblitt_conversion_pts")
+  conv_shp <- here("data", "raw", "barenblitt", "MiningConversion_2007-2017Vec.shp")
+  n_conv   <- nrow(st_read(conv_shp, quiet = TRUE))    # cheap: row count only
+  k        <- 10000L
+  chunk_ids <- sprintf("%s_c%02d", pts_base, seq_len(ceiling(n_conv / k)))
+  chunk_missing <- !vapply(chunk_ids, asset_exists, logical(1))
+
+  if (any(chunk_missing)) {
     message("Uploading barenblitt_conversion_pts (one point per annual polygon)...")
-    conv <- st_read(here("data", "raw", "barenblitt", "MiningConversion_2007-2017Vec.shp"),
-                    quiet = TRUE) |>
+    conv <- st_read(conv_shp, quiet = TRUE) |>
       st_make_valid() |>
       transmute(classifica = as.integer(classifica)) |>
       st_point_on_surface() |>
       st_transform(4326)
     # chunked table upload (same rationale as build_02 Section 5) -- ~54k points
-    n <- nrow(conv); k <- 10000L
-    for (i in seq_len(ceiling(n / k))) {
-      idx <- ((i - 1L) * k + 1L):min(i * k, n)
-      tmp_id <- sprintf("%s_c%02d", pts_id, i)
-      if (!asset_exists(tmp_id)) {
-        t <- ee$batch$Export$table$toAsset(collection = sf_as_ee(conv[idx, ]),
-                                           description = sprintf("bconv_c%02d", i),
-                                           assetId = tmp_id)
-        t$start(); message("  submitted chunk ", i, " -- wait for COMPLETED, then re-run")
-      }
+    for (i in which(chunk_missing)) {
+      idx <- ((i - 1L) * k + 1L):min(i * k, n_conv)
+      t <- ee$batch$Export$table$toAsset(collection = sf_as_ee(conv[idx, ]),
+                                         description = sprintf("bconv_c%02d", i),
+                                         assetId = chunk_ids[i])
+      t$start(); message("  submitted chunk ", i, " -- wait for COMPLETED, then re-run")
     }
-    stop("chunk uploads submitted -- re-run Section 8 once they show COMPLETED to merge + sample")
+    stop("chunk uploads submitted -- re-run Section 8 once they show COMPLETED to sample")
   }
 
-  conv_pts <- ee$FeatureCollection(pts_id)
+  # no separate merge/export step -- $merge() combines the chunk table assets
+  # into one FeatureCollection server-side, valid for sampleRegions() as-is.
+  conv_pts <- Reduce(function(a, b) a$merge(b), lapply(chunk_ids, ee$FeatureCollection))
   sampled  <- onset_year$sampleRegions(collection = conv_pts,
                                        properties = list("classifica"),
                                        scale = EXPORT_SCALE, tileScale = 8L)

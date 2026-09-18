@@ -72,7 +72,7 @@ CUTOFF                    <- 70L     # 2026-09-09: 45 -> 70 for FP reduction (do
                                       # 0.84. 45 was the 2026-08-18 setting; see FP-overflagging notes.
 URBAN_THRESHOLD_100M      <- 500     # out of 10000. 2026-09-09: 2000 -> 500 (aggressive GHSL-only urban
                                       # knockout, DW dropped -- GHSL doesn't bite mapped mining the way
-                                      # DW did). Revisit via validate_ground_truth_comparison.js sec 2d
+                                      # DW did). Revisit via validate_finalproduct.js's cutoff/urban sliders
                                       # sweep if recall within Barenblitt drops. Was 2000 (20%-built).
 GHSL_100M_EPOCHS          <- c(1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025)
                                       # 2030 excluded -- confirmed likely a projected, not observed, epoch
@@ -369,7 +369,12 @@ if (APPLY_INDUSTRIAL) {
 # National, single export per year (not tiled -- see the Section 5 comment on why this should be
 # cheap now that the array-typed classification cost was already paid at build_02 export time).
 
-FORCE_REEXPORT <- FALSE
+FORCE_REEXPORT <- FALSE   # 2026-09-17: back to FALSE -- only mine_mask_ghana_c4_2025 is missing
+                          # (its export never completed, likely EECU quota throttling); with this
+                          # off, export_year_mask()'s skip-if-exists logic leaves the other 8
+                          # already-good years alone and only (re)submits 2025. Re-running the
+                          # whole script is safe with this setting -- it will NOT waste quota
+                          # re-exporting years that are already fine.
 
 export_year_mask <- function(yr) {
   asset_name <- paste0(MASK_PREFIX, yr)

@@ -5,12 +5,18 @@ directly from satellite imagery via Google Earth Engine, so the RS-derived mine 
 replace Barenblitt as the `mine_data` source throughout Parts 2–3. It is the "swap-in" target the
 build scripts are written around.
 
-> **File-set current as of 2026-09-03.** The *methodology* prose in the `build_02` and
-> `validate_external_references` sections below still describes the old binary `all`-sources model
-> at cutoff 55 — the deployed model is now 4-class (`c4` = mine/urban/water/other), `no_maus`
-> label combo, cutoff **45**, with a GHSL-100m epoch-matched urban mask (settled 2026-08-18; see
-> the `project_4class_urban_confusion` memory + `notes/2026-08-18_*`). `embedding_classifier_approach.md`
-> and these sections get one combined rewrite after `build_03` + `build_04` are done.
+> **File-set current as of 2026-09-15.** Deployed model: 4-class (`c4` = mine/urban/water/other),
+> `no_maus` label combo, cutoff **70** (raised from 45 on 2026-09-09 for FP control), GHSL-100m
+> epoch-matched urban mask at **500**/10000 (tightened from 2000), plus JRC GSW permanent-water/
+> coast and GRIP4 road buffers; industrial-mine exclusion is deferred. `build_03` has run:
+> 2017–2024 masks are exported, 2025 is pending — Earth Engine's noncommercial monthly compute
+> quota (Contributor tier) is exhausted, so the export task is queued rather than blocked outright
+> and should land once restricted-mode throttling eases or the quota resets 2026-10-01. `build_04`
+> (backdating, 2000–2016) is implemented and bug-fixed but not yet validated end-to-end — same
+> quota block, this time on the chunked Barenblitt validation-point upload (2/6 chunks landed).
+> **`embedding_classifier_approach.md` was rewritten the same day** to match (c4/no_maus training
+> config, the matched-precision scheme comparison, build_03/build_04 in plain language) — both docs
+> are current as of 2026-09-15.
 
 **Reorganised 2026-08-04** into three role prefixes (mirroring the `d_`/`b_`/`a_` convention used in
 Parts 0/2/3), replacing the old flat `rsNN` numbering — which had drifted out of dependency order
@@ -20,13 +26,14 @@ one-off exploration, and external-dataset EDA under a single numbering scheme:
 - **`explore_*`** — interactive exploration, not a pipeline dependency. Currently just
   `explore_landsat_sentinel.R`.
 - **`build_*`** — the actual sequential pipeline that produces the RS mine panel, numbered because
-  order matters: labels → classifier → panel (not yet built) → backdating (prototype).
+  order matters: labels → classifier → panel → backdating (2000–2016). See each script's section
+  below for current status — the hex × year panel step itself is not yet named/built.
 - **`validate_*`** — sanity-checks and validation. No execution-order dependency between them, so
   unnumbered. **Redefined 2026-08-05:** previously this bucket also held EDA on Maus/Barenblitt
   *training* sources (`validate_mausetal.R`), which wasn't really validation. Retired that; the two
   genuinely independent references for Ghana (Africa Mining Watch, SmallMinesDS) are merged into
   `validate_external_references.R`. Note the prefix does double duty — some scripts genuinely test
-  against never-trained-on data (`validate_external_references`, `validate_ground_truth_comparison`,
+  against never-trained-on data (`validate_external_references`, `validate_finalproduct`,
   `validate_spatial_leakage`, `validate_site_timeseries`), others are internal model scoring/tuning
   (`validate_scoring`, `validate_min_patch_size_filter`, `validate_true_mines_urban_mask_100m`), and
   `validate_gee_assets` is a pipeline utility.
@@ -131,10 +138,14 @@ validation live there, so ablation numbers stay comparable across runs); the fin
 motivation for running this classifier at all is testing whether it picks up northern mining that
 existing datasets miss. Northern predictions are **unvalidated** — no reference data exists up there.
 
-**Status as of 2026-08-04:** ablation ran 2026-07-15 (OA .84–.88 across source combos; `all` is the
-final model). National probability-map export is in progress — Section 9 checks each year's asset
-before submitting and skips ones that already exist, so re-running just fills in whatever is still
-missing rather than re-doing everything.
+**Status as of 2026-09-15:** rewritten and rerun 2026-08-18 to settle a model-selection question
+raised by an urban-confusion investigation — a full grid of 3 class schemes (binary / c3 / c4) × 6
+source combos, all scored on SmallMinesDS-2022. **c4 (4-class: mine/urban/water/other) + `no_maus`
+(Maus dropped as a training source) won on every matched-precision comparison**; c3 actually scored
+*worse than binary*, a genuine finding, not just "weaker than c4". Deployed as the national model;
+all 153/153 `mine_prob_ghana_c4_{2017..2025}_t{01..17}` probability tiles are complete on EE
+(`validate_gee_assets.R` confirms). Section 9's SmallMinesDS scoring CSV feeds
+`validate_scoring.R` Part 3; Section 10's tiled export is what `build_03` reads.
 
 **Full methodology, results, and honest limitations:** `embedding_classifier_approach.md` — read this
 for the reasoning, not just the code comments.
@@ -152,38 +163,90 @@ Section 10b's `recombine_split_tiles()`. `validate_gee_assets.R` checks complete
 ## build_03_embedding_panel.R
 
 **Purpose:** Postprocess `build_02`'s c4 probability tiles into a clean **annual binary mine mask**
-per year, 2017–2025 → EE assets `mine_mask_ghana_c4_{yr}`. **Sketch, not yet run** as of
-2026-09-03.
+per year, 2017–2025 → EE assets `mine_mask_ghana_c4_{yr}`.
 
-**Pipeline per year:** mosaic the year's tiles → threshold at `prob >= 45` → mask out GHSL-100m
-epoch-matched urban land (nearest real epoch from `{1975…2020,2025}`, `built_surface > 2000` ≈ 20%
-built) → subtract Barenblitt industrial polygons (`minetype == 2`) → export. Two steps are
-**deliberately stubbed** behind `APPLY_*` flags: the min-patch-size filter (needs
-`validate_min_patch_size_filter.js` run first to pick `MIN_PATCH_SIZE`) and a temporal-consistency
-rule (never designed past "≥2 consecutive years"). Runnable end-to-end today as a v0 without them.
+**Status as of 2026-09-15:** v1 config settled and deployed (full FP-reduction investigation in
+`notes/2026-09-07_build03_fp_postprocessing_plan.md` + `notes/2026-09-08_build03_config_decision.md`).
+2017–2024 masks are exported; **2025 is still pending** — the EE noncommercial quota (Contributor
+tier) ran out mid-month, so the export task is queued rather than blocked outright and should land
+once restricted-mode throttling eases or the quota resets 2026-10-01.
+
+**Pipeline per year:** mosaic the year's probability tiles → threshold at **`prob >= 70`** (raised
+from the original 45 on 2026-09-09 — deployment-scale QA had found the 45-cutoff mask over-flagged
+national area ~5× vs. Barenblitt; the cutoff bump alone does ~95% of that fix, at a recall cost of
+0.95→0.84 within the Barenblitt hull) → mask out GHSL-100m epoch-matched urban land at
+**`built_surface > 500`/10000** (tightened from 2000; Dynamic World was tried as a second urban
+signal and dropped — it chewed into real pit clusters for little extra FP removal once the cutoff
+was already at 70) → mask out JRC Global Surface Water permanent water (`occurrence >= 90`) plus a
+150 m buffer around *wide* water bodies only (a morphological opening excludes river channels from
+the buffer, so riparian galamsey — most of it — is never masked) → mask out a 35 m buffer around
+GRIP4 Africa roads → export. Barenblitt industrial-polygon subtraction was reworked into a "gate +
+confirm" rule (large-scale Minerals Commission lease ∩ (Maus ASM ≥1 km² ∪ Barenblitt industrial))
+but is **deferred** (`APPLY_INDUSTRIAL <- FALSE`) — the lease shapefile ships degenerate
+2-point-ring geometry that crashes `sf`/`sf_as_ee()`, and an earlier upload of the candidate
+polygon over-masked some areas on visual QA. Min-patch-size filtering and a temporal-consistency
+rule remain stubbed behind `APPLY_*` flags — the min-patch-size question is now **closed** (see
+`validate_min_patch_size_filter.js` below): the residual flagged area is coherent multi-pixel
+patches, not scattered noise, so size filtering was rejected as a real lever.
+
+**Recall check** (`validate_product_overlap.R`, 2019 deployed mask vs. Barenblitt): **85.8%**
+artisanal recall — matches the pre-full-stack estimate, i.e. the water/road masks didn't cost real
+detections. Still over-predicts Barenblitt by 2.1–2.5× nationally, expected given industrial
+exclusion is deferred and some FP residual remains (see `validate_fp_source_breakdown.R` below).
 
 **Scope stop:** ends at the annual 2017–2025 mask — does **not** aggregate to the hex × year panel.
 That waits until after `build_04` backdates the mask to 2000–2016, so the panel is built from the
-merged 2000–2025 surface (see `build_04` header + the `project_rs_pipeline_next_steps` memory).
+merged 2000–2025 surface (see `build_04` below + the `project_rs_pipeline_next_steps` memory).
 
 ---
 
-## build_04_backdating_prototype.js
+## build_04_backdating.R
 
-**Purpose:** Extend the classifier's "ever mined 2017–2025" footprint backward to 2000–2016 — a
-period the embedding era can't reach (AlphaEarth only starts 2017) — by using CCDC change detection
-on the 1997–2018 Landsat archive to date when each already-known mine pixel first broke from its
-background trend. GEE Code Editor prototype (JavaScript), not yet ported to R or run nationally.
+**Purpose:** Extend `build_03`'s "ever mined 2017–2025" mask backward to per-pixel **onset years
+for 2000–2016** — a period the embedding era can't reach (AlphaEarth only starts 2017) — by dating
+each already-known mine pixel's vegetation-loss break in the Landsat 5/7/8 archive (1999–2018
+imagery window).
 
-**Renamed from `rs09_backdating_prototype.js`** (2026-08-04) — reserved slot in the `build_*`
-sequence, after `build_02_embedding_classifier.R` whose probability assets it reads.
+**Rewritten from JS to R** (`build_04_backdating_prototype.js` → `build_04_backdating.R`, committed
+2026-09-03) as an rgee script, with the anchor footprint switched from the old stale
+`mine_prob_ghana_{yr}` binary-model asset names to `build_03`'s current `mine_mask_ghana_c4_{yr}`
+masks. The old JS CCDC prototype is archived at
+`notes/archive/build_04_backdating_prototype_ccdc.js`.
+
+**Method switch (`METHOD`), two options:**
+- **`"landtrendr"` (v1, the deploy path)** — LandTrendr segmentation of an annual median-NBR series
+  (index inverted so vegetation loss reads as a rise); onset = the year of the single largest drop
+  in the *fitted* (denoised) trajectory within 2000–2016, gated by a minimum disturbance magnitude.
+- **`"barenblitt"` (v0, a replication)** — Barenblitt et al.'s own "NDVI Anomaly Timeline" method,
+  ported line-for-line from their GEE script (Collection 1 → Collection 2): annual max-NDVI,
+  3-year moving average, first difference, `qualityMosaic` on the derivative. Kept so results are
+  directly comparable to their reported 33.8% exact-year / 69.4% ±1yr / 76.1% ±2yr accuracy against
+  their own `MiningConversion_2007-2017` layer.
+
+**Why LandTrendr over CCDC** (the original prototype's method; decided 2026-09-03): 2000–2016 is
+Landsat 5 + SLC-off Landsat 7 over a cloudy country — often under 10 clear observations/year. CCDC's
+harmonic fit needs denser data than that era has; LandTrendr needs only one composite per year and
+is far less parameter-fragile at low observation counts. Barenblitt's own method is itself a
+degenerate LandTrendr (a fixed 2-segment assumption + a 3-year smoother instead of a fitted
+trajectory).
+
+**Status as of 2026-09-15:** both methods are implemented and runnable in `TUNE` mode (clipped to
+an Awomaso AOI). A LandTrendr array-dimension bug was found and fixed 2026-09-14 (`arraySlice()`
+left a redundant axis that broke `arrayArgmax()`/`arrayFlatten()` downstream — fixed with
+`arrayProject()`), but **the fix itself is still untested against a known site** — that's the next
+check once EE capacity frees up, before trusting any onset year. Section 8's validation against
+Barenblitt's `classifica` field (per-polygon conversion year, 2007–2017) uploads ~54k polygon
+centroids as 6 chunked point assets (works around EE's table-upload payload limit); **2 of 6
+chunks have landed**, the rest are queued behind the same exhausted EE quota blocking `build_03`'s
+2025 export — Section 8 re-submits only the missing chunks and stops until all 6 exist, then merges
+them server-side (`$merge()`) and samples the onset raster at the merged points.
 
 **Caveats baked into the script:** only dates pixels still visible as mined in 2017+ (mines that
 opened and fully revegetated before 2017 are invisible to it); a detected "break" is a spectral
-disturbance, not necessarily the mining event itself (pre-mining clearing would get dated instead);
-currently in `TUNE = true` mode (clipped to a single AOI for fast iteration) — needs parameter tuning
-before a national run, and a validation hook against Barenblitt's per-parcel conversion years
-(`MiningConversion_2007-2017Vec.shp`) is stubbed but not wired up.
+disturbance, not necessarily the mining event itself (clearing that preceded mining on the same
+pixel gets dated instead); output is 30 m (Landsat's native resolution, vs. the 10 m mask), with
+the anchor footprint aggregated to majority-mined per 30 m cell; pre-2012 timing is biased early
+(sparser cloud-free imagery available) — the same caveat Barenblitt make of their own layer.
 
 ---
 
@@ -229,14 +292,114 @@ folder inventory grouped by family. Run this to confirm `build_02` is done befor
 
 ---
 
-## validate_ground_truth_comparison.R + .js
+## validate_finalproduct.R + .js
 
-**Purpose:** Uploads AOI-scoped subsets of raw (un-eroded) Barenblitt / Maus / Tang polygons +
-SmallMinesDS real mask outlines as small EE assets (`.R`), then a ready-to-paste Code Editor script
-(`.js`) overlays all four plus a mosaic of `build_02`'s c4 2022 probability tiles (cutoff 45) on a
-live Sentinel-2 2022 composite — open-ended visual judgment of which sources actually fit the
-imagery, in Code Editor's native pan/zoom rather than a fixed metric. AOI is Awomaso-centred,
-~41×41 km. Not yet run against the c4 output.
+**Renamed 2026-09-17** from `validate_ground_truth_comparison.{R,js}` — "ground truth comparison"
+undersold what the `.js` had grown into (full deployed-product QA: interactive cutoff/urban-threshold
+tuning and a multi-site year comparison, not just a source-vs-source look).
+
+**Purpose:** Uploads raw (un-eroded) Barenblitt / Maus / Tang polygons + SmallMinesDS real mask
+outlines as EE assets (`.R`), then a hand-maintained (not auto-generated — see below) Code Editor
+script (`.js`) overlays all four plus a mosaic of `build_02`'s c4 probability tiles, `build_03`'s
+deployed mask asset, and Ghana admin-1 region outlines on a live Sentinel-2 composite — open-ended
+visual judgment of which sources actually fit the imagery and where each post-processing step
+(cutoff → +GHSL → +GSW/roads) removes area, in Code Editor's native pan/zoom rather than a fixed
+metric.
+
+**NATIONAL as of 2026-09-17** (was AOI-scoped, Awomaso-centred ~41×41 km): the `.js` gained a
+`CHECK_SITES` dropdown that moves the Sentinel-2 composite to other sites, but the four reference-
+product outlines stayed clipped to the original box and rendered nothing elsewhere. `validate_
+finalproduct.R` now uploads all four nationally instead, using a chunked-and-persisted upload
+(ported from `build_02_embedding_classifier.R`'s `upload_as_asset()`) since Barenblitt/Maus/Tang at
+national scope are large enough to blow EE's ~10 MB inline-upload limit — the same failure
+`build_02` hit uploading ~7,391 Barenblitt polygons. `gt_compare_smallminesds_aoi` was renamed to
+`gt_compare_smallminesds` to match (no longer AOI-scoped). The `.js` no longer needs regenerating
+by the `.R` script — an earlier version of `validate_finalproduct.R` auto-wrote the `.js` from a
+template each run (old Section 7), but the `.js` has since been hand-built well past what that
+template ever produced (see below), so that step was removed; re-running the `.R` script now only
+refreshes the 4 EE assets.
+
+**`.js` current state (2026-09-16/17 sliders + dropdown rewrite):** the fixed `{45,60,70}` cutoff-
+comparison array is gone, replaced by two continuously-adjustable sliders (cutoff 0–100, GHSL urban
+threshold 0–10000, top-right) driving one live raw/+GHSL layer pair plus the filter-cascade delta
+layers. A YEAR slider (top-left, merged from the standalone `mine_prob_ghana_c4_{yr}_t0N` tile
+script) auto-detects which years have both prob tiles and a deployed mask asset, so a year stuck
+mid-export is skipped rather than erroring. The `CHECK_SITES` dropdown (top-center) moves the S2
+composite (and, as of the national-assets fix above, the reference outlines) to named sites.
+Area-stat prints (`printAreaStats()`) fire once on load and via a button thereafter — not on every
+slider drag — to avoid a burst of `reduceRegion` calls.
+
+**Originally rewritten 2026-09-09** to drop Dynamic World / permutation cruft, after its §2d (a live
+cutoff × GHSL sweep scored against a Barenblitt-overlap recall proxy) directly produced the
+`build_03` config decision: `CUTOFF 70` / `URBAN_THRESHOLD_100M 500` (see
+`notes/2026-09-08_build03_config_decision.md`).
+
+---
+
+## validate_fp_source_breakdown.R
+
+**Purpose:** Attributes `build_02`'s flagged area (probability tiles, not the post-cutoff mask) to
+candidate false-positive sources at a sweep of cutoffs, so the `build_03` post-processing config is
+chosen from evidence rather than eyeballing. Categories, checked in a fixed priority order so the
+"disjoint" breakdown sums to 100% of flagged area: permanent/seasonal water (JRC GSW), rivers
+(MERIT Hydro ≥30 m), roads (GRIP4 Africa), three **nested** urban rows (GHSL >2000 = what
+`build_03` masks, the GHSL 1000–2000 ring = the increment a lower threshold would add, Dynamic
+World built-probability = built-up neither GHSL band catches), plus an `unexplained` remainder
+decomposed by Dynamic World land-cover class for diagnosis only (never maskable — cropland can't be
+excluded).
+
+**Written 2026-09-08**, superseding an earlier single-cutoff pass that had no roads layer and
+missed most of the real urban signal. **Result (2022, run 2026-09-08):** total flagged 2944→1035
+km² from cutoff 45→70; water/roads/GHSL-urban are nearly gone by 70; Dynamic World `urban_dw` is
+the largest *named* FP category and persists (404→113 km²) — directly motivated dropping DW from
+`build_03`'s urban mask (see that section above) since it removed pit clusters for little extra
+gain past cutoff 70. `unexplained` falls 1755→833 km² but its *share* of the total rises 60%→80%.
+
+**Re-run 2026-09-14 (cutoff-70 config, adds the `river` category):** `river` is real but small —
+19.1 km² (1.84% of 1035.3 km² total flagged), rising in relative share with cutoff (more
+persistent/harder to threshold away than road/urban FP, i.e. some genuine spectral confusion, not
+just noise) — **turbid-river differential rule deprioritized** as a result: real but not worth the
+engineering lift right now, revisit only if it shows up as spatially problematic in the hex-panel
+event study. The dominant residual is `unexplained` (80.5%, 833 km²), ~46% Dynamic-World "trees"
+class — but a direct visual spot-check of that area (2026-09-14) did **not** look like a real
+problem, casting doubt on whether Dynamic World's own land-cover classification is reliable enough
+to trust as a diagnostic layer here. **Open:** what the 833 km² unexplained remainder actually is
+is unresolved — needs a direct visual/S2 spot-check of unexplained polygons, not DW-class
+attribution, before deciding whether it's a real problem.
+
+**Output:** long CSV (cutoff × category) + a disjoint-category pivot.
+
+---
+
+## validate_product_overlap.R
+
+**Purpose:** Benchmarks our RS mine layer against every external mining product available for
+Ghana — Barenblitt (SW-hull only, positive-labels-only), Maus et al. 2022 (global, industrial-
+biased), Tang & Werner 2023 (global, better small-mine coverage) — all ~2019 snapshots, so only
+our 2019 layer is compared. **None is ground truth**; every number is read as agreement/
+triangulation, not accuracy. Reports, per region × product × cutoff: `both` (agreement), `our_only`
+(our FP + their omissions + real growth since ~2019), `prod_only` (our omissions or relict
+footprint no longer mined), plus recall/agreement/over-prediction ratios. A `deployed` cutoff row
+reads `build_03`'s actual exported mask (cutoff 70 + full post-processing stack) as-is, distinct
+from the raw cutoff-sweep rows (which use a `MASK` switch — `ghsl`/`dw`/`ghsl_dw`/`none` — for
+apples-to-apples threshold comparison, independent of what's actually deployed).
+
+**Renamed from `validate_barenblitt_overlap.R`** (2026-09-08) when extended from a Barenblitt-only
+comparison to all three reference products.
+
+**Result (2026-09-14, `deployed` row vs. `bar_hull`):** Barenblitt-artisanal recall **85.8%**
+(Barenblitt-all 82.7%), matching the pre-full-stack 0.84 estimate — the water/road masks in
+`build_03` didn't cost recall. `agree_frac` vs. the union of all three products = 85.2% (most of
+what we flag matches a known product, not hallucinated). Still over-predicts Barenblitt by
+2.1–2.5×, expected given industrial exclusion is still deferred plus residual FP (see
+`validate_fp_source_breakdown.R` above). National `our_km2` (732.9) barely exceeds `bar_hull`-only
+coverage (729.0) — only ~4 km² of detections sit outside the Barenblitt hull, flagged as worth a
+closer look (little evidence of new northern mining vs. under-detection there — unresolved).
+**Caveat:** the CSV's cutoff-sweep rows (45–80) use `MASK="ghsl_dw"` (includes the since-dropped
+DW urban knockout), not the deployed GHSL-only recipe — don't read those as literal "what-if
+cutoff X" numbers; only the `deployed` row reflects the actual current pipeline.
+
+**Output:** `outputs/tables/product_overlap.csv` + console tables (one per region).
 
 ---
 
@@ -365,6 +528,9 @@ panel) breaks, the time series still stands alone.
 - `rs03_embedding_classifier_design.md` → `notes/archive/`. Superseded by
   `embedding_classifier_approach.md` now that `build_02` implements the plan; kept for the original
   design rationale, not as current documentation.
+- **Archived 2026-09-03**: `build_04_backdating_prototype.js` (the CCDC-based JS prototype) →
+  `notes/archive/build_04_backdating_prototype_ccdc.js`, superseded by the LandTrendr-based
+  `build_04_backdating.R` rewrite (see that section above for why CCDC was rejected).
 - **Archived 2026-09-03** to `notes/archive/` (urban-confusion investigation, resolved 2026-08-18):
   `validate_kumasi_urban_check.js`, `validate_low_cutoff_mask_comparison.js`,
   `validate_ghsl_100m_val_scores.R`. Also `trial_4class_classifier.R` — superseded by `build_02`'s

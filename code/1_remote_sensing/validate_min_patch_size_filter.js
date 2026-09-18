@@ -15,9 +15,19 @@
 // labelling -- cheaper, and all this needs is a size threshold, not per-patch IDs.
 //
 // Self-contained: retrains fresh from the persisted mc4_train_pts_tagged asset, same pattern as
-// validate_low_cutoff_mask_comparison.js. Tests TWO base configurations side by side: cutoff 25
-// (higher recall, more residual noise to clean up) and cutoff 45 (the current precision-favouring
-// lean) -- both + the 100m epoch-matched mask, since that combination is already decided.
+// validate_low_cutoff_mask_comparison.js. Tests TWO base configurations side by side: cutoff 45
+// (higher recall, more residual noise to clean up -- the OLD settled cutoff, now the noisier
+// reference point) and cutoff 70 (build_03's current settled cutoff, decided 2026-09-09) -- both +
+// the 100m epoch-matched mask at the new URBAN_THRESHOLD_100M (500, was 2000), since that
+// combination is already decided.
+//
+// UPDATED 2026-09-14: cutoffs + urban threshold bumped from {25, 45} / 2000 to {45, 70} / 500 to
+// match build_03's settled config. First run (old config, Kumasi) found a flat curve -- no
+// singleton-noise knee at either cutoff, ~18-21% reduction only by 50px (0.5ha) -- meaning residual
+// FP is coherent multi-pixel patches, not scattered noise. See
+// notes/2026-09-07_build03_fp_postprocessing_plan.md "UPDATE 2026-09-14" for the full result table
+// and interpretation. This re-run checks whether that conclusion still holds now that most
+// urban/water FP is already gone upstream at cutoff 70.
 
 var ASSET_HOME = "projects/rgee-auth-tillam/assets/ghana_mining";
 var N_TREES = 200;
@@ -29,7 +39,7 @@ var AOI_CENTER = ee.Geometry.Point(CITY_CENTERS[CITY]);
 var AOI_HALFWIDTH_M = 20000;
 var aoi = AOI_CENTER.buffer(AOI_HALFWIDTH_M).bounds();
 
-var URBAN_THRESHOLD_100M = 2000;
+var URBAN_THRESHOLD_100M = 500;   // build_03's settled value (was 2000)
 var CLASSIFICATION_YEAR = 2022;
 var GHSL_100M_EPOCHS = [1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025];
 function nearestEpochYear(year) {
@@ -59,14 +69,16 @@ var ghslBuilt100m = ee.ImageCollection("JRC/GHSL/P2023A/GHS_BUILT_S")
   .filterDate(epoch100m + "-01-01", (epoch100m + 1) + "-01-01").first().select("built_surface").clip(aoi);
 
 // -- 2. Min-patch-size filter: connectedPixelCount() on the binary mask, threshold in PIXELS --
-var MAX_PATCH_SCAN = 1024;  // generous cap -- never misclassifies a genuinely large real patch as "small"
+var MAX_PATCH_SCAN = 64;    // only needs to exceed the largest MIN_PATCH_SIZES value (50) -- 1024 was
+                             // needlessly expensive (connectedPixelCount cost scales with this) and
+                             // triggered "User memory limit exceeded" in the interactive Code Editor
 var MIN_PATCH_SIZES = [0, 2, 3, 5, 10, 20, 50];  // 0 = no filter (baseline); pixel counts at 10m
                                                   // (1 px=100m^2, so e.g. 5 px=0.05ha, 50 px=0.5ha)
 
 var pixelAreaKm2 = ee.Image.pixelArea().divide(1e6);
 function areaFlagged(mask) {
   return pixelAreaKm2.updateMask(mask).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: aoi, scale: EXPORT_SCALE, maxPixels: 1e10
+    reducer: ee.Reducer.sum(), geometry: aoi, scale: EXPORT_SCALE, maxPixels: 1e10, tileScale: 4
   }).get("area");
 }
 
@@ -81,10 +93,12 @@ function runConfig(cutoff, label) {
   });
 }
 
-runConfig(25, "Cutoff 25");
 runConfig(45, "Cutoff 45");
+runConfig(70, "Cutoff 70");
 
-// -- 3. Visual QA: cutoff 25 + mask, before/after a mid-range patch filter (10 px = 0.1 ha) --
+// -- 3. Visual QA: cutoff 45 + mask, before/after a mid-range patch filter (10 px = 0.1 ha) --
+// Uses cutoff 45 (not 70) for the visual layer since it's the noisier of the two configs -- more
+// residual patches to actually see the before/after on.
 function maskS2(img) {
   var scl = img.select("SCL");
   return img.updateMask(scl.neq(3).and(scl.neq(9))).divide(10000);
@@ -94,14 +108,14 @@ var s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
   .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40)).map(maskS2).median()
   .select(["B4", "B3", "B2"]).clip(aoi);
 
-var binary25 = mineProb.gte(25).and(ghslBuilt100m.lte(URBAN_THRESHOLD_100M));
-var patchSizePx25 = binary25.selfMask().connectedPixelCount({maxSize: MAX_PATCH_SCAN, eightConnected: true});
-var filtered25_10px = binary25.selfMask().updateMask(patchSizePx25.gte(10));
+var binary45 = mineProb.gte(45).and(ghslBuilt100m.lte(URBAN_THRESHOLD_100M));
+var patchSizePx45 = binary45.selfMask().connectedPixelCount({maxSize: MAX_PATCH_SCAN, eightConnected: true});
+var filtered45_10px = binary45.selfMask().updateMask(patchSizePx45.gte(10));
 
 Map.centerObject(aoi, 11);
 Map.addLayer(s2, {min: 0, max: 0.3}, "Sentinel-2 " + CLASSIFICATION_YEAR + " (true colour)", true);
-Map.addLayer(binary25.selfMask(), {palette: ["ff0000"]}, "cutoff 25 + mask, UNFILTERED", true);
-Map.addLayer(filtered25_10px, {palette: ["00c3ff"]}, "cutoff 25 + mask, min-patch 10px (0.1ha)", true);
+Map.addLayer(binary45.selfMask(), {palette: ["ff0000"]}, "cutoff 45 + mask, UNFILTERED", true);
+Map.addLayer(filtered45_10px, {palette: ["00c3ff"]}, "cutoff 45 + mask, min-patch 10px (0.1ha)", true);
 
 print("Compare the min-patch-size=0 row (baseline) against larger thresholds: a big drop between");
 print("0 and ~5-10px means most residual noise IS scattered singleton/small-cluster false positives");
