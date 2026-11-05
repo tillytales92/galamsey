@@ -3,7 +3,7 @@
 # embedding classifier -- todo") -- a cheap diagnostic, not the full spatial-CV implementation.
 #
 # THE CONCERN (raised 2026-08-11): SmallMinesDS validation is concentrated in the same SW-Ghana
-# gold belt (Amansie/Bekwai/Upper Denkyira -- see validate_external_references.R Part 2b) that
+# gold belt (Amansie/Bekwai/Upper Denkyira -- see diag_02_external_references.R Part 2b) that
 # Barenblitt/Maus/Tang training positives are drawn from. No single point is reused between
 # training and validation (build_01_labels.R's exclusion mask keeps training NEGATIVES off every
 # known footprint incl. SmallMinesDS, and the positives are independent digitizations) -- but

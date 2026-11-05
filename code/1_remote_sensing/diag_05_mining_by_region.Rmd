@@ -1,0 +1,379 @@
+---
+title: "Cumulative galamsey coverage by region and district"
+subtitle: "Distribution check to pick MIN_MINING_KM2 for explore_mining_vs_forest_type_app.js"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+<!--
+diag_05_mining_by_region.Rmd -- decision-ready report (see code/1_remote_sensing/explainer.md's
+diag_NN_* convention), 2026-11-03.
+
+PURPOSE: explore_mining_vs_forest_type_app.js (same folder) restricts its Region/District dropdowns
+to admin units with "some" cumulative mining -- but with a bare > 0 km2 filter, EVERY region passed
+(scattered single-pixel false positives are enough to clear zero). This report pulls the same
+cumulative mining panel (mine_mask_ghana_c4_<yr>, 2017-2025, union-to-date) by district and region,
+looks at the actual DISTRIBUTION of mining area, and tabulates how many units survive at several
+candidate km2 cutoffs, so a real MIN_MINING_KM2 can be chosen instead of guessed. Also produces the
+region-level "mining increase" tables/figures the user asked to see alongside this, the combined
+level+growth region chart originally prototyped in the app (pulled back out -- static/selection-
+independent figures belong here, not in a per-unit exploration tool), and a top-10-districts
+table/figure.
+
+STATUS: written 2026-11-03. First real run (2026-11-04) hit a genuine rgee bug, not a mistake in
+this file -- ee_extract() calls ee$Image$reduceRegions(image=img, ...), a calling convention the
+installed earthengine-api no longer accepts ("unused argument (image = img)"). Fixed by bypassing
+ee_extract() in both the reduce-regions and national-check chunks, calling reduceRegions()/
+reduceRegion() directly on the image object instead -- same class of bug as ee_monitoring() in
+build_04_backdating.R (a wrapper lagging the installed API version), worth remembering if it
+recurs elsewhere. Same field-name caveat as the companion JS app: REGION_FIELD/DISTRICT_FIELD
+assume clean_names() output (adm1_name/adm2_name), consistent with d_06_gold_deposits.R and
+diag_02_external_references.R, which load these SAME local shapefiles (not the separately-uploaded
+EE assets the JS app worries about) -- so this script is on firmer ground field-name-wise than the
+JS app was.
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 9)
+
+rgee_env_dir <- "C:\\Users\\ADMIN\\AppData\\Local\\r-miniconda\\envs\\rgee_py\\"
+Sys.setenv(RETICULATE_PYTHON  = rgee_env_dir)
+Sys.setenv(EARTHENGINE_PYTHON = rgee_env_dir)
+
+library(reticulate)
+pacman::p_load(rgee, sf, here, tidyverse, janitor, scales, knitr, googledrive, conflicted)
+conflicts_prefer(
+  dplyr::filter, dplyr::select, dplyr::mutate, dplyr::summarise,
+  dplyr::rename, dplyr::arrange, here::here
+)
+
+UTM30N        <- 32630
+EE_PROJECT    <- "rgee-auth-tillam"
+EE_ASSET_HOME <- sprintf("projects/%s/assets/ghana_mining", EE_PROJECT)
+EMBED_YEARS   <- 2017:2025
+
+# Same plasma-derived gradient used for every mining choropleth in this project (a_01_incidence_maps.R)
+MINING_PALETTE <- c("#FCFDBF", "#FEC287", "#FD9567", "#F1605D", "#CD4071", "#9E2F7F", "#721F81", "#450457")
+
+DRIVE_FOLDER <- "ghana_mining_gee_exports"
+
+ee_Authenticate()
+ee_Initialize(drive = TRUE, project = EE_PROJECT)
+# ee_Initialize(drive = TRUE) does NOT hand googledrive a working token on its own -- needs its
+# own explicit auth call (same pattern as build_02_embedding_classifier.R / d_01_download_gee.R /
+# d_04_merit.R), or drive_find()/drive_download() below silently run as the wrong Google account
+# (or no account) and return zero matches.
+googledrive::drive_auth()
+
+# Resolve the export folder ONCE and list its contents, rather than a blind drive_find(pattern=)
+# over the whole Drive (same idiom as build_02_embedding_classifier.R's score-export fallback) --
+# more robust and avoids false/missing matches if the pattern isn't unique Drive-wide.
+drive_download_export <- function(name_pattern, dest_path) {
+  export_folder <- googledrive::drive_find(pattern = DRIVE_FOLDER, type = "folder", n_max = 1)
+  if (nrow(export_folder) == 0)
+    stop("Export folder '", DRIVE_FOLDER, "' not found -- check googledrive::drive_user().")
+  contents <- googledrive::drive_ls(export_folder[1, ])
+  hit <- contents[grepl(name_pattern, contents$name, fixed = TRUE), ]
+  if (nrow(hit) == 0) return(invisible(FALSE))
+  googledrive::drive_download(hit[1, ], path = dest_path, overwrite = TRUE)
+  invisible(TRUE)
+}
+
+# ee_monitoring() has a known rgee bug (build_04_backdating.R/diag_04_backdating.R): it reads
+# destination_uris before a still-RUNNING task has populated that field. Reused workaround --
+# only ever read `state`.
+poll_task <- function(task, interval = 15) {
+  repeat {
+    state <- ee$batch$Task$status(task)[["state"]]
+    message("  task state: ", state, " (", format(Sys.time(), "%H:%M:%S"), ")")
+    if (state %in% c("COMPLETED", "FAILED", "CANCELLED")) break
+    Sys.sleep(interval)
+  }
+  if (state != "COMPLETED")
+    stop("EE task ended in state '", state, "' -- check the Code Editor Tasks tab (project ", EE_PROJECT, ").")
+  invisible(state)
+}
+```
+
+## 1. Build the cumulative mining panel and pull it by district
+
+Same definition as `build_03_embedding_panel.R` / `explore_mining_vs_forest_type_app.js`: the
+**union-to-date** of `mine_mask_ghana_c4_<yr>` (monotonically non-decreasing cumulative footprint),
+not each year's raw independent classification.
+
+```{r build-ee-image}
+cum_mine_by_year <- list()
+running_mine <- ee$Image(0)$rename("cum_mine")
+for (yr in EMBED_YEARS) {
+  mine_yr <- ee$Image(paste0(EE_ASSET_HOME, "/mine_mask_ghana_c4_", yr))$unmask(0)
+  running_mine <- running_mine$Or(mine_yr)$rename(paste0("cum_mine_", yr))
+  cum_mine_by_year[[as.character(yr)]] <- running_mine
+}
+
+area_km2 <- ee$Image$pixelArea()$divide(1e6)
+mining_bands <- ee$Image$cat(lapply(EMBED_YEARS, function(yr) {
+  cum_mine_by_year[[as.character(yr)]]$multiply(area_km2)$rename(paste0("mining_", yr))
+}))
+```
+
+```{r load-admin}
+# select(adm2_name, geometry) etc. BEFORE sf_as_ee -- the valid_on/valid_to NA columns on this
+# shapefile crash sf_as_ee() otherwise (CLAUDE.md caveat). adm1_name carried through on the district
+# table too, same as d_06_gold_deposits.R / diag_02_external_references.R -- that's how districts
+# get assigned to a region below, no separate admin1 lookup/spatial join needed.
+districts_sf <- st_read(here("data", "raw", "shapefiles", "hdx_gh_admin", "gha_admin2.shp"), quiet = TRUE) |>
+  clean_names() |>
+  select(adm2_name, adm1_name, geometry) |>
+  st_make_valid()
+
+districts_ee <- sf_as_ee(st_transform(districts_sf, 4326))
+```
+
+```{r reduce-regions}
+# scale=30 matches the app's Region-mode scale; tileScale=8 for the heavier multi-band reduceRegions.
+# NOT ee_extract() -- that wrapper calls ee$Image$reduceRegions(image=img, ...), a calling
+# convention the installed earthengine-api no longer accepts ("unused argument (image = img)",
+# same class of rgee-lagging-the-API bug as ee_monitoring() in build_04_backdating.R). Direct
+# instance-method call instead, joined back by adm2_name (not row position -- reduceRegions()
+# doesn't guarantee output order matches input order).
+#
+# Also NOT a synchronous getInfo() on the reduceRegions() result -- national scale, 9 bands, 260
+# districts hit EE's ~5min interactive compute ceiling ("Computation timed out", 2026-11-04). Batch
+# export + poll + download instead (same pattern as build_04_backdating.R/diag_04_backdating.R),
+# which has no such ceiling. Skip-if-exists below avoids re-submitting on every re-knit.
+district_reduced <- mining_bands$reduceRegions(
+  collection = districts_ee, reducer = ee$Reducer$sum(), scale = 30, tileScale = 8L
+)
+district_dsn <- here("outputs", "tables", "diag05_district_mining_panel_raw.csv")
+dir.create(dirname(district_dsn), recursive = TRUE, showWarnings = FALSE)
+
+# Skip-if-exists: this export already landed (2026-11-05) -- re-knitting the report shouldn't
+# resubmit a duplicate national reduceRegions just to regenerate the same CSV.
+if (drive_download_export("diag05_district_mining_panel", district_dsn)) {
+  message("Found existing diag05_district_mining_panel export on Drive -- skipping resubmission.")
+} else {
+  district_task <- ee$batch$Export$table$toDrive(
+    collection = district_reduced$select(c("adm2_name", paste0("mining_", EMBED_YEARS))),
+    description = "diag05_district_mining_panel", folder = DRIVE_FOLDER, fileFormat = "CSV"
+  )
+  district_task$start()
+  message("Submitted district panel export (national, 9 bands, 260 districts) -- this will take a ",
+          "few minutes, BLOCKING until done. The task keeps running on EE's side even if you ",
+          "interrupt this session.")
+  poll_task(district_task)
+  if (!drive_download_export("diag05_district_mining_panel", district_dsn))
+    stop("Export completed but file not found in Drive folder '", DRIVE_FOLDER, "' -- check manually.")
+}
+district_stats <- read_csv(district_dsn, show_col_types = FALSE)
+
+district_panel <- districts_sf |>
+  st_drop_geometry() |>
+  left_join(district_stats |> select(adm2_name, starts_with("mining_")), by = "adm2_name") |>
+  as_tibble()
+
+region_panel <- district_panel |>
+  group_by(adm1_name) |>
+  summarise(across(starts_with("mining_"), sum), n_districts = n(), .groups = "drop")
+
+out_dir <- here("outputs", "tables")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+write_csv(district_panel, here(out_dir, "mining_by_district.csv"))
+write_csv(region_panel, here(out_dir, "mining_by_region.csv"))
+```
+
+## 2. National total (sanity check)
+
+District-level sum should match a direct national reduceRegion closely (small differences are
+scale/edge-pixel rounding, not a bug).
+
+```{r national-check}
+# Same ee_extract() bug as the chunk above -- direct reduceRegion() (singular: one polygon, not a
+# collection) instead. scale=100 (not 30, matching district_panel) deliberately -- this is a rough
+# sanity check only (the surrounding text already expects scale-driven rounding differences), and a
+# single whole-country reduceRegion at 30m risks the same "Computation timed out" the district pull
+# hit above; 100m keeps this one synchronous/fast rather than needing its own batch export.
+national_geom <- sf_as_ee(st_transform(st_union(districts_sf) |> st_as_sf(), 4326))$geometry()
+national_direct <- mining_bands$select(paste0("mining_", max(EMBED_YEARS)))$reduceRegion(
+  reducer = ee$Reducer$sum(), geometry = national_geom, scale = 100, maxPixels = 1e10, tileScale = 8L
+)$getInfo()
+tibble(
+  method = c("sum of districts", "direct national reduceRegion"),
+  km2 = c(sum(district_panel[[paste0("mining_", max(EMBED_YEARS))]]),
+          national_direct[[paste0("mining_", max(EMBED_YEARS))]])
+) |> kable(digits = 1, caption = paste0("National cumulative mining through ", max(EMBED_YEARS)))
+```
+
+## 3. Distribution of district-level mining area, `r max(EMBED_YEARS)`
+
+```{r dist-hist}
+latest_col <- paste0("mining_", max(EMBED_YEARS))
+candidate_cutoffs <- c(0, 0.5, 1, 2, 5, 10, 20)
+
+ggplot(district_panel, aes(x = .data[[latest_col]])) +
+  geom_histogram(bins = 40, fill = "#CD4071", colour = "white") +
+  geom_vline(xintercept = candidate_cutoffs[-1], linetype = "dashed", colour = "grey40") +
+  scale_x_continuous(trans = scales::pseudo_log_trans(base = 10),
+                      breaks = candidate_cutoffs, labels = label_comma()) +
+  labs(x = "Cumulative mining area (km2, pseudo-log x-axis)", y = "Number of districts",
+       title = "District-level cumulative mining area",
+       subtitle = "Dashed lines = candidate MIN_MINING_KM2 cutoffs") +
+  theme_minimal(base_size = 12)
+```
+
+```{r dist-cutoff-table}
+map_dfr(candidate_cutoffs, function(cut) {
+  tibble(
+    min_mining_km2  = cut,
+    districts_kept  = sum(district_panel[[latest_col]] > cut),
+    districts_total = nrow(district_panel),
+    regions_kept    = sum(region_panel[[latest_col]] > cut),
+    regions_total   = nrow(region_panel)
+  )
+}) |>
+  kable(digits = 1, caption = "Units retained at each candidate MIN_MINING_KM2 cutoff")
+```
+
+## 4. Distribution of region-level mining area, `r max(EMBED_YEARS)`
+
+```{r region-hist}
+ggplot(region_panel, aes(x = .data[[latest_col]])) +
+  geom_histogram(bins = 16, fill = "#721F81", colour = "white") +
+  geom_vline(xintercept = candidate_cutoffs[-1], linetype = "dashed", colour = "grey40") +
+  labs(x = "Cumulative mining area (km2)", y = "Number of regions",
+       title = "Region-level cumulative mining area",
+       subtitle = "Dashed lines = candidate MIN_MINING_KM2 cutoffs") +
+  theme_minimal(base_size = 12)
+```
+
+## 5. Region ranking, `r max(EMBED_YEARS)`
+
+```{r region-bar}
+region_panel |>
+  mutate(adm1_name = fct_reorder(adm1_name, .data[[latest_col]])) |>
+  ggplot(aes(x = .data[[latest_col]], y = adm1_name, fill = .data[[latest_col]])) +
+  geom_col() +
+  scale_fill_gradientn(colours = MINING_PALETTE, trans = "sqrt", labels = label_comma(),
+                        name = "Area (km2)") +
+  labs(x = "Cumulative mining area (km2)", y = NULL,
+       title = paste0("Cumulative galamsey coverage by region, through ", max(EMBED_YEARS))) +
+  theme_minimal(base_size = 12)
+```
+
+## 5b. Region overview: level + growth together
+
+Combines the previous two figures into one: each bar's grey segment is the 2020 level, the coloured
+segment is growth to `r max(EMBED_YEARS)`, so bar length = current (`r max(EMBED_YEARS)`) total and
+the split shows how much of that total is pre-existing vs. new. This is the chart originally
+prototyped directly inside `explore_mining_vs_forest_type_app.js` -- pulled back out of the app (it's a
+static, selection-independent figure, not tied to whichever unit a user has picked) and moved here instead.
+
+```{r region-overview-combined}
+overview_first_year <- 2020
+overview_first_col  <- paste0("mining_", overview_first_year)
+
+region_overview <- region_panel |>
+  transmute(
+    adm1_name,
+    level_first = .data[[overview_first_col]],
+    growth      = .data[[latest_col]] - .data[[overview_first_col]],
+    total       = .data[[latest_col]]
+  )
+
+region_order <- region_overview |> arrange(total) |> pull(adm1_name)
+
+region_overview |>
+  pivot_longer(cols = c(level_first, growth), names_to = "component", values_to = "km2") |>
+  mutate(
+    component = if_else(component == "level_first",
+                         paste0("Mining, ", overview_first_year),
+                         paste0("Growth to ", max(EMBED_YEARS))),
+    component = factor(component, levels = c(paste0("Growth to ", max(EMBED_YEARS)),
+                                               paste0("Mining, ", overview_first_year))),
+    adm1_name = factor(adm1_name, levels = region_order)
+  ) |>
+  ggplot(aes(x = km2, y = adm1_name, fill = component)) +
+  geom_col() +
+  scale_fill_manual(
+    values = setNames(c("#CD4071", "grey70"),
+                       c(paste0("Growth to ", max(EMBED_YEARS)), paste0("Mining, ", overview_first_year))),
+    name = NULL
+  ) +
+  labs(x = "Area (km2)", y = NULL,
+       title = paste0("Gold mining footprint by region -- ", overview_first_year,
+                       " level + growth to ", max(EMBED_YEARS))) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+```
+
+## 6. Mining increase by region, 2017 -> `r max(EMBED_YEARS)`
+
+```{r region-increase}
+first_col <- paste0("mining_", min(EMBED_YEARS))
+
+region_increase <- region_panel |>
+  transmute(
+    adm1_name,
+    mining_first = .data[[first_col]],
+    mining_last  = .data[[latest_col]],
+    increase_km2 = mining_last - mining_first,
+    increase_pct = if_else(mining_first > 0, 100 * increase_km2 / mining_first, NA_real_)
+  ) |>
+  arrange(desc(increase_km2))
+
+kable(region_increase, digits = 1,
+      caption = paste0("Region-level mining increase, ", min(EMBED_YEARS), "-", max(EMBED_YEARS)))
+```
+
+```{r region-increase-bar}
+region_increase |>
+  mutate(adm1_name = fct_reorder(adm1_name, increase_km2)) |>
+  ggplot(aes(x = increase_km2, y = adm1_name, fill = increase_km2)) +
+  geom_col() +
+  scale_fill_gradientn(colours = MINING_PALETTE, trans = "sqrt", labels = label_comma(),
+                        name = "Increase (km2)") +
+  labs(x = "Increase in cumulative mining area (km2)", y = NULL,
+       title = paste0("Mining growth by region, ", min(EMBED_YEARS), "-", max(EMBED_YEARS))) +
+  theme_minimal(base_size = 12)
+```
+
+## 6b. Top 10 districts, `r max(EMBED_YEARS)`
+
+Same idea one level down -- which individual districts actually drive the regional totals above.
+
+```{r top10-districts-table}
+top10_districts <- district_panel |>
+  transmute(
+    adm2_name, adm1_name,
+    mining_first = .data[[first_col]],
+    mining_last  = .data[[latest_col]],
+    increase_km2 = mining_last - mining_first
+  ) |>
+  arrange(desc(mining_last)) |>
+  slice_head(n = 10)
+
+kable(top10_districts, digits = 1,
+      caption = paste0("Top 10 districts by cumulative mining area, ", max(EMBED_YEARS)))
+```
+
+```{r top10-districts-bar}
+top10_districts |>
+  mutate(district_label = paste0(adm2_name, " (", adm1_name, ")"),
+         district_label = fct_reorder(district_label, mining_last)) |>
+  ggplot(aes(x = mining_last, y = district_label, fill = mining_last)) +
+  geom_col() +
+  scale_fill_gradientn(colours = MINING_PALETTE, trans = "sqrt", labels = label_comma(),
+                        name = "Area (km2)") +
+  labs(x = "Cumulative mining area (km2)", y = NULL,
+       title = paste0("Top 10 districts by cumulative galamsey coverage, through ", max(EMBED_YEARS))) +
+  theme_minimal(base_size = 12)
+```
+
+## 7. Recommendation
+
+Read off section 3's table for the MIN_MINING_KM2 value that drops the long tail of
+near-zero/false-positive districts while keeping the genuine mining regions -- paste that value into
+`MIN_MINING_KM2` near the top of `explore_mining_vs_forest_type_app.js`'s STEP 4.

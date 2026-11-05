@@ -1,4 +1,5 @@
-# validate_scoring.R
+# diag_02_scoring.R  (renamed 2026-11-03 from validate_scoring.R -- diag_NN_* = decision-ready
+# report tied to one build_NN stage, re-run on change; see code/1_remote_sensing's naming convention)
 # All SmallMinesDS-2022 scoring of the embedding classifier in one place. Consolidates (2026-09-03)
 # three older scripts that each answered a slice of "which model config / which cutoff":
 #   - validate_ablation_sources.R    -> Part 1 (label-combo ablation)
@@ -228,4 +229,4 @@ cat(sprintf("  Youden's J-max:      mine_prob >= %d   PA %.3f, 1-FPR %.3f\n",
             youden_best$threshold, youden_best$pa, 1 - youden_best$fpr))
 cat(sprintf("  AUC: %.3f\n", auc))
 
-message("\n=== validate_scoring.R complete ===")
+message("\n=== diag_02_scoring.R complete ===")

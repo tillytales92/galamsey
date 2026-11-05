@@ -27,13 +27,13 @@
 # source's actual reported shape. Judging source QUALITY against imagery needs the real outline.
 #
 # Why SmallMinesDS gets share_mined > 0 (not build_01's balanced sample, not Part 2c's >10% in
-# validate_external_references.R): Part 2c's >10% floor exists only to keep a browser-rendered
+# diag_02_external_references.R): Part 2c's >10% floor exists only to keep a browser-rendered
 # leaflet HTML small -- EE assets have no such constraint, and the low-share/ambiguous patches
 # are exactly the ones worth eyeballing for a data-quality judgment call. Only true empties
 # (share_mined == 0) are dropped, since they render as literally nothing.
 #
 # NATIONAL, not AOI-scoped (2026-09-17): originally this script clipped all four sources to one
-# ~41x41km Awomaso-centred box, matching validate_external_references.R Part 2c's AOI_SITE. That
+# ~41x41km Awomaso-centred box, matching diag_02_external_references.R Part 2c's AOI_SITE. That
 # meant validate_finalproduct.js's CHECK_SITES dropdown could jump the Sentinel-2/probability
 # layers to other sites but the ground-truth outlines stayed empty everywhere except Awomaso.
 # Switched to national scope so the outlines actually follow the dropdown. Barenblitt/Maus/Tang
@@ -117,7 +117,7 @@ wait_until_asset_ready <- function(id, max_wait_s = 600) {
 # runs first (Sections 3-6 below), and finalize_asset() for all of them only happens at the very
 # end -- so "queue everything and walk away" actually queues everything, not just whichever
 # source happened to be first.
-submit_chunks <- function(sf_obj, name) {
+submit_chunks <- function(sf_obj, name, chunk_size = 2000L) {
   assetId <- file.path(EE_ASSET_HOME, name)
   exists  <- tryCatch({ ee$data$getAsset(assetId); TRUE }, error = function(e) FALSE)
   if (exists && REUSE_ASSETS) {
@@ -129,7 +129,6 @@ submit_chunks <- function(sf_obj, name) {
     ee$data$deleteAsset(assetId)
   }
 
-  chunk_size <- 2000L
   n_obj      <- nrow(sf_obj)
   chunk_idx  <- split(seq_len(n_obj), ceiling(seq_len(n_obj) / chunk_size))
 
@@ -204,7 +203,7 @@ message(sprintf("  %d Barenblitt polygons (%d artisanal / %d industrial)",
                 nrow(barenblitt_up), sum(barenblitt_up$mine_type == 1), sum(barenblitt_up$mine_type == 2)))
 if (nrow(barenblitt_up) > 0) asset_specs$barenblitt <- submit_chunks(barenblitt_up, "gt_compare_barenblitt_raw")
 
-####4. Maus et al. 2022 v2 -- Ghana subset (already national via the SQL query), RAW (no erosion) ###
+####4. Maus et al. 2022 v2 -- Ghana subset (already national via the SQL query), RAW (no erosion) ####
 
 message("=== Loading raw Maus et al. (Ghana, national) ===")
 maus_path <- here("data", "raw", "mining_mausetal", "global_mining_polygons_v2.gpkg")
@@ -271,8 +270,18 @@ outline_list <- lapply(seq_along(mask_paths), function(i) {
     select(patch_id, share_mined)
 })
 outlines <- do.call(rbind, Filter(Negate(is.null), outline_list)) |> st_transform(4326)
+# 2026-09-28: as.polygons() traces raster pixel edges directly -- jagged, high-vertex-count
+# "staircase" polygons, far heavier per-feature than Barenblitt/Maus/Tang's smoother outlines.
+# submit_chunks()'s row-count chunking (2000) never triggers here (SmallMinesDS's real footprint
+# is a handful of districts -- see explainer.md Part 2b -- well under 2000 patches), so this took
+# the unchunked single-upload path and blew EE's ~10MB inline-payload limit ("Request payload
+# size exceeds the limit"). Fix: simplify (sub-pixel tolerance, invisible at Code Editor zoom) to
+# cut vertex count, AND force chunking with a much smaller chunk_size regardless of feature count,
+# since payload here is driven by per-feature complexity, not row count.
+outlines <- outlines |> st_simplify(dTolerance = 0.0001, preserveTopology = TRUE)
 message(sprintf("  %d non-empty outlines vectorised", nrow(outlines)))
-if (nrow(outlines) > 0) asset_specs$smallminesds <- submit_chunks(outlines, "gt_compare_smallminesds")
+if (nrow(outlines) > 0)
+  asset_specs$smallminesds <- submit_chunks(outlines, "gt_compare_smallminesds", chunk_size = 200L)
 
 ####7. Finalize -- wait + merge + export the final asset for each source ####
 # All 4 sources' chunks are already queued in GEE by this point (Sections 3-6 above), regardless

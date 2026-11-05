@@ -1,25 +1,38 @@
 // build_04_backdating_prototype.js
 // Paste into code.earthengine.google.com (project: rgee-auth-tillam).
 //
-// Side-by-side prototype of two onset-dating methods for backdating the 2017-2025
+// Side-by-side prototype of three onset-dating methods for backdating the 2017-2025
 // embedding-classifier mine footprint to 2000-2016, since build_04_backdating.R's own
 // Section 7 (RStudio Viewer inspect) isn't rendering (2026-09-17) -- moved the whole
 // eyeball-and-tune loop to the Code Editor instead, which is also just a better fit for
 // open-ended visual comparison (see validate_finalproduct.R's header for the
 // same Code-Editor-over-R-Viewer reasoning).
 //
-//   "landtrendr" (build_04's v1/deploy method, ported from Sections 5-6) -- LandTrendr
+//   "landtrendr"  (build_04's v1/deploy method, ported from Sections 5-6) -- LandTrendr
 //                 segmentation of an annual -NBR series; onset = year of the largest
-//                 drop in the FITTED (denoised) trajectory.
+//                 drop in the FITTED (denoised) trajectory. Has a magnitude/confidence
+//                 gate (LT_MIN_MAGNITUDE) -- can leave a pixel undated.
+//   "barenblitt"  (build_04's v0/reference method, ported from Section 6b; added to THIS
+//                 prototype 2026-11-03) -- their "NDVI Anomaly Timeline": 3-yr moving
+//                 average of annual max-NDVI, first difference, qualityMosaic picks the
+//                 steepest-loss year. No magnitude gate -- always assigns an onset year
+//                 wherever a 3-yr window exists, including on pure noise. Not deployed;
+//                 kept only to benchmark LandTrendr against (same role as in build_04.R).
 //   "ccdc"       (this file's own prototype -- not in build_04) -- CCDC (Continuous
 //                 Change Detection & Classification) on a full 6-band harmonised
 //                 Landsat stack; onset = fractional year of the first confirmed break.
+//                 This is the alternative LandTrendr was chosen OVER (2026-09-03, see
+//                 build_04.R's header) -- kept here only so that call can still be
+//                 revisited by eye, not a live candidate.
 //
-// Both share ONE ever-mined anchor mask (Section 1) built from build_03's DEPLOYED
+// All three share ONE ever-mined anchor mask (Section 1) built from build_03's DEPLOYED
 // mine_mask_ghana_c4_{yr} assets -- not a probability re-threshold -- so any difference
-// between the two onset layers is a difference in DATING METHOD, not in which pixels
-// got dated at all. Both also share the same cloud mask (Section 2) -- see NOTE 1 below
-// for a bug that fix carries over from build_04's own debugging.
+// between onset layers is a difference in DATING METHOD, not in which pixels got dated at
+// all. All three also share the same cloud mask (Section 2) -- see NOTE 1 below for a bug
+// fix that carries over from build_04's own debugging. LandTrendr and Barenblitt
+// additionally share the same Roy-harmonized RED/NIR/SWIR2 collection (Section 4's
+// landsatLt, NBR for LandTrendr + NDVI for Barenblitt) -- CCDC deliberately does NOT apply
+// that harmonization (see its own NOTE below).
 //
 // NOTE 1 -- the original CCDC draft this was built from checked the cirrus QA_PIXEL bit
 // on every sensor. build_04_backdating.R's own comment already flags that as wrong: that
@@ -38,13 +51,27 @@
 // ---------- 0. Config ----------
 var ASSET_HOME  = 'projects/rgee-auth-tillam/assets/ghana_mining';
 var MASK_PREFIX = 'mine_mask_ghana_c4_';
-var MASK_YEARS  = [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025];  // build_03 deployed years
+var MASK_YEARS  = [2017];  // anchor = mined-as-of-2017 ONLY (matches build_04_backdating.R,
+                            // decided 2026-11-03) -- not the 2017-2025 union. A pixel whose first
+                            // mined year is 2018+ is already correctly dated by build_03 itself;
+                            // including it here just forces a spurious/empty "no break" check.
 
-var ONSET_START = 2000.0;   // fractional-year window for accepted breaks (both methods)
-var ONSET_END   = 2017.0;   // 2017+ conversions are the embeddings' job
+var WINDOW = '2000-2016';   // '2000-2016' (full window, matches build_04_backdating.R's current
+                             // ONSET_MIN/ONSET_MAX) | '2007-2016' (matches Barenblitt's own
+                             // validated study period -- see notes/barenblitt_dataset_documentation.md
+                             // Step 4: they stop at 2007 for the same reason CCDC was ruled out here,
+                             // insufficient cloud-free Landsat 5/7 imagery before it. diag_04_backdating.R's
+                             // ONSET_MIN=2007 experiment confirmed this window also improves both methods'
+                             // accuracy nationally -- not yet adopted in build_04_backdating.R itself,
+                             // parked as an open decision as of 2026-11-03/04.)
+var ONSET_START = (WINDOW === '2007-2016') ? 2007.0 : 2000.0;   // fractional-year window start
+var ONSET_END   = 2017.0;   // unchanged either way -- 2017+ conversions are the embeddings' job
 
 var TUNE     = true;        // true: clip to TUNE_AOI for fast iteration
-var TUNE_AOI = ee.Geometry.Rectangle([-2.05, 5.98, -1.87, 6.15]);  // Awomaso
+var TUNE_AOI = ee.Geometry.Rectangle([-2.025, 6.0, -1.895, 6.13]);  // Awomaso, shrunk 2026-11-03
+                            // (was [-2.05, 5.98, -1.87, 6.15], ~380 km2) to ~190 km2, same center --
+                            // CCDC in particular is expensive per-pixel, keep the eyeball-tuning box
+                            // small; edit these coords to check a different/larger site if needed.
 
 var ghana = ee.FeatureCollection(ASSET_HOME + '/rs05_ghana').geometry();
 var aoi   = TUNE ? TUNE_AOI : ghana;
@@ -167,6 +194,7 @@ function prepLt(id, bands, isOli) {
           .addBands(sr.select('SWIR2').multiply(ROY.SWIR2.s).add(ROY.SWIR2.i));
       }
       return sr.addBands(sr.normalizedDifference(['NIR', 'SWIR2']).rename('NBR'))
+        .addBands(sr.normalizedDifference(['NIR', 'RED']).rename('NDVI'))  // feeds the Barenblitt branch below
         .updateMask(everMined).clip(aoi)
         .copyProperties(img, ['system:time_start']);
     });
@@ -221,6 +249,48 @@ var onsetYearLt = yearWLt.arrayGet(amaxLt).rename('onset_lt')
   .round().int16();
 
 // =========================================================================
+// ---------- 4b. Barenblitt branch (build_04_backdating.R Section 6b, ported) ----------
+// =========================================================================
+// Their "NDVI Anomaly Timeline": annual MAX-NDVI -> 3-yr moving average (negated so a
+// decline reads positive) -> first difference -> qualityMosaic keeps, per pixel, the year
+// of the steepest derivative. Reuses landsatLt's NDVI band (added in Section 4 above) --
+// the SAME Roy-harmonized collection LandTrendr uses -- so any onset-year difference between
+// the two is purely a difference in DATING METHOD, matching this file's whole point (see
+// header). NOTE: unlike LandTrendr, this method has NO magnitude/confidence gate -- every
+// everMined pixel gets an onset year assigned, even where the "steepest" derivative found is
+// just noise. That's a known, accepted weakness of the v0/reference method (not deployed;
+// kept only to benchmark LandTrendr against), not a bug to fix here.
+var ndviMaxByYear = {};
+LT_YEARS.forEach(function (yr) {
+  ndviMaxByYear[yr] = ee.Image(landsatLt.filter(ee.Filter.calendarRange(yr, yr, 'year'))
+    .select('NDVI').reduce(ee.Reducer.max())).rename('NDVI_max');
+});
+
+var AVG_YEARS = [];        // interior years only -- 3-yr MA needs both y-1 and y+1 to exist
+for (var yAvg = 2000; yAvg <= 2017; yAvg++) AVG_YEARS.push(yAvg);   // IMG_START+1 .. IMG_END-1
+
+var ndviAvgByYear = {};
+AVG_YEARS.forEach(function (y) {
+  var a = ndviMaxByYear[y - 1], b = ndviMaxByYear[y], c = ndviMaxByYear[y + 1];
+  ndviAvgByYear[y] = a.add(b).add(c).divide(3).multiply(-1).rename('NDVI_avg');
+});
+
+var DERIV_YEARS = [];      // first difference drops one more year at the start of AVG_YEARS
+for (var yDeriv = 2001; yDeriv <= 2017; yDeriv++) DERIV_YEARS.push(yDeriv);
+
+var derivColBar = ee.ImageCollection(DERIV_YEARS.map(function (y) {
+  var d = ndviAvgByYear[y].subtract(ndviAvgByYear[y - 1]).rename('NDVI_deriv');
+  return d.addBands(ee.Image.constant(y).toInt().rename('Year')).updateMask(everMined);
+}));
+
+var qmBar = derivColBar.qualityMosaic('NDVI_deriv');   // per pixel: year of steepest NDVI loss
+var onsetYearBar = qmBar.select('Year')
+  .updateMask(qmBar.select('Year').gte(ONSET_START))
+  .updateMask(qmBar.select('Year').lte(ONSET_END - 1))
+  .updateMask(everMined)
+  .toInt16().rename('onset_bar');
+
+// =========================================================================
 // ---------- 5. Compare + visualise ----------
 // =========================================================================
 // .clip(aoi) is load-bearing here, not cosmetic: hasBreakCcdc/onsetYearLt are only ever
@@ -230,8 +300,13 @@ var onsetYearLt = yearWLt.arrayGet(amaxLt).rename('onset_lt')
 // would paint every ever-mined pixel in ALL OF GHANA as "no break", not just this AOI's.
 var undatedCcdc = everMined.updateMask(hasBreakCcdc.unmask(0).not()).clip(aoi);
 var undatedLt   = everMined.updateMask(onsetYearLt.mask().not()).clip(aoi);
+var undatedBar  = everMined.updateMask(onsetYearBar.mask().not()).clip(aoi);
 var bothDated   = onsetYearCcdc.mask().and(onsetYearLt.mask());
 var agreeDiff   = onsetYearCcdc.subtract(onsetYearLt).abs().updateMask(bothDated).rename('abs_diff');
+// LandTrendr vs Barenblitt -- the pair build_04_backdating.R's own Section 8 actually scores
+// (against Barenblitt's classifica labels); CCDC isn't part of that validation at all.
+var bothDatedLtBar = onsetYearLt.mask().and(onsetYearBar.mask());
+var agreeDiffLtBar = onsetYearLt.subtract(onsetYearBar).abs().updateMask(bothDatedLtBar).rename('abs_diff_lt_bar');
 
 Map.setOptions('SATELLITE');
 Map.centerObject(TUNE_AOI, 12);
@@ -280,10 +355,14 @@ Map.addLayer(everMined.clip(aoi), {palette: ['grey']}, 'ever mined (build_03 dep
 
 Map.addLayer(onsetYearCcdc, onsetVis, 'onset year -- CCDC', true);
 Map.addLayer(onsetYearLt,   onsetVis, 'onset year -- LandTrendr', true);
+Map.addLayer(onsetYearBar,  onsetVis, 'onset year -- Barenblitt', true);
 Map.addLayer(undatedCcdc, {palette: ['00bcd4']}, 'mined, no CCDC break', false);
 Map.addLayer(undatedLt,   {palette: ['ff9800']}, 'mined, no LandTrendr break', false);
+Map.addLayer(undatedBar,  {palette: ['9c27b0']}, 'mined, no Barenblitt break', false);
 Map.addLayer(agreeDiff, {min: 0, max: 8, palette: ['00ff00', 'ffff00', 'ff0000']},
              '|CCDC - LandTrendr| onset year (both dated)', false);
+Map.addLayer(agreeDiffLtBar, {min: 0, max: 8, palette: ['00ff00', 'ffff00', 'ff0000']},
+             '|LandTrendr - Barenblitt| onset year (both dated)', false);
 
 print('CCDC bands:', ccdc.bandNames());
 
@@ -333,11 +412,37 @@ function printCoverageStats() {
   var region = TUNE ? TUNE_AOI : ghana;
   // one multi-band reduceRegion instead of four separate calls -- count() respects each
   // band's own mask independently, so total/ccdc/lt/both can all be counted in one pass.
+  // exact/+-1/+-2 agreement bands, restricted to the LandTrendr&Barenblitt overlap -- same
+  // metric style as the classifica ground-truth scoring in build_04_backdating.R Section 8,
+  // but here it's METHOD-vs-METHOD agreement (no ground truth involved), answering "where
+  // both found a mine, how often do they land on the same onset year."
+  var ltBarExact = everMined.updateMask(bothDatedLtBar).updateMask(agreeDiffLtBar.eq(0)).rename('lt_bar_exact');
+  var ltBarW1    = everMined.updateMask(bothDatedLtBar).updateMask(agreeDiffLtBar.lte(1)).rename('lt_bar_w1');
+  var ltBarW2    = everMined.updateMask(bothDatedLtBar).updateMask(agreeDiffLtBar.lte(2)).rename('lt_bar_w2');
+
+  // 2026-11-04: checking a hypothesis from the visual |LT - Barenblitt| diff layer -- large
+  // disagreements (8-9 yr) show up under WINDOW='2000-2016' but mostly vanish under
+  // '2007-2016'. Barenblitt has no magnitude gate and no global fitted/denoised trajectory
+  // (unlike LandTrendr's segmentation), so it's more exposed to a noisy, sparse-data pre-2007
+  // composite looking like a spurious "steepest drop" once those years become candidates at
+  // all. If that's really what's happening, big disagreements should concentrate on cases
+  // where BARENBLITT'S picked year (not LandTrendr's) falls in 2000-2006 -- i.e. Barenblitt is
+  // the one jumping to the noisy early years, not LandTrendr. Only informative under
+  // WINDOW='2000-2016' (2000-2006 isn't even a candidate under '2007-2016', so this would be
+  // trivially ~0% there by construction).
+  var bigDisagree       = everMined.updateMask(bothDatedLtBar).updateMask(agreeDiffLtBar.gte(5)).rename('big_disagree');
+  var bigDisagreeBarPre = bigDisagree.updateMask(onsetYearBar.lt(2007)).rename('big_disagree_bar_pre2007');
+  var bigDisagreeLtPre  = bigDisagree.updateMask(onsetYearLt.lt(2007)).rename('big_disagree_lt_pre2007');
+
   var combined = ee.Image.cat([
     everMined.rename('total'),
     everMined.updateMask(hasBreakCcdc).rename('ccdc'),
     everMined.updateMask(onsetYearLt.mask()).rename('lt'),
-    everMined.updateMask(bothDated).rename('both')
+    everMined.updateMask(onsetYearBar.mask()).rename('bar'),
+    everMined.updateMask(bothDated).rename('ccdc_lt'),
+    everMined.updateMask(bothDatedLtBar).rename('lt_bar'),
+    ltBarExact, ltBarW1, ltBarW2,
+    bigDisagree, bigDisagreeBarPre, bigDisagreeLtPre
   ]);
   var counts = combined.reduceRegion({
     reducer: ee.Reducer.count(), geometry: region, scale: 30, maxPixels: 1e10, tileScale: 4
@@ -346,8 +451,62 @@ function printCoverageStats() {
   print('Ever-mined pixels in ' + (TUNE ? 'AOI box' : 'Ghana') + ':', counts.total);
   print('CCDC dated:', counts.ccdc + ' (' + pct(counts.ccdc) + ' of ever-mined)');
   print('LandTrendr dated:', counts.lt + ' (' + pct(counts.lt) + ' of ever-mined)');
-  print('Both dated (overlap):', counts.both + ' (' + pct(counts.both) + ' of ever-mined)');
-  print('Both dated, mean |diff| (years):', agreeDiff
+  print('Barenblitt dated:', counts.bar + ' (' + pct(counts.bar) + ' of ever-mined -- no magnitude ' +
+        'gate, so <100% here means either a cloud/data gap somewhere in 2000-2017, or the steepest ' +
+        'drop it found fell in 2017 itself, outside the kept 2000-2016 window; see Section 4b)');
+  print('CCDC & LandTrendr both dated (overlap):', counts.ccdc_lt + ' (' + pct(counts.ccdc_lt) + ' of ever-mined)');
+  print('CCDC vs LandTrendr, mean |diff| (years):', agreeDiff
     .reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 30, maxPixels: 1e10, tileScale: 4}));
+  print('LandTrendr & Barenblitt both dated (overlap):', counts.lt_bar + ' (' + pct(counts.lt_bar) + ' of ever-mined)');
+  print('LandTrendr vs Barenblitt, mean |diff| (years):', agreeDiffLtBar
+    .reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 30, maxPixels: 1e10, tileScale: 4}));
+  var pctOfOverlap = function (n) { return (100 * n / counts.lt_bar).toFixed(1) + '%'; };
+  print('LandTrendr vs Barenblitt, of the overlap -- exact:', pctOfOverlap(counts.lt_bar_exact) +
+        '  +-1yr: ' + pctOfOverlap(counts.lt_bar_w1) + '  +-2yr: ' + pctOfOverlap(counts.lt_bar_w2));
+
+  // ---- big-disagreement breakdown (see comment above bigDisagree) ----
+  var pctOfBig = function (n) { return counts.big_disagree > 0 ? (100 * n / counts.big_disagree).toFixed(1) + '%' : 'n/a (0 big disagreements)'; };
+  print('LandTrendr vs Barenblitt, big disagreements (|diff| >= 5yr):', counts.big_disagree +
+        ' (' + pctOfOverlap(counts.big_disagree) + ' of the lt/bar overlap)');
+  print('  of those, Barenblitt picked a pre-2007 year:', counts.big_disagree_bar_pre2007 + ' (' + pctOfBig(counts.big_disagree_bar_pre2007) + ')');
+  print('  of those, LandTrendr picked a pre-2007 year:', counts.big_disagree_lt_pre2007 + ' (' + pctOfBig(counts.big_disagree_lt_pre2007) + ')');
+  print('  (hypothesis: under WINDOW="2000-2016", the Barenblitt share above should be much ' +
+        'higher than the LandTrendr share -- Barenblitt getting pulled onto noisy pre-2007 ' +
+        'composites, not LandTrendr. Compare this run against the same AOI under ' +
+        'WINDOW="2007-2016", where both pre-2007 shares should read 0% by construction.)');
 }
 Map.add(ui.Button({label: 'Print coverage stats', onClick: printCoverageStats, style: {position: 'bottom-left'}}));
+
+// ---------- 6. Legend for the onset-year layers (CCDC / LandTrendr / Barenblitt) ----------
+// onsetVis is a CONTINUOUS gradient (5 palette stops interpolated across min-max), not
+// discrete classes, so the legend is a gradient bar + min/mid/max labels -- not a
+// swatch-per-category list. Built from the exact same visParams Map.addLayer uses for all
+// three onset layers, so the bar's colors are guaranteed to match what's on the map.
+function makeOnsetLegend(visParams, title) {
+  var lon = ee.Image.pixelLonLat().select('longitude');
+  var gradient = lon.multiply((visParams.max - visParams.min) / 100.0).add(visParams.min);
+  var legendImage = gradient.visualize(visParams);
+
+  var thumb = ui.Thumbnail({
+    image: legendImage,
+    params: {bbox: [0, 0, 100, 10], dimensions: '200x12'},
+    style: {stretch: 'horizontal', margin: '0px 8px', maxHeight: '12px'}
+  });
+
+  var labels = ui.Panel({
+    widgets: [
+      ui.Label(String(visParams.min), {margin: '2px 8px'}),
+      ui.Label(String(Math.round((visParams.min + visParams.max) / 2)),
+               {margin: '2px 8px', textAlign: 'center', stretch: 'horizontal'}),
+      ui.Label(String(visParams.max), {margin: '2px 8px'})
+    ],
+    layout: ui.Panel.Layout.flow('horizontal')
+  });
+
+  return ui.Panel({
+    widgets: [ui.Label(title, {fontWeight: 'bold', margin: '4px 8px 0px 8px'}), thumb, labels],
+    style: {position: 'bottom-right', padding: '6px'}
+  });
+}
+
+Map.add(makeOnsetLegend(onsetVis, 'Onset year'));

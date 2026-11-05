@@ -1,4 +1,5 @@
-# validate_product_overlap.R   (was validate_barenblitt_overlap.R -- renamed 2026-09-08)
+# diag_03_product_overlap.R   (was validate_barenblitt_overlap.R, renamed 2026-09-08; renamed again
+# 2026-11-03 to diag_03_product_overlap.R -- see code/1_remote_sensing's diag_NN_* naming convention)
 # Benchmark our RS 2019 mine-probability layer against EVERY external mining product we have,
 # year- and area-matched, to see where our classification sits relative to all existing datasets
 # and how far off the absolute area is.

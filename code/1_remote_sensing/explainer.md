@@ -32,13 +32,19 @@ one-off exploration, and external-dataset EDA under a single numbering scheme:
   unnumbered. **Redefined 2026-08-05:** previously this bucket also held EDA on Maus/Barenblitt
   *training* sources (`validate_mausetal.R`), which wasn't really validation. Retired that; the two
   genuinely independent references for Ghana (Africa Mining Watch, SmallMinesDS) are merged into
-  `validate_external_references.R`. Note the prefix does double duty — some scripts genuinely test
-  against never-trained-on data (`validate_external_references`, `validate_finalproduct`,
-  `validate_spatial_leakage`, `validate_site_timeseries`), others are internal model scoring/tuning
-  (`validate_scoring`, `validate_min_patch_size_filter`, `validate_true_mines_urban_mask_100m`), and
-  `validate_gee_assets` is a pipeline utility.
+  `diag_02_external_references.R`. Note the prefix does double duty — some scripts genuinely test
+  against never-trained-on data (`diag_02_external_references`, `validate_finalproduct`,
+  `validate_site_timeseries`), others are internal model scoring/tuning
+  (`diag_02_scoring`, `validate_min_patch_size_filter`, `validate_true_mines_urban_mask_100m`), and
+  `validate_gee_assets` is a pipeline utility. **Renamed again 2026-11-03:** the "re-run as a
+  decision-ready report when a build_NN stage changes" scripts (`diag_02_scoring`,
+  `diag_02_external_references`, `diag_03_product_overlap`) got the new `diag_NN_*` prefix instead
+  of `validate_*`, which is now reserved for one-off interactive Code-Editor scripts; the same pass
+  archived `validate_spatial_leakage.R` (RS6 spatial-CV backlog item still open, just parked) to
+  `notes/archive/`, plus several temporal-consistency investigation scripts whose questions had
+  been fully answered.
   **Consolidated 2026-09-03:** `validate_ablation_sources.R` + `validate_probability_threshold.R` +
-  `validate_threshold_comparison.R` → one `validate_scoring.R` (repointed off the stale binary CSVs
+  `validate_threshold_comparison.R` → one `diag_02_scoring.R` (repointed off the stale binary CSVs
   onto the current c4 / class-scheme files). Archived to `notes/archive/` the same day:
   `validate_kumasi_urban_check.js`, `validate_low_cutoff_mask_comparison.js`,
   `validate_ghsl_100m_val_scores.R` (urban-confusion investigation, resolved) and
@@ -145,14 +151,14 @@ source combos, all scored on SmallMinesDS-2022. **c4 (4-class: mine/urban/water/
 *worse than binary*, a genuine finding, not just "weaker than c4". Deployed as the national model;
 all 153/153 `mine_prob_ghana_c4_{2017..2025}_t{01..17}` probability tiles are complete on EE
 (`validate_gee_assets.R` confirms). Section 9's SmallMinesDS scoring CSV feeds
-`validate_scoring.R` Part 3; Section 10's tiled export is what `build_03` reads.
+`diag_02_scoring.R` Part 3; Section 10's tiled export is what `build_03` reads.
 
 **Full methodology, results, and honest limitations:** `embedding_classifier_approach.md` — read this
 for the reasoning, not just the code comments.
 
 **Section 9:** scores the actual deployed classifier against held-out SmallMinesDS-2022 at
 continuous probability → `data/raw/embedding/c4_national_val_probability_scores_2022.csv` (feeds
-`validate_scoring.R` Part 3). **Section 10** exports the national probability map, **tiled**:
+`diag_02_scoring.R` Part 3). **Section 10** exports the national probability map, **tiled**:
 one EE asset per (year, tile), `mine_prob_ghana_c4_{yr}_t{NN}` (150 km tiles, ~17 per year), because
 c4's array-typed MULTIPROBABILITY output is too expensive to export whole-country per year. A few
 oversized (year, tile) cells go out as a 3×3 sub-grid (`_t{NN}s{MM}`) and are stitched back by
@@ -189,7 +195,7 @@ rule remain stubbed behind `APPLY_*` flags — the min-patch-size question is no
 `validate_min_patch_size_filter.js` below): the residual flagged area is coherent multi-pixel
 patches, not scattered noise, so size filtering was rejected as a real lever.
 
-**Recall check** (`validate_product_overlap.R`, 2019 deployed mask vs. Barenblitt): **85.8%**
+**Recall check** (`diag_03_product_overlap.R`, 2019 deployed mask vs. Barenblitt): **85.8%**
 artisanal recall — matches the pre-full-stack estimate, i.e. the water/road masks didn't cost real
 detections. Still over-predicts Barenblitt by 2.1–2.5× nationally, expected given industrial
 exclusion is deferred and some FP residual remains (see `validate_fp_source_breakdown.R` below).
@@ -213,15 +219,24 @@ imagery window).
 masks. The old JS CCDC prototype is archived at
 `notes/archive/build_04_backdating_prototype_ccdc.js`.
 
-**Method switch (`METHOD`), two options:**
-- **`"landtrendr"` (v1, the deploy path)** — LandTrendr segmentation of an annual median-NBR series
-  (index inverted so vegetation loss reads as a rise); onset = the year of the single largest drop
-  in the *fitted* (denoised) trajectory within 2000–2016, gated by a minimum disturbance magnitude.
-- **`"barenblitt"` (v0, a replication)** — Barenblitt et al.'s own "NDVI Anomaly Timeline" method,
-  ported line-for-line from their GEE script (Collection 1 → Collection 2): annual max-NDVI,
-  3-year moving average, first difference, `qualityMosaic` on the derivative. Kept so results are
-  directly comparable to their reported 33.8% exact-year / 69.4% ±1yr / 76.1% ±2yr accuracy against
-  their own `MiningConversion_2007-2017` layer.
+**Method (`METHOD`), two options, one deployed:**
+- **`"barenblitt"` — DEPLOYED** (decided 2026-11-04, reversing the earlier LandTrendr-as-deploy
+  plan below). Barenblitt et al.'s own "NDVI Anomaly Timeline" method, ported line-for-line from
+  their GEE script (Collection 1 → Collection 2): annual max-NDVI, 3-year moving average, first
+  difference, `qualityMosaic` on the derivative. No magnitude gate — always assigns a year
+  wherever a 3-yr window exists. Chosen over LandTrendr because its tolerance accuracy (±1/±2yr
+  vs `classifica`) matches or beats LandTrendr's, and it dates ~93–100% of the footprint vs
+  LandTrendr's ~32–34%.
+- **`"landtrendr"` — cross-check only, not deployed.** LandTrendr segmentation of an annual
+  median-NBR series; onset = year of the largest drop in the *fitted* (denoised) trajectory,
+  gated by `LT_MIN_MAGNITUDE`. Feeds the deployed layer's `lt_agree` confidence band (does the
+  independent method land within ±2yr of Barenblitt's pick?) but never supplies a dating.
+
+**Not comparable to Barenblitt's reported 33.8% exact / 69.4% ±1yr / 76.1% ±2yr:** that accuracy
+is against independent analyst visual interpretation (Collect Earth / Google Earth Pro, 1 ha
+blocks, model output hidden; Barenblitt et al. 2021, §2.6/§3.3), whereas scoring against
+`classifica` measures agreement with their algorithm's output, not accuracy against real
+conversion dates.
 
 **Why LandTrendr over CCDC** (the original prototype's method; decided 2026-09-03): 2000–2016 is
 Landsat 5 + SLC-off Landsat 7 over a cloudy country — often under 10 clear observations/year. CCDC's
@@ -230,16 +245,13 @@ is far less parameter-fragile at low observation counts. Barenblitt's own method
 degenerate LandTrendr (a fixed 2-segment assumption + a 3-year smoother instead of a fitted
 trajectory).
 
-**Status as of 2026-09-15:** both methods are implemented and runnable in `TUNE` mode (clipped to
-an Awomaso AOI). A LandTrendr array-dimension bug was found and fixed 2026-09-14 (`arraySlice()`
-left a redundant axis that broke `arrayArgmax()`/`arrayFlatten()` downstream — fixed with
-`arrayProject()`), but **the fix itself is still untested against a known site** — that's the next
-check once EE capacity frees up, before trusting any onset year. Section 8's validation against
-Barenblitt's `classifica` field (per-polygon conversion year, 2007–2017) uploads ~54k polygon
-centroids as 6 chunked point assets (works around EE's table-upload payload limit); **2 of 6
-chunks have landed**, the rest are queued behind the same exhausted EE quota blocking `build_03`'s
-2025 export — Section 8 re-submits only the missing chunks and stops until all 6 exist, then merges
-them server-side (`$merge()`) and samples the onset raster at the merged points.
+**Status as of 2026-11-05: DEPLOYED, `ONSET_MIN=2005`.** National 4-band asset
+`mine_onset_year_2005_2016_barenblitt` (`onset_year`, `ndvi_deriv_x1000` confidence, `reference_tier`
+— 0=no_reference for 2005-06/1=classifica_comparable for ≥2007, `lt_agree`) exported and landed.
+`ONSET_MIN` moved from 2007→2005 after confirming the earlier 2007 cutoff was a `classifica`
+label-floor artifact (classifica can't contain a year <2007), not a real imagery-quality cliff —
+see `diag_04_backdating.R`'s own window-sweep below. Full validation results (same session) are
+under `diag_04_backdating.R`.
 
 **Caveats baked into the script:** only dates pixels still visible as mined in 2017+ (mines that
 opened and fully revegetated before 2017 are invisible to it); a detected "break" is a spectral
@@ -250,7 +262,48 @@ the anchor footprint aggregated to majority-mined per 30 m cell; pre-2012 timing
 
 ---
 
-## validate_scoring.R
+## diag_04_backdating.R
+
+**Purpose:** Decision-ready diagnostics for `build_04_backdating.R` — re-run whenever the anchor,
+`METHOD`, `ONSET_MIN`/`MAX`, or `LT_MIN_MAGNITUDE` changes. Eight capabilities: score an
+already-downloaded classifica CSV; submit+score a new method/window combo end-to-end; a fast
+subsample pre-check; a `LT_MIN_MAGNITUDE` sweep; a scene-coverage (clear-obs/year) diagnostic;
+a yearly expansion TREND comparison vs Barenblitt; a backdating/classifier seam continuity check;
+a spatial-vs-timing disagreement decomposition.
+
+**Validation results (2026-11-05), deployed asset, within `bar_hull` (Barenblitt's own SW
+study-area hull):**
+- **Pixel-level, vs `classifica`:** exact 14.3%, ±1yr 51.0%, ±2yr 60.6% (n=37,689) — see the
+  caveat above on what this number does and doesn't mean.
+- **Annual-expansion trend vs Barenblitt, 2007–2016:** annual-growth r=0.62, cumulative r=0.99.
+  The cumulative figure is not very informative on its own (two series that both trend upward
+  over a decade are mechanically highly correlated regardless of whether specific years line up)
+  — the annual r=0.62 is the real signal, and sits right at the edge of significance for n=10.
+  2007–2013 tracks well; 2014–2016 diverges (Barenblitt peaks 2014 then declines, ours keeps
+  accelerating) — plausibly Barenblitt's own classifica confirmation lag near the end of their
+  study period, but not confirmed (their own 2017 count doesn't show the same drop, which argues
+  against a simple right-censoring story).
+- **Backdating/classifier seam (2005–2025, `bar_hull`):** growth continues past the 2017 handoff
+  without an implausible jump, though the very first classifier-era year (2017) isn't a clean
+  comparison to the backdated series' last point — native-10m vs the backdated layer's
+  30m-majority-rule reprojection differ by construction, so part of any apparent jump there is a
+  resolution artifact, not real growth.
+- **Spatial vs timing decomposition** (all 53,793 Barenblitt conversion points, not just the
+  ones that survive a plain sampleRegions() join): 60.9% both methods agree + dated, 18.6% we
+  recognize the pixel as a mine but couldn't confidently date it, 14.9% genuine spatial miss
+  (never detected by us in any year 2017–2025), 5.6% detected, just after our 2017 anchor.
+  Conditional on spatial agreement, timing accuracy is exact 16.5% / ±1yr 58.6% / ±2yr 69.7% —
+  better than the unconditional number, but timing error remains a real, substantial factor on
+  its own, not just an artifact of spatial disagreement.
+
+**Overall read:** good enough to build on (`b_04_rs_mining_panel.R`), not a validated layer —
+consistent with how this project has always treated Barenblitt comparisons (*agreement*, not
+*accuracy*; their own producer accuracy is 75.6%, so part of any gap may be on their side too).
+The 2005–2016 portion of any downstream panel carries real, non-trivial dating uncertainty.
+
+---
+
+## diag_02_scoring.R
 
 **Purpose:** All SmallMinesDS-2022 scoring of the embedding classifier in one place — consolidates
 (2026-09-03) `validate_ablation_sources.R` + `validate_threshold_comparison.R` +
@@ -371,7 +424,7 @@ attribution, before deciding whether it's a real problem.
 
 ---
 
-## validate_product_overlap.R
+## diag_03_product_overlap.R
 
 **Purpose:** Benchmarks our RS mine layer against every external mining product available for
 Ghana — Barenblitt (SW-hull only, positive-labels-only), Maus et al. 2022 (global, industrial-
@@ -403,7 +456,7 @@ cutoff X" numbers; only the `deployed` row reflects the actual current pipeline.
 
 ---
 
-## validate_spatial_leakage.R
+## validate_spatial_leakage.R -- ARCHIVED 2026-11-03 (notes/archive/, question still open, just parked)
 
 **Purpose:** Cheap diagnostic for the RS6 spatial-CV backlog item. AlphaEarth embeddings are
 spatially autocorrelated, so a SmallMinesDS validation point sitting near a training positive may
@@ -411,7 +464,10 @@ be "easy" even though never literally trained on — if so, the whole project's 
 optimistic exactly where it matters least (the northern predictions, the reason the classifier runs
 nationally). For each validation point it computes distance to the nearest training-positive point
 and checks whether accuracy at the deployed cutoff degrades with that distance. Flat = reassuring.
-Not yet run.
+Not yet run. **Also stale as written** (2026-11-03 review): points at the old `mine_prob_ghana_2022`
+single-binary-model asset and `PROB_THRESHOLD <- 55`, not the current `mine_prob_ghana_c4_{yr}`
+tiled asset / cutoff 45 -- needs repointing to the deployed model before it can answer the question
+for real.
 
 ---
 
@@ -436,7 +492,7 @@ port reference until `build_03` §5 is confirmed working, then archive.
 
 ---
 
-## validate_external_references.R
+## diag_02_external_references.R
 
 **Purpose:** The two genuinely independent (never-trained-on) mining references for Ghana —
 Africa Mining Watch (AMW) early ML detections and SmallMinesDS expert masks — in one script.
@@ -461,7 +517,7 @@ cross-check one training input against another.
   South 728 / Upper Denkyira West 698 / Bekwai Municipal 652 — the Amansie–Bekwai–Obuasi gold
   belt, Ashanti + Central regions); 11 more districts are touched with single/double-digit counts,
   almost certainly patches straddling a district boundary rather than real independent coverage.
-  **This matters because `validate_scoring.R` scores everything against SmallMinesDS** — so this
+  **This matters because `diag_02_scoring.R` scores everything against SmallMinesDS** — so this
   5-district cluster is the *only* ground truth the classifier's accuracy numbers are actually
   measured against. National predictions outside it — especially northern Ghana, a key reason the
   classifier is run nationally at all — rest entirely on the classifier generalising, with no
@@ -536,7 +592,7 @@ panel) breaks, the time series still stands alone.
   `validate_ghsl_100m_val_scores.R`. Also `trial_4class_classifier.R` — superseded by `build_02`'s
   native c4 training, kept as the provenance record for the still-live `mc4_train_pts_tagged` EE
   asset (do not delete that asset; `validate_min_patch_size_filter.js` retrains from it).
-- **Consolidated 2026-09-03** into `validate_scoring.R` (originals deleted, not archived — pure
+- **Consolidated 2026-09-03** into `diag_02_scoring.R` (originals deleted, not archived — pure
   refactor): `validate_ablation_sources.R`, `validate_probability_threshold.R`,
   `validate_threshold_comparison.R`.
 - Earlier archived (see `notes/archive/`): `validate_ntrees_ablation.R`,

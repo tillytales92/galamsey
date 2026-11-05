@@ -79,7 +79,7 @@ SITES <- list(
 SITE           <- "awomaso"
 YEARS          <- 2017:2025
 PROB_THRESHOLD <- 45                       # uint8 percent; settled cutoff (2026-08-18,
-                                            # project_4class_urban_confusion). See validate_scoring.R
+                                            # project_4class_urban_confusion). See diag_02_scoring.R
                                             # for where it sits on the PR/ROC curve.
 MAP_YEARS      <- c(min(YEARS), max(YEARS))   # which years get a map panel (each is a download -- keep small)
 

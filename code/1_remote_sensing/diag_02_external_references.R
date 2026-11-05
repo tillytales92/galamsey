@@ -1,4 +1,5 @@
-# validate_external_references.R
+# diag_02_external_references.R  (renamed 2026-11-03 from validate_external_references.R -- see
+# code/1_remote_sensing's diag_NN_* naming convention)
 # The two genuinely independent (never-trained-on) mining references available for Ghana:
 # Africa Mining Watch (AMW) early ML detections, and SmallMinesDS (Ofori-Ampofo et al. 2025)
 # expert masks. Merged into one script 2026-08-05 (was validate_africa_mining_watch.R +
@@ -517,4 +518,4 @@ message(sprintf("Wrote: %s", file.path(fig_dir, "smallminesds_vs_classifier_2022
 
 }  # RUN_PART3
 
-message("\n=== validate_external_references.R complete ===")
+message("\n=== diag_02_external_references.R complete ===")
