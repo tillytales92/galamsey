@@ -59,15 +59,24 @@ MASK_YEARS  <- 2017L   # anchor = mined-as-of-2017 only, not the 2017-2025 union
                         # including it here would just force a spurious "no break"/invented
                         # pre-2017 onset.
 
-ONSET_MIN <- 2005L   # output onset-year window start. Compromise between Barenblitt's own 2007
+ONSET_MIN <- 2000L  # output onset-year window start. Compromise between Barenblitt's own 2007
                       # start and the original 2000: classifica agreement improves at 2007, but
                       # that's mostly a label-floor artifact (classifica never has a year < 2007)
                       # rather than evidence 2000-2006 imagery is worse -- scene-coverage data
                       # shows no real cliff at 2007, only at 2013 (Landsat 8). See `reference_tier`
                       # (Section 8): nothing dated 2005-2006 has ANY classifica comparison at all.
 ONSET_MAX <- 2016L   # 2017+ conversions are the embeddings' job
-IMG_START <- 1999L   # imagery context window (padding for the 3yr MA / LandTrendr fit),
-                      # independent of ONSET_MIN -- candidate onset years are gated separately.
+IMG_START <- 1998L   # imagery context window (padding for the 3yr MA / LandTrendr fit). NOT fully
+                      # independent of ONSET_MIN despite candidate onset years being gated
+                      # separately below: the "barenblitt" branch's deriv_years starts at
+                      # IMG_START+2 (3yr MA needs a year each side, then a first difference needs
+                      # one more), so IMG_START must be <= ONSET_MIN-2 or the window's REAL floor
+                      # silently becomes ONSET_MIN+1 (the gte(ONSET_MIN) mask below then has nothing
+                      # at ONSET_MIN to pass through). 1999 has 6yr of headroom for ONSET_MIN=2005
+                      # (more than the minimum, deliberately -- LandTrendr's cross-check benefits
+                      # from more fitting context). Re-running at a different ONSET_MIN (e.g. to
+                      # test whether early-years pileup is a window-floor artifact, see explainer.md)
+                      # needs IMG_START dropped to match -- e.g. ONSET_MIN=2000 needs IMG_START<=1998.
 IMG_END   <- 2018L
 EXPORT_SCALE <- 30L   # Landsat native
 
@@ -375,7 +384,10 @@ if (!TUNE && RUN_VALIDATION) {
                                          scale = EXPORT_SCALE, tileScale = 8L)
     task <- ee$batch$Export$table$toDrive(
       collection = sampled$select(c("classifica", "onset_year")),
-      description = sprintf("build_04_onset_vs_barenblitt_%s", METHOD),
+      # min/max suffixed (not just METHOD) -- re-running this section at a different ONSET_MIN/MAX
+      # window (e.g. the 2000/2007 comparison runs, see explainer.md) must NOT collide on Drive or
+      # locally with the already-scored 2005-2016 build_04_onset_vs_barenblitt_barenblitt.csv.
+      description = sprintf("build_04_onset_vs_barenblitt_%s_min%d_max%d", METHOD, ONSET_MIN, ONSET_MAX),
       folder = "ghana_mining_gee_exports", fileFormat = "CSV")
     task$start()
     message("Submitted onset-vs-classifica export -> outputs/tables/backdating/. Prefer ",
@@ -413,9 +425,11 @@ if (!TUNE && RUN_DROPOUT_DIAGNOSTIC) {
                                          scale = EXPORT_SCALE, tileScale = 8L)
   diag_task <- ee$batch$Export$table$toDrive(
     collection = diag_sampled$select(c("classifica", "ever_mined_flag", "max_mag", "onset_raw")),
-    # hardcoded "landtrendr" (not METHOD) -- this diagnostic is always about
-    # onset_lt_raw/max_mag_lt regardless of what METHOD is set to.
-    description = "build_04_dropout_diagnostic_landtrendr",
+    # hardcoded "landtrendr" (not METHOD) -- this diagnostic is always about onset_lt_raw/max_mag_lt
+    # regardless of what METHOD is set to. min/max suffixed -- LandTrendr's own result DOES depend
+    # on IMG_START/IMG_END/ONSET_MIN/MAX, so a different window's export must not collide with the
+    # already-scored 2005-2016 build_04_dropout_diagnostic_landtrendr.csv (same reasoning as Section 10).
+    description = sprintf("build_04_dropout_diagnostic_landtrendr_min%d_max%d", ONSET_MIN, ONSET_MAX),
     folder = "ghana_mining_gee_exports", fileFormat = "CSV")
   diag_task$start()
   message("Submitted dropout-diagnostic export (all classifica points, none dropped) -> ",

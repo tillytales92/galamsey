@@ -372,6 +372,101 @@ top10_districts |>
   theme_minimal(base_size = 12)
 ```
 
+## 6c. Mining encroachment on protected areas, `r max(EMBED_YEARS)`
+
+How much of each district's cumulative gold mining footprint falls inside a WDPA/WDOECM
+**Designated** protected area (national parks, forest reserves, etc. -- "Proposed" sites excluded,
+not yet legally protected). Same public GEE catalog asset
+(`WCMC/WDPA/current/polygons` + `WCMC/WDOECM/current/polygons`) as `explore_mining_vs_forest_type_app.js`'s
+protected-area toggle layer -- no separate upload needed, always current.
+
+```{r protected-areas-reduce}
+protected_areas_ee <- ee$FeatureCollection("WCMC/WDPA/current/polygons")$
+  merge(ee$FeatureCollection("WCMC/WDOECM/current/polygons"))$
+  filter(ee$Filter$And(ee$Filter$eq("ISO3", "GHA"), ee$Filter$eq("STATUS", "Designated")))   # And(),
+  # NOT and() -- `and` is a reserved Python keyword, so the EE Python client (which rgee calls into
+  # via reticulate) exposes this combinator capitalized specifically to avoid that collision. JS
+  # doesn't have this restriction (explore_mining_vs_forest_type_app.js's lowercase .and() is fine).
+protected_mask <- ee$Image()$byte()$paint(protected_areas_ee, 1)$unmask(0)   # 1 = inside a PA
+
+# Reuses cum_mine_by_year (Section 1) -- the latest year's cumulative union, not a new EE pull.
+latest_cum_mine <- cum_mine_by_year[[as.character(max(EMBED_YEARS))]]
+pa_bands <- ee$Image$cat(list(
+  latest_cum_mine$multiply(area_km2)$multiply(protected_mask)$rename("mining_in_pa"),
+  protected_mask$multiply(area_km2)$rename("pa_area")   # district's total PA area, for context
+))
+
+pa_dsn <- here("outputs", "tables", "diag05_district_protected_overlap_raw.csv")
+dir.create(dirname(pa_dsn), recursive = TRUE, showWarnings = FALSE)
+
+if (drive_download_export("diag05_district_protected_overlap", pa_dsn)) {
+  message("Found existing diag05_district_protected_overlap export on Drive -- skipping resubmission.")
+} else {
+  pa_reduced <- pa_bands$reduceRegions(
+    collection = districts_ee, reducer = ee$Reducer$sum(), scale = 30, tileScale = 8L
+  )
+  pa_task <- ee$batch$Export$table$toDrive(
+    collection = pa_reduced$select(c("adm2_name", "mining_in_pa", "pa_area")),
+    description = "diag05_district_protected_overlap", folder = DRIVE_FOLDER, fileFormat = "CSV"
+  )
+  pa_task$start()
+  message("Submitted district protected-overlap export -- BLOCKING until done.")
+  poll_task(pa_task)
+  if (!drive_download_export("diag05_district_protected_overlap", pa_dsn))
+    stop("Export completed but file not found in Drive folder '", DRIVE_FOLDER, "' -- check manually.")
+}
+
+pa_stats <- read_csv(pa_dsn, show_col_types = FALSE)
+
+protected_overlap <- district_panel |>
+  transmute(adm2_name, adm1_name, mining_total = .data[[latest_col]]) |>
+  left_join(pa_stats |> select(adm2_name, mining_in_pa, pa_area), by = "adm2_name") |>
+  mutate(
+    across(c(mining_in_pa, pa_area), ~ replace_na(.x, 0)),
+    pct_mining_in_pa = if_else(mining_total > 0, 100 * mining_in_pa / mining_total, NA_real_)
+  )
+write_csv(protected_overlap, here("outputs", "tables", "mining_protected_overlap_by_district.csv"))
+# Hardcoded path, NOT out_dir -- out_dir is a generic variable name (also used, with a DIFFERENT
+# value, in a_01_incidence_maps_rs.R); if that script's chunks run in the same interactive R
+# session before this one, out_dir's stale value silently redirected this file into
+# outputs/figures/maps/hex5km_rs/ instead of outputs/tables/ (hit 2026-11-05, the CSV this
+# section's own JS-conversion step read from). The actual landed CSV at that path was already
+# converted into explore_mining_vs_forest_type_app.js's DISTRICT_PROTECTED_STATS.
+```
+
+```{r protected-areas-national}
+nat_mining_in_pa <- sum(protected_overlap$mining_in_pa)
+nat_mining_total <- sum(protected_overlap$mining_total)
+cat(sprintf(
+  "National: %.1f km2 (%.1f%%) of cumulative gold mining through %d falls inside a Designated protected area.\n",
+  nat_mining_in_pa, 100 * nat_mining_in_pa / nat_mining_total, max(EMBED_YEARS)))
+```
+
+```{r protected-areas-table}
+protected_overlap |>
+  filter(mining_in_pa > 0) |>
+  arrange(desc(mining_in_pa)) |>
+  slice_head(n = 15) |>
+  kable(digits = 1, caption = paste0(
+    "Top 15 districts by gold mining area inside a Designated protected area, through ", max(EMBED_YEARS)))
+```
+
+```{r protected-areas-bar}
+protected_overlap |>
+  filter(mining_in_pa > 0) |>
+  slice_max(mining_in_pa, n = 15) |>
+  mutate(district_label = paste0(adm2_name, " (", adm1_name, ")"),
+         district_label = fct_reorder(district_label, mining_in_pa)) |>
+  ggplot(aes(x = mining_in_pa, y = district_label, fill = pct_mining_in_pa)) +
+  geom_col() +
+  scale_fill_gradientn(colours = MINING_PALETTE, trans = "sqrt", labels = \(x) paste0(round(x), "%"),
+                        name = "% of district's\nmining in a PA") +
+  labs(x = "Mining area inside a protected area (km2)", y = NULL,
+       title = paste0("Gold mining encroachment on protected areas, top 15 districts, through ", max(EMBED_YEARS)),
+       caption = "WDPA/WDOECM, Designated status only. Bar length = absolute area; fill = share of that district's own mining.") +
+  theme_minimal(base_size = 12)
+```
+
 ## 7. Recommendation
 
 Read off section 3's table for the MIN_MINING_KM2 value that drops the long tail of

@@ -8,9 +8,9 @@
 // what forest TYPE cumulative mining expansion has actually replaced over time, at a user-chosen
 // administrative unit (district only, see 2026-11-04 note below). Map + three charts (cumulative
 // mining trend 2017-2025, land-type breakdown 2020-2025, "what did NEW mining growth displace") +
-// two GIFs (forest-type palette over 2020-2025, and real satellite imagery over 2015-2025) + a
-// left/right "swipe" year comparison (forest-type/mining layers over the generic Satellite
-// basemap).
+// two GIFs (forest-type palette over 2020-2025, and real satellite imagery over 2015-2025).
+// (The left/right "swipe" year comparison and the "Try a district" example buttons described in
+// the dated notes below were both removed 2026-11-05, user call -- not needed.)
 //
 // *** 2026-11-03 REWRITE (user request): region/district picker, dropdown-driven ***
 // Replaced the preset-district-list + click-to-pick-a-point mechanism with a Region dropdown
@@ -91,8 +91,8 @@
 // *** 2020-ONLY BASELINE, NOT AN ANNUAL SERIES ***
 // The blog post mentions an annual 2017-2025 ForTy time series, but its EE asset ID could not be
 // confirmed from available documentation -- this script uses ForTy's fixed 2020 baseline instead.
-// The land-type-breakdown chart, the growth-composition chart, the GIF, the map year slider, and the
-// swipe comparison are all trimmed to DISPLAY_YEARS (2020-2025) for this reason. The cumulative-
+// The land-type-breakdown chart, the growth-composition chart, the GIF, and the map year slider are
+// all trimmed to DISPLAY_YEARS (2020-2025) for this reason. The cumulative-
 // mining TREND chart is the one exception -- it doesn't depend on ForTy at all, so it still runs the
 // full EMBED_YEARS (2017-2025).
 //
@@ -120,7 +120,7 @@ var SATELLITE_YEARS = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 202
 // against it implies the basemap was accurate for years it predates. EMBED_YEARS itself stays the
 // FULL 2017-2025 classifier range on purpose -- cumMineByYear (STEP 3) must keep accumulating from
 // 2017 so that e.g. cumMineByYear[2020] is the TRUE cumulative footprint through 2020, not just
-// 2020's own mask; only the ForTy-dependent charts/GIF/slider/swipe are trimmed to DISPLAY_YEARS.
+// 2020's own mask; only the ForTy-dependent charts/GIF/slider are trimmed to DISPLAY_YEARS.
 var DISPLAY_START_YEAR = 2020;
 var DISPLAY_YEARS = EMBED_YEARS.filter(function (yr) { return yr >= DISPLAY_START_YEAR; });
 
@@ -164,6 +164,291 @@ print("ADMIN2 (district) sample feature -- check property names here if the Dist
       ADMIN2.first());
 
 var GHANA_GEOM = ADMIN1.geometry();   // union of all regions -- used to clip the forest-type layer
+
+// Protected areas -- pulled directly from GEE's public WDPA/WDOECM catalog (confirmed working in
+// the Code Editor 2026-11-05: WCMC/WDPA/current/polygons + WCMC/WDOECM/current/polygons), NOT our
+// own upload -- no asset to maintain, always current. Ghana + Designated only (excludes "Proposed"
+// sites, not yet legally protected). Used for protectedLayer only (STEP 10, outline, toggled via
+// protectedCheckbox STEP 9) -- display is lazy-tiled so it's cheap. The per-district mining-in-PA
+// STAT is deliberately NOT computed live here (see DISTRICT_PROTECTED_STATS below) -- an earlier
+// version did reduce a painted protectedMask inside showStats() and it measurably slowed down
+// every "Generate stats" click (painting the whole merged WDPA+WDOECM collection per click, not
+// just the few sites near the selection). Precomputed lookup instead: this stat is cross-sectional
+// anyway (not a time series), so there's no reason to ever recompute it per click.
+var PROTECTED_AREAS = ee.FeatureCollection("WCMC/WDPA/current/polygons")
+  .merge(ee.FeatureCollection("WCMC/WDOECM/current/polygons"))
+  .filter(ee.Filter.and(
+    ee.Filter.eq("ISO3", "GHA"),
+    ee.Filter.eq("STATUS", "Designated")
+  ));
+
+// Populated 2026-11-05 from diag_05_mining_by_region.qmd Section 6c's output
+// (outputs/figures/mining_protected_overlap_by_district.csv, converted to this literal object --
+// not an EE asset, a plain JS object keeps the lookup a zero-cost client-side read, no round trip
+// at all). Re-run Section 6c and regenerate (same conversion, see that session's scratch script)
+// if the underlying mining/protected-area data ever changes.
+var DISTRICT_PROTECTED_STATS = {
+  "Ablekuma Central Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Ablekuma North Municipal": {miningInPaHa: 0, paTotalHa: 5.25},
+  "Ablekuma West Municipal": {miningInPaHa: 0.02, paTotalHa: 155.13},
+  "Abuakwa North": {miningInPaHa: 0, paTotalHa: 18.61},
+  "Abuakwa South": {miningInPaHa: 0, paTotalHa: 436.22},
+  "Abura-Asebu-Kwamankese": {miningInPaHa: 21.12, paTotalHa: 898.98},
+  "Accra Metropolis": {miningInPaHa: 0, paTotalHa: 0},
+  "Achiase": {miningInPaHa: 0.04, paTotalHa: 11738.53},
+  "Ada East": {miningInPaHa: 73.48, paTotalHa: 26255.01},
+  "Ada West": {miningInPaHa: 151.08, paTotalHa: 12907.96},
+  "Adaklu": {miningInPaHa: 0, paTotalHa: 7726.29},
+  "Adansi Akrofuom": {miningInPaHa: 296.36, paTotalHa: 12883.88},
+  "Adansi Asokwa": {miningInPaHa: 2.92, paTotalHa: 10564.25},
+  "Adansi North": {miningInPaHa: 2.67, paTotalHa: 1754.83},
+  "Adansi South": {miningInPaHa: 4.02, paTotalHa: 16036.5},
+  "Adenta Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Afadzato South": {miningInPaHa: 0, paTotalHa: 0},
+  "Afigya Kwabre North": {miningInPaHa: 0, paTotalHa: 1232.37},
+  "Afigya Kwabre South": {miningInPaHa: 0, paTotalHa: 0},
+  "Agona East": {miningInPaHa: 0, paTotalHa: 0},
+  "Agona West Municipal": {miningInPaHa: 0, paTotalHa: 10.14},
+  "Agotime Ziope": {miningInPaHa: 0, paTotalHa: 0},
+  "Ahafo Ano North": {miningInPaHa: 0.02, paTotalHa: 2060.1},
+  "Ahafo Ano South East": {miningInPaHa: 0, paTotalHa: 3630.14},
+  "Ahafo Ano South West": {miningInPaHa: 1.86, paTotalHa: 21451.06},
+  "Ahanta West Municipal": {miningInPaHa: 9.62, paTotalHa: 5862.48},
+  "Ajumako-Enyan-Essiam": {miningInPaHa: 0, paTotalHa: 0},
+  "Akatsi North": {miningInPaHa: 0, paTotalHa: 0},
+  "Akatsi South": {miningInPaHa: 10.36, paTotalHa: 18890.36},
+  "Akwapem North": {miningInPaHa: 0, paTotalHa: 0},
+  "Akwapem South": {miningInPaHa: 0, paTotalHa: 0},
+  "Akyem Mansa": {miningInPaHa: 12.16, paTotalHa: 1443.53},
+  "Amansie Central": {miningInPaHa: 2694.02, paTotalHa: 13655.5},
+  "Amansie South": {miningInPaHa: 609.05, paTotalHa: 14587.87},
+  "Amansie West": {miningInPaHa: 682.11, paTotalHa: 4279.92},
+  "Anloga": {miningInPaHa: 230.66, paTotalHa: 23222.02},
+  "Aowin": {miningInPaHa: 545.41, paTotalHa: 128756.21},
+  "Asante Akim Central Municipal": {miningInPaHa: 0.02, paTotalHa: 14.51},
+  "Asante Akim North": {miningInPaHa: 0.18, paTotalHa: 37145.23},
+  "Asante Akim South": {miningInPaHa: 104.51, paTotalHa: 32192.67},
+  "Asene Akroso Manso": {miningInPaHa: 3.71, paTotalHa: 6071.87},
+  "Ashaiman Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Asikuma-Odoben-Brakwa": {miningInPaHa: 0.36, paTotalHa: 8742.29},
+  "Asokore Mampong Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Asokwa Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Assin Fosu": {miningInPaHa: 0, paTotalHa: 5856.62},
+  "Assin North": {miningInPaHa: 0, paTotalHa: 195.82},
+  "Assin South": {miningInPaHa: 0, paTotalHa: 34586.38},
+  "Asunafo North Municipal": {miningInPaHa: 0.53, paTotalHa: 51798.81},
+  "Asunafo South": {miningInPaHa: 0.02, paTotalHa: 18489.15},
+  "Asuogyaman": {miningInPaHa: 0, paTotalHa: 26.08},
+  "Asutifi North": {miningInPaHa: 0, paTotalHa: 36308.06},
+  "Asutifi South": {miningInPaHa: 84.54, paTotalHa: 10690.54},
+  "Atebubu Amantin": {miningInPaHa: 0, paTotalHa: 0},
+  "Atiwa East": {miningInPaHa: 0, paTotalHa: 17918.93},
+  "Atiwa West": {miningInPaHa: 7.47, paTotalHa: 21536.33},
+  "Atwima Kwanwoma": {miningInPaHa: 0, paTotalHa: 0},
+  "Atwima Mponua": {miningInPaHa: 284.68, paTotalHa: 59125.88},
+  "Atwima Nwabiagya North": {miningInPaHa: 0, paTotalHa: 0},
+  "Atwima Nwabiagya South": {miningInPaHa: 42.76, paTotalHa: 1279.72},
+  "Awutu Senya": {miningInPaHa: 3.47, paTotalHa: 446.66},
+  "Awutu Senya East": {miningInPaHa: 0, paTotalHa: 0},
+  "Ayawaso Central Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Ayawaso East Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Ayawaso North Municipal": {miningInPaHa: 0, paTotalHa: 5.36},
+  "Ayawaso West": {miningInPaHa: 0.44, paTotalHa: 151.41},
+  "Ayensuano": {miningInPaHa: 0.3, paTotalHa: 71.33},
+  "Banda": {miningInPaHa: 8.34, paTotalHa: 108075.54},
+  "Bawku Municipal": {miningInPaHa: 0, paTotalHa: 626.96},
+  "Bawku West": {miningInPaHa: 9.41, paTotalHa: 20808.16},
+  "Bekwai Municipal": {miningInPaHa: 0.45, paTotalHa: 26.9},
+  "Berekum East Municipal": {miningInPaHa: 0.35, paTotalHa: 20305.92},
+  "Berekum West": {miningInPaHa: 0, paTotalHa: 9307.77},
+  "Bia East": {miningInPaHa: 0.62, paTotalHa: 33950.7},
+  "Bia West": {miningInPaHa: 50.13, paTotalHa: 72251.64},
+  "Biakoye": {miningInPaHa: 0, paTotalHa: 12148.98},
+  "Bibiani-Anhwiaso-Bekwai Municipal": {miningInPaHa: 617.8, paTotalHa: 26231.14},
+  "Binduri": {miningInPaHa: 0, paTotalHa: 836.14},
+  "Birim Central Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Birim North": {miningInPaHa: 2.28, paTotalHa: 11168.54},
+  "Birim South": {miningInPaHa: 10.85, paTotalHa: 7427.97},
+  "Bodi": {miningInPaHa: 44.11, paTotalHa: 16902.71},
+  "Bole": {miningInPaHa: 103.67, paTotalHa: 184777.36},
+  "Bolga East": {miningInPaHa: 0, paTotalHa: 0},
+  "Bolgatanga Municipal": {miningInPaHa: 0, paTotalHa: 11852.67},
+  "Bongo": {miningInPaHa: 0.78, paTotalHa: 2535.06},
+  "Bosome Freho": {miningInPaHa: 39.16, paTotalHa: 16050.39},
+  "Bosomtwe": {miningInPaHa: 2.4, paTotalHa: 607.04},
+  "Builsa North": {miningInPaHa: 0, paTotalHa: 13489.41},
+  "Builsa South": {miningInPaHa: 0, paTotalHa: 17224.31},
+  "Bunkpurugu Nakpanduri": {miningInPaHa: 0, paTotalHa: 9127},
+  "Cape Coast Metropolitan": {miningInPaHa: 0.78, paTotalHa: 257.3},
+  "Central Gonja": {miningInPaHa: 14.67, paTotalHa: 81016.85},
+  "Central Tongu": {miningInPaHa: 0, paTotalHa: 9},
+  "Chereponi": {miningInPaHa: 0, paTotalHa: 0},
+  "Daffiama Bussie Issa": {miningInPaHa: 0, paTotalHa: 15500.75},
+  "Denkyembour": {miningInPaHa: 0, paTotalHa: 30.03},
+  "Dormaa East": {miningInPaHa: 0, paTotalHa: 72.93},
+  "Dormaa Municipal": {miningInPaHa: 0, paTotalHa: 49254.21},
+  "Dormaa West": {miningInPaHa: 0, paTotalHa: 360.99},
+  "East Gonja Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "East Mamprusi": {miningInPaHa: 13.65, paTotalHa: 28523.96},
+  "Effia Kwesimintsim Municipal": {miningInPaHa: 0.28, paTotalHa: 0.28},
+  "Effutu Municipal": {miningInPaHa: 7.61, paTotalHa: 2900.09},
+  "Ejisu Municipal": {miningInPaHa: 0, paTotalHa: 85.35},
+  "Ejura-Sekyedumase": {miningInPaHa: 0.18, paTotalHa: 19954.35},
+  "Ekumfi": {miningInPaHa: 0, paTotalHa: 0},
+  "Ellembelle": {miningInPaHa: 0.18, paTotalHa: 10815.93},
+  "Fanteakwa North": {miningInPaHa: 0, paTotalHa: 30328.25},
+  "Fanteakwa South": {miningInPaHa: 0, paTotalHa: 2727.08},
+  "Ga Central Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Ga East": {miningInPaHa: 0, paTotalHa: 1.94},
+  "Ga North Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Ga South Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Ga West Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Garu": {miningInPaHa: 0.19, paTotalHa: 6251.9},
+  "Gomoa Central": {miningInPaHa: 4.33, paTotalHa: 3259.7},
+  "Gomoa East": {miningInPaHa: 14.41, paTotalHa: 4088.43},
+  "Gomoa West": {miningInPaHa: 0, paTotalHa: 0},
+  "Gushegu": {miningInPaHa: 0, paTotalHa: 8135.04},
+  "Ho Municipal": {miningInPaHa: 0, paTotalHa: 963.67},
+  "Ho West": {miningInPaHa: 0, paTotalHa: 1766.32},
+  "Hohoe Municipal": {miningInPaHa: 0, paTotalHa: 6000.37},
+  "Jaman North": {miningInPaHa: 0, paTotalHa: 48.68},
+  "Jaman South Municipal": {miningInPaHa: 0, paTotalHa: 160.06},
+  "Jasikan": {miningInPaHa: 0, paTotalHa: 2638.86},
+  "Jirapa": {miningInPaHa: 0, paTotalHa: 0},
+  "Jomoro": {miningInPaHa: 2.51, paTotalHa: 50683.86},
+  "Juaben Municipal": {miningInPaHa: 0, paTotalHa: 2811.43},
+  "Juaboso": {miningInPaHa: 177.92, paTotalHa: 91184.68},
+  "Kadjebi": {miningInPaHa: 0, paTotalHa: 10937.53},
+  "Karaga": {miningInPaHa: 0, paTotalHa: 23461.34},
+  "Kasena Nankana East": {miningInPaHa: 0, paTotalHa: 16213.11},
+  "Kasena Nankana West": {miningInPaHa: 0, paTotalHa: 18163.72},
+  "Keta Municipal": {miningInPaHa: 129.18, paTotalHa: 51378.29},
+  "Ketu North": {miningInPaHa: 0.09, paTotalHa: 238.58},
+  "Ketu South": {miningInPaHa: 88.29, paTotalHa: 9973.41},
+  "Kintampo North Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Kintampo South": {miningInPaHa: 0, paTotalHa: 16263.43},
+  "Komenda-Edina-Eguafo-Abirem Municipal": {miningInPaHa: 8.91, paTotalHa: 471.79},
+  "Korle Klottey Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Kpandai": {miningInPaHa: 0, paTotalHa: 0},
+  "Kpando Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Kpone Katamanso": {miningInPaHa: 0, paTotalHa: 0},
+  "Krachi East Municipal": {miningInPaHa: 0, paTotalHa: 15640.6},
+  "Krachi Nchumuru": {miningInPaHa: 0, paTotalHa: 0},
+  "Krachi West": {miningInPaHa: 0, paTotalHa: 0},
+  "Krowor Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Kumasi Metropolitan": {miningInPaHa: 0, paTotalHa: 96.87},
+  "Kumbungu": {miningInPaHa: 0, paTotalHa: 0},
+  "Kwabre East": {miningInPaHa: 0, paTotalHa: 0},
+  "Kwadaso Municipal": {miningInPaHa: 0, paTotalHa: 63.27},
+  "Kwaebibirem": {miningInPaHa: 0, paTotalHa: 11090.77},
+  "Kwahu Afram Plains North": {miningInPaHa: 0, paTotalHa: 0},
+  "Kwahu Afram Plains South": {miningInPaHa: 0, paTotalHa: 0},
+  "Kwahu East": {miningInPaHa: 0.09, paTotalHa: 13423.84},
+  "Kwahu South": {miningInPaHa: 0.09, paTotalHa: 20737.58},
+  "Kwahu West": {miningInPaHa: 0.09, paTotalHa: 5664.66},
+  "La-Nkwantanang-Madina": {miningInPaHa: 0, paTotalHa: 0},
+  "La Dade-Kotopon": {miningInPaHa: 0, paTotalHa: 0},
+  "Lambussie-Karni": {miningInPaHa: 0, paTotalHa: 7737.94},
+  "Lawra": {miningInPaHa: 0, paTotalHa: 0},
+  "Ledzokuku Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Lower Manya": {miningInPaHa: 0, paTotalHa: 5004.88},
+  "Mampong Municipal": {miningInPaHa: 0, paTotalHa: 14784.11},
+  "Mamprugu Moagduri": {miningInPaHa: 0, paTotalHa: 196.43},
+  "Mfantseman Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Mion": {miningInPaHa: 0, paTotalHa: 5779.21},
+  "Mpohor": {miningInPaHa: 191.87, paTotalHa: 2924.37},
+  "Nabdam": {miningInPaHa: 0.79, paTotalHa: 8121.56},
+  "Nadowli-Kaleo": {miningInPaHa: 0, paTotalHa: 0},
+  "Nandom": {miningInPaHa: 0, paTotalHa: 0},
+  "Nanton": {miningInPaHa: 0, paTotalHa: 0},
+  "Nanumba North": {miningInPaHa: 0, paTotalHa: 26987.24},
+  "Nanumba South": {miningInPaHa: 0, paTotalHa: 1392.39},
+  "New Juaben North Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "New Juaben South Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Ningo/Prampram": {miningInPaHa: 0, paTotalHa: 0},
+  "Nkoranza North": {miningInPaHa: 0, paTotalHa: 11514.34},
+  "Nkoranza South": {miningInPaHa: 0, paTotalHa: 2459.06},
+  "Nkwanta North": {miningInPaHa: 0, paTotalHa: 0},
+  "Nkwanta South Municipal": {miningInPaHa: 0, paTotalHa: 47981.31},
+  "North Dayi": {miningInPaHa: 0, paTotalHa: 3098},
+  "North East Gonja": {miningInPaHa: 0, paTotalHa: 0},
+  "North Gonja": {miningInPaHa: 0, paTotalHa: 269918.87},
+  "North Tongu": {miningInPaHa: 0, paTotalHa: 0},
+  "Nsawam Adoagyiri": {miningInPaHa: 0, paTotalHa: 0},
+  "Nzema East": {miningInPaHa: 14.57, paTotalHa: 21479.15},
+  "Obuasi East": {miningInPaHa: 0.92, paTotalHa: 94.19},
+  "Obuasi Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Offinso Municipal": {miningInPaHa: 0, paTotalHa: 11136.92},
+  "Offinso North": {miningInPaHa: 8.25, paTotalHa: 42403.11},
+  "Oforikrom Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Okaikwei North Municipal": {miningInPaHa: 3.56, paTotalHa: 359.92},
+  "Okere": {miningInPaHa: 0, paTotalHa: 87.6},
+  "Old Tafo Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Prestea/Huni Valley": {miningInPaHa: 555.83, paTotalHa: 29538.61},
+  "Pru East": {miningInPaHa: 0, paTotalHa: 0},
+  "Pru West": {miningInPaHa: 0, paTotalHa: 0},
+  "Pusiga": {miningInPaHa: 0, paTotalHa: 448.9},
+  "Saboba": {miningInPaHa: 0, paTotalHa: 0},
+  "Sagnerigu": {miningInPaHa: 0, paTotalHa: 125.36},
+  "Savelugu": {miningInPaHa: 0, paTotalHa: 13809.33},
+  "Sawla-Tuna-Kalba": {miningInPaHa: 0, paTotalHa: 54295.44},
+  "Sefwi-Wiawso": {miningInPaHa: 2.33, paTotalHa: 24708.08},
+  "Sefwi Akontombra": {miningInPaHa: 23.92, paTotalHa: 60812.76},
+  "Sekondi Takoradi Metropolis": {miningInPaHa: 0.22, paTotalHa: 60.44},
+  "Sekyere Afram Plains North": {miningInPaHa: 0, paTotalHa: 2757.96},
+  "Sekyere Central": {miningInPaHa: 0.18, paTotalHa: 47636.24},
+  "Sekyere East": {miningInPaHa: 0.36, paTotalHa: 2680.38},
+  "Sekyere Kumawu": {miningInPaHa: 0, paTotalHa: 28832.94},
+  "Sekyere South": {miningInPaHa: 0, paTotalHa: 2201.63},
+  "Sene East": {miningInPaHa: 0, paTotalHa: 208792.72},
+  "Sene West": {miningInPaHa: 0, paTotalHa: 68266.76},
+  "Shai Osudoku": {miningInPaHa: 0, paTotalHa: 5185.54},
+  "Shama": {miningInPaHa: 3.96, paTotalHa: 200.69},
+  "Sissala East": {miningInPaHa: 0, paTotalHa: 22191.97},
+  "Sissala West": {miningInPaHa: 0, paTotalHa: 17940.06},
+  "South Dayi": {miningInPaHa: 0, paTotalHa: 0},
+  "South Tongu": {miningInPaHa: 100.95, paTotalHa: 42976.32},
+  "Suaman": {miningInPaHa: 479.28, paTotalHa: 18444.28},
+  "Suame Municipal": {miningInPaHa: 0.63, paTotalHa: 22.87},
+  "Suhum Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Sunyani Municipal": {miningInPaHa: 0.18, paTotalHa: 9016.12},
+  "Sunyani West": {miningInPaHa: 0.18, paTotalHa: 31246.72},
+  "Tain": {miningInPaHa: 0, paTotalHa: 89.7},
+  "Talensi": {miningInPaHa: 3.76, paTotalHa: 27607.29},
+  "Tamale Metropolitan": {miningInPaHa: 0, paTotalHa: 106.93},
+  "Tano North Municipal": {miningInPaHa: 0, paTotalHa: 16577.62},
+  "Tano South Municipal": {miningInPaHa: 0, paTotalHa: 284.78},
+  "Tarkwa Nsuaem": {miningInPaHa: 552.46, paTotalHa: 13765.15},
+  "Tatale Sanguli": {miningInPaHa: 0, paTotalHa: 0},
+  "Techiman Municipal": {miningInPaHa: 0, paTotalHa: 3235.49},
+  "Techiman North": {miningInPaHa: 0, paTotalHa: 0},
+  "Tema Metropolitan": {miningInPaHa: 5.79, paTotalHa: 688},
+  "Tema West Municipal": {miningInPaHa: 12.52, paTotalHa: 671.35},
+  "Tempane": {miningInPaHa: 0, paTotalHa: 763.68},
+  "Tolon": {miningInPaHa: 0, paTotalHa: 0},
+  "Twifo Atti-Morkwa": {miningInPaHa: 0, paTotalHa: 24972.6},
+  "Twifo Hemang Lower Denkyira": {miningInPaHa: 0, paTotalHa: 6446.71},
+  "Upper Denkyira East Municipal": {miningInPaHa: 1.63, paTotalHa: 1352.95},
+  "Upper Denkyira West": {miningInPaHa: 1.25, paTotalHa: 86.32},
+  "Upper Manya": {miningInPaHa: 0, paTotalHa: 459.46},
+  "Upper West Akim": {miningInPaHa: 0, paTotalHa: 0},
+  "Wa East": {miningInPaHa: 0, paTotalHa: 15265.71},
+  "Wa Municipal": {miningInPaHa: 0, paTotalHa: 0},
+  "Wa West": {miningInPaHa: 0, paTotalHa: 0},
+  "Wassa Amenfi Central": {miningInPaHa: 866.5, paTotalHa: 50564},
+  "Wassa Amenfi East": {miningInPaHa: 1511.79, paTotalHa: 40863.31},
+  "Wassa Amenfi West": {miningInPaHa: 77.36, paTotalHa: 23800.09},
+  "Wassa East": {miningInPaHa: 306.55, paTotalHa: 75219.01},
+  "Weija Gbawe Municipal": {miningInPaHa: 183.94, paTotalHa: 5835.01},
+  "Wenchi Municipal": {miningInPaHa: 15, paTotalHa: 9303.22},
+  "West Akim": {miningInPaHa: 3.7, paTotalHa: 3803.31},
+  "West Gonja": {miningInPaHa: 1.06, paTotalHa: 198817.35},
+  "West Mamprusi Municipal": {miningInPaHa: 5.27, paTotalHa: 6302.49},
+  "Yendi Municipal": {miningInPaHa: 0, paTotalHa: 244.19},
+  "Yilo Krobo": {miningInPaHa: 0, paTotalHa: 3198.26},
+  "Yunyoo-Nasuan": {miningInPaHa: 0, paTotalHa: 0},
+  "Zabzugu": {miningInPaHa: 0, paTotalHa: 0}
+};
 
 // ====================================================================================================
 // STEP 2 -- build the ForTy categorical forest-type map (argmax over 5 prob bands + derived "other")
@@ -277,7 +562,7 @@ function imageryVis(yr, geom) {
 
 // ====================================================================================================
 // STEP 4 -- restrict the Region/District dropdowns to the regions that actually matter. The
-// diag_05_mining_by_region.Rmd region chart made it clear only 5 regions carry any real galamsey
+// diag_05_mining_by_region.qmd region chart made it clear only 5 regions carry any real galamsey
 // footprint -- ALLOWED_REGIONS hardcodes those (explicit user call, 2026-11-03), rather than relying
 // on a km2 threshold to infer it. MIN_MINING_KM2 still does a second, finer job: dropping the
 // near-zero-mining DISTRICTS *within* those 5 regions (every region has a few scattered noise
@@ -300,7 +585,7 @@ function isAllowedRegion(regionName) {
 }
 
 // MIN_MINING_KM2: within the 5 allowed regions, drops districts with only scattered noise pixels.
-// Provisional value pending diag_05_mining_by_region.Rmd (companion R report, same folder), which
+// Provisional value pending diag_05_mining_by_region.qmd (companion R report, same folder), which
 // plots the district-level mining-area distribution and units retained at several candidate cutoffs.
 var MIN_MINING_KM2 = 1;
 var areaKm2 = ee.Image.pixelArea().divide(1e6);
@@ -337,8 +622,8 @@ var REGION_NAMES = Object.keys(MINING_DISTRICTS_BY_REGION).sort();
 REGION_NAMES.forEach(function (r) { MINING_DISTRICTS_BY_REGION[r].sort(); });
 
 // Speed-up (user call, 2026-11-03): now that REGION_NAMES is known, clip forestClass/cumMineByYear
-// down to just the union of those regions -- everything downstream (main map tiles, GIFs, swipe
-// compare, "Generate stats" reduceRegions) then renders/computes over a much smaller area than all
+// down to just the union of those regions -- everything downstream (main map tiles, GIFs,
+// "Generate stats" reduceRegions) then renders/computes over a much smaller area than all
 // of Ghana. Done AFTER the district join above, not before -- that join needs the NATIONAL
 // forestClass/cumMineByYear to even determine which regions qualify in the first place.
 var ALLOWED_REGIONS_GEOM = ADMIN1.filter(ee.Filter.inList(REGION_FIELD, REGION_NAMES)).geometry();
@@ -362,33 +647,18 @@ function districtNamesForRegion(regionName) {
 var DEFAULT_REGION = REGION_NAMES.filter(function (r) { return r.toLowerCase() === "ashanti"; })[0] ||
   REGION_NAMES[0];
 
-// Top-N "try this district" examples, surfaced in STEP 9 so a first-time user isn't stuck guessing
-// which of the (mining-only) districts are actually interesting. ONE district per region (its own
-// biggest), not top-N nationally -- a flat national ranking tends to cluster inside whichever single
-// region dominates (Ashanti), which isn't a useful "try a few different places" set. Picks each
-// region's top district, then keeps the TOP_EXAMPLE_N biggest of those -- so the examples span
-// distinct regions.
-var TOP_EXAMPLE_N = 3;
-var TOP_DISTRICT_EXAMPLES = REGION_NAMES.map(function (regionName) {
-  var rows = districtRows.filter(function (row) {
-    return row.region === regionName && row.mining_final > MIN_MINING_KM2;
-  });
-  rows.sort(function (a, b) { return b.mining_final - a.mining_final; });
-  return rows[0];   // every region in REGION_NAMES has >= 1 qualifying district, by construction
-}).sort(function (a, b) { return b.mining_final - a.mining_final; }).slice(0, TOP_EXAMPLE_N);
-
 // NOTE 2026-11-03: a national region-by-region overview chart (2020 level + growth to 2025, summed
 // from districtRows above) used to live here and get appended to every "Generate stats" run. Pulled
 // back out (user call) -- it's a static, selection-independent figure, better suited to a documented
-// report than to a per-unit exploration tool. See diag_05_mining_by_region.Rmd (same folder) instead.
+// report than to a per-unit exploration tool. See diag_05_mining_by_region.qmd (same folder) instead.
 
 // ====================================================================================================
 // STEP 5 -- shared selection state. District-only (Region mode REMOVED 2026-11-04, user call -- a
 // full region, e.g. Ashanti ~24,000 km2, was too computationally intensive for "Generate stats"/
 // the published App). Set by onRegionChange/onDistrictChange (wired up in STEP 9), read at CALL time
-// by showStats()/generateGif()/showCompareView(), so whichever dropdown fired most recently wins.
+// by showStats()/generateGif(), so whichever dropdown fired most recently wins.
 //   currentGeom  -- ee.Geometry (the selected district's own polygon, used directly for the chart
-//                   reduceRegion, the GIF crop, and the swipe-view outline/centering)
+//                   reduceRegion and the GIF crop)
 //   currentLabel -- display string for chart titles / status label
 // ----------------------------------------------------------------------------------------------------
 var currentGeom, currentLabel;
@@ -487,6 +757,23 @@ function showStats() {
       vAxis: {title: "Area (km2)"}, legend: {position: "none"}
     });
   resultsPanel.add(trendChart);
+
+  // ---- one-line protected-area stat -- precomputed LOOKUP, not a live reduceRegion (see
+  // DISTRICT_PROTECTED_STATS above for why: this is cross-sectional, no reason to ever recompute
+  // it per click, and painting the WDPA/WDOECM collection live measurably slowed "Generate stats").
+  var paEntry = DISTRICT_PROTECTED_STATS[districtSelect.getValue()];
+  var paLine;
+  if (!paEntry) {
+    paLine = "Protected-area overlap not available yet for " + currentLabel +
+      " (DISTRICT_PROTECTED_STATS not yet populated -- see TODO near its definition).";
+  } else if (paEntry.paTotalHa === 0) {
+    paLine = "No WDPA/WDOECM protected areas recorded in " + currentLabel + ".";
+  } else {
+    paLine = Math.round(paEntry.miningInPaHa) + " ha of " + currentLabel + "'s " +
+      Math.round(paEntry.paTotalHa) + " ha of protected land (WDPA/WDOECM) show gold mining (" +
+      (100 * paEntry.miningInPaHa / paEntry.paTotalHa).toFixed(1) + "%).";
+  }
+  resultsPanel.add(ui.Label(paLine, {fontStyle: "italic", margin: "4px 0 10px 0"}));
 
   // ---- chart 2: per-year stacked land-type breakdown (mining + remaining forest classes) ---------
   var chartRows = DISPLAY_YEARS.map(function (yr) {
@@ -594,27 +881,29 @@ function generateGif() {
 }
 
 // ====================================================================================================
-// STEP 7b -- "Generate satellite GIF" button: REAL imagery (STEP 3b) only -- no mining-mask outline,
-// no district outline (user call, 2026-11-03: "take the outline away, use just the image" -- tried
-// with a mining outline + district outline first, user preferred the plain imagery back). Just the
-// year/location label for orientation, since an unlabelled frame sequence would be unreadable.
+// STEP 7b -- "Generate satellite GIF" button: REAL imagery (STEP 3b) + the red district outline
+// (re-added 2026-11-05, user request -- NOT the mining-extent outline, which stays off per the
+// user's original 2026-11-03 revert of that combination). Plus the year/location label.
 // Slower than STEP 7's GIF (real cloud-filtering + median compositing per year, vs. an instant
 // selfMask/visualize) -- District mode only, same reasoning as the other GIF.
 // ====================================================================================================
-function satelliteFrameForYear(yr, geom, labelPoint) {
+function satelliteFrameForYear(yr, geom, labelPoint, outlineVis) {
   var vis = imageryVis(yr, geom);
   var label = getTextModule().draw(yr + " -- " + currentLabel, labelPoint, LABEL_SCALE, LABEL_STYLE);
-  return vis.blend(label).set("year", yr);
+  return vis.blend(outlineVis).blend(label).set("year", yr);
 }
 
 function generateSatelliteGif() {
   var hotspotAoi = currentGeom.bounds();
   var labelPoint = labelPointForGeom(currentGeom);
+  // Same red outline-only image used elsewhere (STEP 7's GIF, the main map's outlineLayer) -- built
+  // once, not per frame, same reasoning as STEP 7.
+  var outlineVis = outlineImageForGeom(currentGeom);
   // SATELLITE_YEARS (2015-2025), NOT EMBED_YEARS -- this GIF doesn't depend on the classifier or the
   // 2020-only ForTy baseline, so it isn't held back to 2017+/2020+ the way the other charts/GIF/slider
   // are; Landsat covers 2015-2017 fine (see SATELLITE_YEARS' own comment near EMBED_YEARS).
   var frames = ee.ImageCollection(SATELLITE_YEARS.map(function (yr) {
-    return satelliteFrameForYear(yr, hotspotAoi, labelPoint);
+    return satelliteFrameForYear(yr, hotspotAoi, labelPoint, outlineVis);
   }));
   var gifParams = {region: hotspotAoi, dimensions: 500, framesPerSecond: 0.6, crs: "EPSG:3857"};
 
@@ -636,71 +925,20 @@ function generateSatelliteGif() {
 }
 
 // ====================================================================================================
-// STEP 8 -- "Compare years" swipe view: two linked ui.Map widgets (left = DISPLAY_YEARS[0], right =
-// DISPLAY_YEARS[last]) inside a ui.SplitPanel with wipe:true -- the classic EE split-panel idiom: a
-// draggable divider in the middle, the left map showing on the left, the right map on the right.
-// This is what "slider" actually meant -- a different, heavier-weight thing from the in-place
-// year-slider on the main map (STEP 9/10), which stays as a lighter way to scrub the SAME map.
-// "Compare years" swaps ui.root to the split view; "<- Back" restores the normal view by clearing
-// ui.root and re-adding `mainMap` (our OWN ui.Map instance, built below -- NOT the Code Editor's
-// built-in global `Map`, which turned out not to tolerate being removed from and re-added to
-// ui.root: doing that threw "Only a ui.Widget can be added to a panel" on the way back). The
-// control panel and resultsPanel are attached via mainMap.add() (children of mainMap itself, not of
-// ui.root), so they're untouched by the swap and still exactly where they were.
+// STEP 8 -- the app's one and only map (our own ui.Map instance, NOT the Code Editor's built-in
+// global `Map`, which this script never uses). The left/right "swipe" year-comparison view that
+// used to live in this slot (two linked ui.Map widgets in a ui.SplitPanel) was removed 2026-11-05,
+// user call -- not needed. The control panel and resultsPanel are attached via mainMap.add()
+// (STEP 9/10 below).
 // ====================================================================================================
 var mainMap = ui.Map();
-var COMPARE_LEFT_YEAR  = DISPLAY_YEARS[0];
-var COMPARE_RIGHT_YEAR = DISPLAY_YEARS[DISPLAY_YEARS.length - 1];
-
-var leftMap  = ui.Map();
-var rightMap = ui.Map();
-ui.Map.Linker([leftMap, rightMap]);   // keeps pan/zoom in sync between the two
-leftMap.setOptions("SATELLITE");
-rightMap.setOptions("SATELLITE");
-
-var leftOutlineLayer  = ui.Map.Layer(outlineImageForGeom(ee.Geometry.Point([0, 0])), {}, "Selected outline");
-var rightOutlineLayer = ui.Map.Layer(outlineImageForGeom(ee.Geometry.Point([0, 0])), {}, "Selected outline");
-leftMap.layers().reset([
-  ui.Map.Layer(forestClass, {min: 1, max: 6, palette: CLASS_COLORS}, "Forest type"),
-  ui.Map.Layer(cumMineByYear[COMPARE_LEFT_YEAR].selfMask(), {palette: [MINING_COLOR]}, "Mining " + COMPARE_LEFT_YEAR),
-  leftOutlineLayer
-]);
-rightMap.layers().reset([
-  ui.Map.Layer(forestClass, {min: 1, max: 6, palette: CLASS_COLORS}, "Forest type"),
-  ui.Map.Layer(cumMineByYear[COMPARE_RIGHT_YEAR].selfMask(), {palette: [MINING_COLOR]}, "Mining " + COMPARE_RIGHT_YEAR),
-  rightOutlineLayer
-]);
-leftMap.add(ui.Label(String(COMPARE_LEFT_YEAR),
-  {fontWeight: "bold", fontSize: "18px", backgroundColor: "rgba(255,255,255,0.85)", position: "top-left"}));
-rightMap.add(ui.Label(String(COMPARE_RIGHT_YEAR),
-  {fontWeight: "bold", fontSize: "18px", backgroundColor: "rgba(255,255,255,0.85)", position: "top-left"}));
-
-function showNormalView() {
-  ui.root.clear();
-  ui.root.add(mainMap);
-}
-rightMap.add(ui.Button({label: "<- Back to selection", onClick: showNormalView, style: {position: "top-right"}}));
-
-var splitPanel = ui.SplitPanel({
-  firstPanel: leftMap, secondPanel: rightMap, orientation: "horizontal", wipe: true,
-  style: {stretch: "both"}
-});
-
-function showCompareView() {
-  leftOutlineLayer.setEeObject(outlineImageForGeom(currentGeom));
-  rightOutlineLayer.setEeObject(outlineImageForGeom(currentGeom));
-  leftMap.centerObject(currentGeom);
-  ui.root.clear();
-  ui.root.add(splitPanel);
-}
 
 // ====================================================================================================
 // STEP 9 -- UI. Region -> District dropdowns top-right (Region just scopes the district list, see
 // STEP 5), plus a year slider that swaps the main map's mining overlay in place (2020-2025,
 // matching DISPLAY_YEARS/the ForTy baseline), a checkbox to toggle the forest-type layer (OFF by
-// default, 2026-11-04 user call -- initial view shows only the gold mining layer), plus the
-// "Compare years (swipe)" button that opens the STEP 8 split view. Results panel bottom-left, same
-// as before (App-visible).
+// default, 2026-11-04 user call -- initial view shows only the gold mining layer). Results panel
+// bottom-left, same as before (App-visible).
 // ====================================================================================================
 var regionSelect = ui.Select({
   items: REGION_NAMES, value: DEFAULT_REGION, onChange: onRegionChange, style: {width: "230px"}
@@ -741,6 +979,12 @@ var forestCheckbox = ui.Checkbox({
   onChange: function (checked) { forestLayer.setShown(checked); }
 });
 
+// OFF by default, same toggle mechanism -- protected-area outlines (WDPA/WDOECM, Designated only).
+var protectedCheckbox = ui.Checkbox({
+  label: "Show protected areas (WDPA/WDOECM)", value: false,
+  onChange: function (checked) { protectedLayer.setShown(checked); }
+});
+
 var statsButton = ui.Button({label: "Generate stats", onClick: showStats});
 var gifButton = ui.Button({
   label: "Generate Land Cover GIF (" + DISPLAY_YEARS[0] + "-" + DISPLAY_YEARS[DISPLAY_YEARS.length - 1] + ")",
@@ -750,40 +994,44 @@ var satelliteGifButton = ui.Button({
   label: "Generate Satellite GIF (" + SATELLITE_YEARS[0] + "-" + SATELLITE_YEARS[SATELLITE_YEARS.length - 1] + ")",
   onClick: generateSatelliteGif
 });
-var compareButton = ui.Button({
-  label: "Compare " + COMPARE_LEFT_YEAR + " vs " + COMPARE_RIGHT_YEAR + " (swipe)",
-  onClick: showCompareView
+// Reopens welcomePanel (data sources + how-to-use) -- shown automatically on first load, dismissed
+// via its own "Got it" button; this is the only way back in afterwards.
+var infoButton = ui.Button({
+  label: "More info (data sources, how to use)",
+  onClick: function () { welcomePanel.style().set("shown", true); }
 });
 
-// "Try a district" quick picks -- TOP_EXAMPLE_N districts, each the biggest in a DIFFERENT region
-// (STEP 4), one button each. Clicking jumps straight to that district's region + district, same
-// end state as picking both dropdowns by hand (setValue(..., true) fires the same onChange
-// handlers, so there's only one path that ever sets currentGeom).
-function tryDistrict(regionName, districtName) {
-  return function () {
-    regionSelect.setValue(regionName, true);
+// Click-to-select on the map -- a second way to pick a district, alongside the dropdowns above.
+// The only genuinely new work is the point-in-polygon lookup (which district contains the click)
+// -- region membership and the mining-data filter both reuse districtRows (STEP 4, already fetched
+// client-side at startup), no second round trip needed. .evaluate() (async callback), NOT
+// .getInfo() (blocking) -- a click handler shouldn't freeze the Code Editor UI while EE resolves
+// the point-in-polygon query.
+mainMap.onClick(function (coords) {
+  statusLabel.setValue("Looking up district at (" + coords.lon.toFixed(4) + ", " + coords.lat.toFixed(4) + ")...");
+  var pt = ee.Geometry.Point([coords.lon, coords.lat]);
+  ADMIN2.filterBounds(pt).first().get(DISTRICT_FIELD).evaluate(function (districtName, err) {
+    if (err || !districtName) {
+      statusLabel.setValue("No district found there -- click inside Ghana.");
+      return;
+    }
+    var row = districtRows.filter(function (r) { return r.district === districtName; })[0];
+    if (!row || !isAllowedRegion(row.region) || row.mining_final <= MIN_MINING_KM2) {
+      statusLabel.setValue(districtName + " has no significant mining data -- pick a highlighted district from the dropdown instead.");
+      return;
+    }
+    regionSelect.setValue(row.region, true);
     districtSelect.setValue(districtName, true);
-  };
-}
-var exampleButtons = TOP_DISTRICT_EXAMPLES.map(function (row) {
-  return ui.Button({
-    label: row.district + ", " + row.region + " (" + Math.round(row.mining_final) + " km2)",
-    onClick: tryDistrict(row.region, row.district)
   });
 });
-var exampleDistrictsPanel = ui.Panel(
-  [ui.Label("Try a district:", {fontWeight: "bold"})].concat(exampleButtons),
-  ui.Panel.Layout.flow("vertical")
-);
 
 mainMap.add(ui.Panel(
   [ui.Label("Region:", {fontWeight: "bold"}), regionSelect,
-   districtSelect,
+   ui.Label("Select district, or click location:", {fontWeight: "bold"}), districtSelect,
    statusLabel,
    yearSliderLabel, yearSlider,
-   miningCheckbox, forestCheckbox,
-   statsButton, gifButton, satelliteGifButton, compareButton,
-   exampleDistrictsPanel],
+   miningCheckbox, forestCheckbox, protectedCheckbox,
+   statsButton, gifButton, satelliteGifButton, infoButton],
   ui.Panel.Layout.flow("vertical"),
   {position: "top-right", width: "250px"}
 ));
@@ -830,37 +1078,39 @@ welcomePanel.add(ui.Label(
   "- Admin boundaries: Ghana regions/districts, restricted to the " + ALLOWED_REGIONS.length +
   " regions with real galamsey activity (" + ALLOWED_REGIONS.join(", ") + ").", {fontSize: "11px"}
 ));
+welcomePanel.add(ui.Label(
+  "- Protected areas: WDPA/WDOECM public catalog (UNEP-WCMC & IUCN), Designated status only -- " +
+  "\"Proposed\" sites excluded, not yet legally protected. Mostly Forest Reserves.", {fontSize: "11px"}
+));
 
 welcomePanel.add(ui.Label("How to use", {fontWeight: "bold", fontSize: "12px", margin: "10px 0 2px 0"}));
 welcomePanel.add(ui.Label(
-  "1. Pick a Region (and District) above -- or click one of the \"Try a district\" examples.",
-  {fontSize: "11px"}
+  "1. Pick a Region (and District) above, or click any location on the map itself.", {fontSize: "11px"}
 ));
 welcomePanel.add(ui.Label(
   "2. \"Generate stats\" for the mining trend, land-type breakdown, and growth-composition charts " +
-  "(bottom-left panel).", {fontSize: "11px"}
+  "(bottom-left panel), plus a one-line protected-area overlap stat (precomputed, not live -- see " +
+  "DISTRICT_PROTECTED_STATS near the top of this file for its source).", {fontSize: "11px"}
 ));
 welcomePanel.add(ui.Label(
   "3. \"Generate Land Cover GIF\" (forest-type palette) or \"Generate Satellite GIF\" (real " +
-  "imagery, no overlay) animate the selected district.", {fontSize: "11px"}
+  "imagery + district outline) animate the selected district.", {fontSize: "11px"}
 ));
 welcomePanel.add(ui.Label(
-  "4. \"Compare " + COMPARE_LEFT_YEAR + " vs " + COMPARE_RIGHT_YEAR + "\" opens a side-by-side " +
-  "swipe view of the selected district (drag the middle divider).", {fontSize: "11px"}
-));
-welcomePanel.add(ui.Label(
-  "5. The year slider (above) scrubs the main map's gold mining overlay between " + EMBED_YEARS[0] +
+  "4. The year slider (above) scrubs the main map's gold mining overlay between " + EMBED_YEARS[0] +
   " and " + EMBED_YEARS[EMBED_YEARS.length - 1] + ". The map starts showing just the gold mining " +
-  "layer -- use the \"Show gold mining\"/\"Show forest type\" checkboxes to toggle either layer " +
-  "(forest type is the ForTy basemap, a 2020 snapshot); see " +
-  "the legend (top-left) for layer colours.", {fontSize: "11px"}
+  "layer -- use the \"Show gold mining\"/\"Show forest type\"/\"Show protected areas\" checkboxes " +
+  "to toggle each layer (forest type is the ForTy basemap, a 2020 snapshot); see the legend " +
+  "(top-left) for layer colours.", {fontSize: "11px"}
 ));
 welcomePanel.add(ui.Button({
   label: "Got it",
   onClick: function () { welcomePanel.style().set("shown", false); },
   style: {margin: "10px 0 0 0"}
 }));
-mainMap.add(welcomePanel);
+mainMap.add(welcomePanel);   // still shown automatically on load, as before -- "More info" (STEP 9)
+                              // just adds a way back in after "Got it" dismisses it, nothing about
+                              // the first-load behavior changes.
 
 // ====================================================================================================
 // STEP 10 -- always-on map layers (forest-type basemap, static, + the year-slider-driven mining
@@ -878,6 +1128,13 @@ var miningLayer = ui.Map.Layer(
   "Cumulative gold mining extent (through " + EMBED_YEARS[EMBED_YEARS.length - 1] + ")"
 );
 mainMap.layers().add(miningLayer);
+// Outline only (not filled) -- an opaque fill would obscure the mining/forest layers underneath it.
+// paint()'s width draws the boundary only; color here is a 1 (palette index), not a hex value.
+var protectedOutline = ee.Image().byte().paint({featureCollection: PROTECTED_AREAS, color: 1, width: 2});
+var protectedLayer = ui.Map.Layer(
+  protectedOutline, {palette: ["00e676"]}, "Protected areas (WDPA/WDOECM, Designated)", false
+);
+mainMap.layers().add(protectedLayer);
 // Placeholder (empty FeatureCollection) until the initial selection below sets the real outline --
 // setSelection() always has a layer to call .setEeObject()/.setName() on, never needs to add/remove.
 var outlineLayer = ui.Map.Layer(outlineImageForGeom(ee.Geometry.Point([0, 0])), {}, "Selected unit outline");
@@ -897,6 +1154,7 @@ var legendPanel = ui.Panel({
 legendPanel.add(ui.Label("Legend", {fontWeight: "bold", margin: "2px 0 6px 0"}));
 CLASS_NAMES.forEach(function (name, i) { legendPanel.add(legendRow("#" + CLASS_COLORS[i], name)); });
 legendPanel.add(legendRow("#" + MINING_COLOR, "Cumulative mining extent"));
+legendPanel.add(legendRow("#00e676", "Protected area boundary (WDPA/WDOECM)"));
 legendPanel.add(legendRow("#ff0000", "Selected region/district outline"));
 mainMap.add(legendPanel);
 
@@ -921,9 +1179,8 @@ ui.root.add(mainMap);
 print("Tick 'Show forest type' to overlay the ForTy layer against the mining layer and see " +
       "spatially which forest types sit adjacent to / underneath the expanding mining footprint. " +
       "Use the year slider to scrub the gold mining overlay on this map between " + EMBED_YEARS[0] +
-      " and " + EMBED_YEARS[EMBED_YEARS.length - 1] + ", or 'Compare years (swipe)' for a side-by-" +
-      "side left/right comparison with a draggable divider. Pick a Region (and District, " +
-      "restricted to units with some mining), then 'Generate stats'.");
+      " and " + EMBED_YEARS[EMBED_YEARS.length - 1] + ". Pick a Region (and District, restricted " +
+      "to units with some mining), then 'Generate stats'.");
 
 } catch (err) {
   // See the try{} note near STEP 1 -- renders whatever broke directly onto the page, since a

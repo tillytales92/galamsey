@@ -59,7 +59,7 @@ if (!asset_exists(ONSET_ASSET))
   stop(ONSET_ASSET, " not found -- run build_04_backdating.R Section 12 first")
 
 # ee_monitoring() has a known rgee bug (build_04_backdating.R/diag_04_backdating.R/
-# diag_05_mining_by_region.Rmd): reads destination_uris before a still-RUNNING task has
+# diag_05_mining_by_region.qmd): reads destination_uris before a still-RUNNING task has
 # populated that field. Reused workaround -- only ever read `state`.
 poll_task <- function(task, interval = 15) {
   repeat {

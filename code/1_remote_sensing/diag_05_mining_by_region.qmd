@@ -1,0 +1,131 @@
+---
+title: "Galamsey by Region and District"
+subtitle: "Cumulative extent, growth, and protected-area encroachment"
+date: "`r Sys.Date()`"
+title-block-banner: "#450457"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-float: true
+    code-fold: true
+    embed-resources: true
+---
+
+```{=html}
+<style>
+h2 { color: #450457; border-bottom: 2px solid #CD4071; padding-bottom: 4px; }
+h3 { color: #721F81; }
+a { color: #9E2F7F; }
+</style>
+```
+
+<!--
+diag_05_mining_by_region.qmd -- decision-ready report (see code/1_remote_sensing/explainer.md's
+diag_NN_* convention). Split 2026-11-06 from a single EE-authenticated .qmd into this
+presentation-only document + diag_05_data_prep.R, which does the EE auth, downloads, and figure/
+table generation. Run diag_05_data_prep.R in RStudio first; this file only reads what it writes to
+outputs/figures/diag_05/ and outputs/tables/diag_05/ (no rgee, no EE session, no internet needed to
+render). See explainer.md for the full rationale and the rgee gotchas the prep script works around.
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 9)
+pacman::p_load(here, tidyverse, scales, knitr)
+
+fig_dir <- here("outputs", "figures", "diag_05")
+tbl_dir <- here("outputs", "tables", "diag_05")
+
+meta <- readRDS(here(tbl_dir, "diag05_meta.rds"))
+embed_years <- meta$embed_years
+overview_first_year <- meta$overview_first_year
+latest_year <- max(embed_years)
+first_year  <- min(embed_years)
+```
+
+## 1. Cumulative mining panel, by district
+
+Same definition as `build_03_embedding_panel.R` / `explore_mining_vs_forest_type_app.js`: the
+**union-to-date** of `mine_mask_ghana_c4_<yr>` (monotonically non-decreasing cumulative footprint),
+not each year's raw independent classification. Built, pulled by district, and written to
+`outputs/tables/mining_by_district.csv` / `mining_by_region.csv` by `diag_05_data_prep.R` -- see
+that script for the EE/rgee side of this.
+
+## 2. National total (sanity check)
+
+District-level sum should match a direct national reduceRegion closely (small differences are
+scale/edge-pixel rounding, not a bug).
+
+```{r national-check}
+read_csv(here(tbl_dir, "national_check.csv"), show_col_types = FALSE) |>
+  kable(digits = 1, caption = paste0("National cumulative mining through ", latest_year))
+```
+
+## 3. Distribution of region-level mining area, `r latest_year`
+
+```{r region-hist}
+knitr::include_graphics(here(fig_dir, "fig_region_hist.png"))
+```
+
+## 4. Region ranking, `r latest_year`
+
+```{r region-bar}
+knitr::include_graphics(here(fig_dir, "fig_region_bar.png"))
+```
+
+## 5. Region overview: level + growth together
+
+Each bar's grey segment is the `r overview_first_year` level, the coloured segment is growth to
+`r latest_year`, so bar length = current total and the split shows how much of that total is
+pre-existing vs. new.
+
+```{r region-overview-combined}
+knitr::include_graphics(here(fig_dir, "fig_region_overview_combined.png"))
+```
+
+## 6. Mining increase by region, `r first_year` -> `r latest_year`
+
+```{r region-increase-table}
+read_csv(here(tbl_dir, "region_increase.csv"), show_col_types = FALSE) |>
+  kable(digits = 1, caption = paste0("Region-level mining increase, ", first_year, "-", latest_year))
+```
+
+```{r region-increase-bar}
+knitr::include_graphics(here(fig_dir, "fig_region_increase_bar.png"))
+```
+
+## 7. Top 10 districts, `r latest_year`
+
+Same idea one level down -- which individual districts actually drive the regional totals above.
+
+```{r top10-districts-table}
+read_csv(here(tbl_dir, "top10_districts.csv"), show_col_types = FALSE) |>
+  kable(digits = 1, caption = paste0("Top 10 districts by cumulative mining area, ", latest_year))
+```
+
+```{r top10-districts-bar}
+knitr::include_graphics(here(fig_dir, "fig_top10_districts_bar.png"))
+```
+
+## 8. Mining encroachment on protected areas, `r latest_year`
+
+How much of each district's cumulative gold mining footprint falls inside a WDPA/WDOECM
+**Designated** protected area (national parks, forest reserves, etc. -- "Proposed" sites excluded,
+not yet legally protected).
+
+```{r protected-areas-national, results='asis'}
+pa_summary <- read_csv(here(tbl_dir, "national_pa_summary.csv"), show_col_types = FALSE)
+cat(sprintf(
+  "National: %.1f km2 (%.1f%%) of cumulative gold mining through %d falls inside a Designated protected area.\n",
+  pa_summary$nat_mining_in_pa, pa_summary$pct_mining_in_pa, pa_summary$year))
+```
+
+```{r protected-areas-table}
+read_csv(here(tbl_dir, "protected_overlap_top15.csv"), show_col_types = FALSE) |>
+  kable(digits = 1, caption = paste0(
+    "Top 15 districts by gold mining area inside a Designated protected area, through ", latest_year))
+```
+
+```{r protected-areas-bar}
+knitr::include_graphics(here(fig_dir, "fig_protected_areas_bar.png"))
+```

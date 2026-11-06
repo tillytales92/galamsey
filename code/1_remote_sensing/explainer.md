@@ -5,18 +5,17 @@ directly from satellite imagery via Google Earth Engine, so the RS-derived mine 
 replace Barenblitt as the `mine_data` source throughout Parts 2–3. It is the "swap-in" target the
 build scripts are written around.
 
-> **File-set current as of 2026-09-15.** Deployed model: 4-class (`c4` = mine/urban/water/other),
-> `no_maus` label combo, cutoff **70** (raised from 45 on 2026-09-09 for FP control), GHSL-100m
-> epoch-matched urban mask at **500**/10000 (tightened from 2000), plus JRC GSW permanent-water/
-> coast and GRIP4 road buffers; industrial-mine exclusion is deferred. `build_03` has run:
-> 2017–2024 masks are exported, 2025 is pending — Earth Engine's noncommercial monthly compute
-> quota (Contributor tier) is exhausted, so the export task is queued rather than blocked outright
-> and should land once restricted-mode throttling eases or the quota resets 2026-10-01. `build_04`
-> (backdating, 2000–2016) is implemented and bug-fixed but not yet validated end-to-end — same
-> quota block, this time on the chunked Barenblitt validation-point upload (2/6 chunks landed).
-> **`embedding_classifier_approach.md` was rewritten the same day** to match (c4/no_maus training
-> config, the matched-precision scheme comparison, build_03/build_04 in plain language) — both docs
-> are current as of 2026-09-15.
+> **File-set current as of 2026-11-05.** Deployed model: 4-class (`c4` = mine/urban/water/other),
+> `no_maus` label combo, cutoff **70**, GHSL-100m epoch-matched urban mask at **500**/10000, JRC
+> GSW permanent-water/coast and GRIP4 road buffers, **plus industrial-mine exclusion (ICMM/Maus,
+> reworked 2026-10-27, `APPLY_INDUSTRIAL <- TRUE`)** — no longer deferred; the deployed
+> `mine_mask_ghana_c4_{yr}` assets already have named industrial mines subtracted, confirmed
+> visually via `validate_finalproduct.js`. `build_03` has fully exported 2017–2025 (GEE Partner
+> tier approved 2026-09-28, eliminating the earlier Contributor-tier quota throttling). `build_04`
+> (backdating, 2005–2016) is deployed (Barenblitt method, `ONSET_MIN=2005`) and validated — see
+> `diag_04_backdating.R`'s section below for the actual numbers. `code/2_build/b_04_rs_mining_panel.R`
+> has produced its first real hex-panel CSV (5km, bar_hull-scoped). `embedding_classifier_approach.md`
+> still reflects the 2026-09-15 c4/no_maus training config, which hasn't changed.
 
 **Reorganised 2026-08-04** into three role prefixes (mirroring the `d_`/`b_`/`a_` convention used in
 Parts 0/2/3), replacing the old flat `rsNN` numbering — which had drifted out of dependency order
@@ -186,19 +185,38 @@ signal and dropped — it chewed into real pit clusters for little extra FP remo
 was already at 70) → mask out JRC Global Surface Water permanent water (`occurrence >= 90`) plus a
 150 m buffer around *wide* water bodies only (a morphological opening excludes river channels from
 the buffer, so riparian galamsey — most of it — is never masked) → mask out a 35 m buffer around
-GRIP4 Africa roads → export. Barenblitt industrial-polygon subtraction was reworked into a "gate +
-confirm" rule (large-scale Minerals Commission lease ∩ (Maus ASM ≥1 km² ∪ Barenblitt industrial))
-but is **deferred** (`APPLY_INDUSTRIAL <- FALSE`) — the lease shapefile ships degenerate
-2-point-ring geometry that crashes `sf`/`sf_as_ee()`, and an earlier upload of the candidate
-polygon over-masked some areas on visual QA. Min-patch-size filtering and a temporal-consistency
+GRIP4 Africa roads → **mask out named industrial mines** → export.
+
+**Industrial-mine exclusion (Section 7, reworked 2026-10-27, `APPLY_INDUSTRIAL <- TRUE`, deployed):**
+replaces an earlier, never-deployed Minerals-Commission-lease-based "gate + confirm" rule (dropped —
+the lease shapefile ships degenerate 2-point-ring geometry that crashes `sf`/`sf_as_ee()`). Current
+method: **ICMM's "Global Mining Dataset"** (`data/raw/mining_icmm/global_mining_dataset_1.5_corrected.kmz`)
+supplies the *named, located* industrial mines for Ghana (High/Moderate confidence only, with
+per-mine location corrections — e.g. a corrected Obuasi point kept *alongside* the original, not
+replacing it). ICMM gives points, not footprints, so each named mine's real digitized extent is then
+selected from **Maus et al. 2022 v2** or **Tang & Werner 2023** (per-mine source assignment,
+`IND_MINE_CONFIG`), using one of three spatial rules depending on the mine: `buffer` (polygons within
+a fixed radius, default 4 km, some mines override to 1 km), `touching_only` (polygons touching the
+ICMM point), or `contiguous` (touching polygons *and* everything spatially connected to them — whole
+mine complex, not just the seed polygon touching the point). A polygon independently claimed by more
+than one mine is assigned to whichever mine's point is nearest (fixes e.g. Iduapriem vs. Tarkwa
+sharing a Maus polygon). Result: **14 named Ghana industrial mines**, each dissolved to one footprint,
+subtracted from every year's mask. The same selection is also persisted as its own standalone,
+reusable dataset by `make_industrial_mines_dataset.R` → `data/processed/ghana_industrial_mines.gpkg`
+(14 rows: mine, icmm_id, commodity, confidence, source, area_km2) — mirrors Section 7's logic exactly,
+kept in sync by hand (see that script's own header), used e.g. by `a_01_incidence_maps_rs.R`'s
+artisanal-vs-industrial map. Confirmed deployed on the live `mine_mask_ghana_c4_{yr}` assets via
+`validate_finalproduct.js` visual QA (2026-11-04). Min-patch-size filtering and a temporal-consistency
 rule remain stubbed behind `APPLY_*` flags — the min-patch-size question is now **closed** (see
 `validate_min_patch_size_filter.js` below): the residual flagged area is coherent multi-pixel
 patches, not scattered noise, so size filtering was rejected as a real lever.
 
 **Recall check** (`diag_03_product_overlap.R`, 2019 deployed mask vs. Barenblitt): **85.8%**
 artisanal recall — matches the pre-full-stack estimate, i.e. the water/road masks didn't cost real
-detections. Still over-predicts Barenblitt by 2.1–2.5× nationally, expected given industrial
-exclusion is deferred and some FP residual remains (see `validate_fp_source_breakdown.R` below).
+detections. Still over-predicts Barenblitt by 2.1–2.5× nationally — **this number predates the
+2026-10-27 industrial-exclusion rework above and hasn't been recomputed since**, so the over-
+prediction ratio today is plausibly lower than 2.1–2.5×, not confirmed (see
+`validate_fp_source_breakdown.R` below for the rest of the FP residual).
 
 **Scope stop:** ends at the annual 2017–2025 mask — does **not** aggregate to the hex × year panel.
 That waits until after `build_04` backdates the mask to 2000–2016, so the panel is built from the
@@ -271,6 +289,28 @@ subsample pre-check; a `LT_MIN_MAGNITUDE` sweep; a scene-coverage (clear-obs/yea
 a yearly expansion TREND comparison vs Barenblitt; a backdating/classifier seam continuity check;
 a spatial-vs-timing disagreement decomposition.
 
+**Section 8c (added 2026-11-06) — `run_yearly_expansion_trend(onset_min, ...)`:** re-runs Section
+8's trend comparison at an arbitrary `ONSET_MIN`. Motivated by a 2026-11-06 observation that the
+deployed layer's cumulative mining through 2007 is **~20x** Barenblitt's own cumulative that year
+(66.6 vs 3.3 km², from `yearly_expansion_vs_barenblitt.csv`), narrowing to ~2.1x by 2016 — a
+left-censoring signature (real pre-2005 mining has nowhere to go but the window floor). Tests
+`onset_min=2000` (does the pileup just relocate to ~2001–2003?) and `onset_min=2007` (Barenblitt's
+own window, directly comparable, no `reference_tier=0` years at all).
+
+Prefers the REAL exported asset (`mine_onset_year_{min}_{max}_barenblitt`) when it exists — same
+full-national-resolution asset the 2005–2016 deploy used — and only falls back to a from-scratch,
+`bar_hull`-restricted recompute (via `build_onset_year()`, same helper Section 4 uses) as a rough
+preview while that export is still running. **Decided 2026-11-06: do the robust version** — two
+more full `build_04_backdating.R` runs (not just this diagnostic), at `ONSET_MIN=2000`
+(`IMG_START` must also drop to `1998` — see that script's own updated `IMG_START` comment for why)
+and `ONSET_MIN=2007` (`IMG_START` can stay `1999`), `ONSET_MAX=2016` unchanged both times. Each
+submits the same 3 batch tasks the 2005 deploy did (Sections 10/11/12) under names now safely
+suffixed by `_min{X}_max{Y}` (fixed 2026-11-06 — they were hardcoded before and would have
+collided with the 2005 run's files on Drive/locally). Expect ~1hr per national export (Section 12),
+same as the 2005 run. **Not yet submitted** — needs the user's interactive EE session, editing
+those two constants by hand between runs (not committed — the file's canonical state stays at the
+deployed `ONSET_MIN=2005`/`IMG_START=1999`).
+
 **Validation results (2026-11-05), deployed asset, within `bar_hull` (Barenblitt's own SW
 study-area hull):**
 - **Pixel-level, vs `classifica`:** exact 14.3%, ±1yr 51.0%, ±2yr 60.6% (n=37,689) — see the
@@ -300,6 +340,88 @@ study-area hull):**
 consistent with how this project has always treated Barenblitt comparisons (*agreement*, not
 *accuracy*; their own producer accuracy is 75.6%, so part of any gap may be on their side too).
 The 2005–2016 portion of any downstream panel carries real, non-trivial dating uncertainty.
+
+---
+
+## validate_backdating_method_fidelity.R
+
+**Purpose:** a one-off question, deliberately kept OUT of `diag_04_backdating.R` since it isn't
+tied to `build_04`'s own config the way everything in that script is (2026-11-06 naming-convention
+call: `validate_*` = one-off, no re-run-on-config-change relationship; `diag_NN_*` = re-run when a
+build stage changes). Isolates *method fidelity* from *spatial-footprint agreement*: anchors our
+replicated Barenblitt dating formula to Barenblitt's **own** `FullConversiontoMiningExtent2019.shp`
+footprint (uploaded once as `barenblitt_mining_2019_ext`) instead of our classifier's 2017 mask —
+so every `classifica` point is, by construction, inside the anchor, and whatever dating
+disagreement remains can't be blamed on "we didn't even detect that pixel."
+
+**Motivated by a 2026-11-06 conversation** working through why `diag_04_backdating.R`'s existing
+classifica accuracy (14.3%/51.0%/60.6%) looked low: reading Barenblitt's own methods section
+(`notes/barenblitt_dataset_documentation.md`) found their **own** algorithm only matches independent
+visual-analyst review at 33.8%/69.4%/76.1% — so `classifica` was never a clean ground truth to begin
+with — and confirmed a structural, unfixable input-data mismatch: their Step 1 cloud-masks via
+`pixel_qa` (Landsat **Collection 1**'s QA band name), while this script (like `build_04`) reads
+Collection 2's `QA_PIXEL` collections, since Collection 1 is now retired by USGS. This script tests
+how much of the remaining gap is attributable to that algorithm/input-vintage difference specifically,
+once the spatial-footprint confound is removed by anchoring to their own data.
+
+**Caveat:** `FullConversiontoMiningExtent2019.shp` cumulates through 2019; `classifica`
+(`MiningConversion_2007-2017Vec.shp`) only runs 2007–2017, so pixels mined only in 2018–2019 are
+simply unscored here (no error, just no reference to compare against). Window used:
+`ONSET_MIN=2007`/`ONSET_MAX=2017` (classifica's own full range — unlike `build_04`'s `ONSET_MAX=2016`,
+there's no reason to truncate early here since this isn't feeding our classifier's handoff at all).
+
+**Not yet run** — needs the interactive EE session. Output:
+`outputs/tables/backdating/validate_backdating_fidelity_classifica.csv`.
+
+---
+
+## diag_05_data_prep.R + diag_05_mining_by_region.qmd
+
+**Split 2026-11-06** into two files, on request, so the report can be re-rendered without a live EE
+session: `diag_05_data_prep.R` does the `ee_Authenticate()`/`ee_Initialize()`, the district
+`reduceRegions()` exports (district + protected-area overlap), and **also** builds every ggplot and
+calls `ggsave()` — it writes PNGs to `outputs/figures/diag_05/` and report-ready CSVs (already
+arranged/sliced, e.g. `top10_districts.csv`, `region_increase.csv`) plus a small `diag05_meta.rds`
+(the year range) to `outputs/tables/diag_05/`. `diag_05_mining_by_region.qmd` only
+`read_csv()`/`kable()`s those tables and `knitr::include_graphics()`s those PNGs — no `rgee`, `sf`,
+or `googledrive` in its dependency list, so it renders offline. Run the `.R` script first (in
+RStudio, interactively, for the EE browser login), then render the `.qmd`. The three canonical
+outputs consumed elsewhere (`outputs/tables/mining_by_district.csv`, `mining_by_region.csv`,
+`mining_protected_overlap_by_district.csv` — the last one feeds
+`explore_mining_vs_forest_type_app.js`'s `DISTRICT_PROTECTED_STATS`) are unchanged in content and
+path, just now written by the `.R` script instead of the `.qmd`.
+
+**Purpose:** District/region-level overview of cumulative galamsey extent (`mine_mask_ghana_c4_{yr}`,
+2017–2025, union-to-date) — national sanity check, region distribution/ranking/growth, top-10
+districts, and how much of each district's mining falls inside a WDPA/WDOECM **Designated**
+protected area (national parks, forest reserves — mostly the latter). Pulls protected areas
+directly from the **public GEE catalog** (`WCMC/WDPA/current/polygons` + `WCMC/WDOECM/current/polygons`,
+filtered to Ghana + Designated) — no upload needed, always current; `upload_protected_areas.R`
+(a local WDPA/WDOECM Jul 2026 extract) is kept only as a fallback, not the primary path.
+
+**Originally rewritten from `.Rmd` to Quarto `.qmd`** (2026-11-05), styled to match
+`code/4_presentation/galamsey_motivation.qmd`'s colour identity (galawine `#450457` + the project's
+plasma `MINING_PALETTE`) as a single scrollable HTML report, not a slide deck (a reveal.js format
+was considered and rejected — this report's dense per-district tables and multi-panel figures don't
+suit slide-by-slide presentation). The original `.Rmd`'s `MIN_MINING_KM2` cutoff-selection content
+(a district-level distribution histogram + candidate-cutoff table) was **dropped** — that question
+is settled (`explore_mining_vs_forest_type_app.js` already hardcodes `MIN_MINING_KM2 <- 1`) — and is
+archived at `notes/archive/diag_05_mining_by_region.Rmd` if that reasoning is ever needed again.
+
+**Feeds `explore_mining_vs_forest_type_app.js`'s `DISTRICT_PROTECTED_STATS`:** the protected-area
+section's output CSV (`outputs/tables/mining_protected_overlap_by_district.csv`) is converted to a
+plain JS object literal and pasted directly into the app — deliberately **not** computed live in
+the app itself. An earlier version did reduce a painted WDPA/WDOECM mask inside the app's
+`showStats()` and it measurably slowed every "Generate stats" click (painting the whole merged
+collection per click, not just the handful of sites near the selected district); since this stat is
+cross-sectional, there's no reason to ever recompute it per click, so a static lookup replaced the
+live `reduceRegion`.
+
+**Known rgee gotchas worked around (apply to any new script following this pattern):**
+`ee_extract()` calls `ee$Image$reduceRegions(image=img, ...)`, a calling convention the installed
+earthengine-api no longer accepts — bypassed throughout by calling `reduceRegions()`/`reduceRegion()`
+directly; `ee$Filter$and()` doesn't exist in the Python client (`and` is a reserved keyword there,
+unlike JS) — use `ee$Filter$And()`.
 
 ---
 

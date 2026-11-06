@@ -134,7 +134,7 @@ DRIVE_FOLDER  <- "ghana_mining_gee_exports"
 ee_Authenticate()
 ee_Initialize(drive = TRUE, project = EE_PROJECT)
 # ee_Initialize(drive = TRUE) does NOT hand googledrive a working token on its own -- needs its
-# own explicit auth call (same gotcha hit + fixed 2026-11-05 in diag_05_mining_by_region.Rmd /
+# own explicit auth call (same gotcha hit + fixed 2026-11-05 in diag_05_mining_by_region.qmd /
 # b_04_rs_mining_panel.R), or drive_find()/drive_download() below silently run as the wrong
 # Google account (or no account) and return zero matches.
 googledrive::drive_auth()
@@ -610,6 +610,97 @@ cat("\nREAD THIS: this compares TRENDS (does the shape of expansion match), not 
     "own producer accuracy is ~75.6% -- a dip in THEIR recorded area some year may be under-\n",
     "labeling that year, not a real slowdown; (3) correlation is necessarily computed over their\n",
     "2007-2016 overlap only -- our 2005-2006 points have nothing to compare against.\n", sep = "")
+
+#### 8c. Yearly expansion TREND at alternate ONSET_MIN windows (2026-11-06) ####
+# Tests whether Section 8's apparent pileup at 2005-2006 (the two years with zero classifica
+# cross-check) is a property of the METHOD (the floor moves with it) or specific to ONSET_MIN=2005.
+# Two windows: onset_min=2000 (does the floor just move to ~2001-2003?) and onset_min=2007
+# (Barenblitt's own window start -- directly comparable, no reference_tier=0 years at all).
+#
+# Prefers the REAL exported asset (mine_onset_year_{min}_{max}_barenblitt, built by a full
+# build_04_backdating.R run at that ONSET_MIN/IMG_START -- see explainer.md) when it exists -- same
+# full-resolution, full-national asset the 2005-2016 deploy used, not a cheaper approximation. Only
+# falls back to recomputing onset_year_bar from scratch (via build_onset_year(), bar_hull-restricted,
+# same as Section 4's request_classifica_export()) as an immediate rough check while that export is
+# still running (each takes ~1hr) or hasn't been submitted yet.
+run_yearly_expansion_trend <- function(onset_min, onset_max = 2016L, anchor_year = 2017L, scale = SCALE_TREND) {
+  out_asset <- file.path(EE_ASSET_HOME, sprintf("mine_onset_year_%d_%d_barenblitt", onset_min, onset_max))
+  if (asset_exists(out_asset)) {
+    message("Using deployed asset ", out_asset, " (full national resolution).")
+    onset_img <- ee$Image(out_asset)
+  } else {
+    message(out_asset, " not found -- recomputing on the fly over bar_hull only (rough check; ",
+            "submit the real build_04_backdating.R export for the robust version).")
+    # img_start = onset_min - 2L, NOT request_classifica_export()'s onset_min - 1L: build_onset_year()'s
+    # "barenblitt" branch needs deriv_years to start AT onset_min itself (deriv_years starts at
+    # img_start + 2) or the window's actual floor is silently pushed one year later than requested --
+    # exactly the off-by-one that would confound this specific pileup-location question.
+    img_start <- onset_min - 2L
+    img_end   <- onset_max + 2L
+    ever_mined <- build_ever_mined(anchor_year)
+    # region = bar_hull_ee (not the default whole-of-Ghana `ghana`) -- this is a synchronous
+    # interactive reduceRegion below, not a batch export; restricting the Landsat series to the hull
+    # we're reducing over avoids the "User memory limit exceeded" interactive ceiling the header's
+    # quick_window_check() note already warns about for national-extent interactive calls.
+    landsat   <- build_landsat_series(ever_mined, img_start, img_end, region = bar_hull_ee)
+    onset_img <- build_onset_year("barenblitt", landsat, ever_mined, onset_min, onset_max, img_start, img_end)
+  }
+
+  years <- onset_min:onset_max
+  area_bands <- ee$Image$cat(lapply(years, function(yr) {
+    onset_img$select("onset_year")$eq(yr)$
+      multiply(ee$Image$pixelArea())$divide(1e6)$rename(paste0("y", yr))
+  }))
+  reduce_trend_x <- function(s) {
+    area_bands$reduceRegion(reducer = ee$Reducer$sum(), geometry = bar_hull_ee, scale = s,
+                             maxPixels = 1e10, tileScale = 8L)$getInfo()
+  }
+  stats <- tryCatch(reduce_trend_x(scale), error = function(e) {
+    message("scale=", scale, " timed out -- retrying at scale=100")
+    reduce_trend_x(100L)
+  })
+  our_annual_x <- tibble(year = years, our_km2 = map_dbl(years, ~ stats[[paste0("y", .x)]]))
+
+  trend_x <- left_join(our_annual_x, bar_annual, by = "year") |>
+    arrange(year) |>
+    mutate(
+      our_cum = cumsum(our_km2),
+      bar_cum = if_else(year < min(bar_annual$year), NA_real_, cumsum(replace_na(bar_km2, 0)))
+    )
+
+  label <- sprintf("min%d_max%d", onset_min, onset_max)
+  write_csv(trend_x, file.path(OUT_DIR, paste0("yearly_expansion_vs_barenblitt_", label, ".csv")))
+
+  cor_annual_x <- cor(trend_x$our_km2, trend_x$bar_km2, use = "complete.obs")
+  cor_cum_x    <- cor(trend_x$our_cum, trend_x$bar_cum, use = "complete.obs")
+
+  trend_long_x <- trend_x |>
+    select(year, our_km2, bar_km2, our_cum, bar_cum) |>
+    pivot_longer(-year, names_to = "series", values_to = "km2") |>
+    mutate(
+      source = if_else(str_starts(series, "our"), "Ours (RS backdating)", "Barenblitt classifica"),
+      metric = if_else(str_ends(series, "cum"), "Cumulative", "Annual new area")
+    )
+  p_trend_x <- ggplot(trend_long_x, aes(year, km2, color = source)) +
+    geom_line(linewidth = 1) + geom_point(size = 2) +
+    facet_wrap(~ metric, scales = "free_y", ncol = 1) +
+    scale_color_manual(values = c("Ours (RS backdating)" = "#CD4071", "Barenblitt classifica" = "#450457")) +
+    labs(title = sprintf("Mining expansion trend, %d-%d (Barenblitt study-area hull only)", onset_min, onset_max),
+         subtitle = sprintf("Barenblitt classifica starts 2007 -- correlation over overlap: annual r = %.2f, cumulative r = %.2f",
+                             cor_annual_x, cor_cum_x),
+         x = NULL, y = "Area (km2)", color = NULL) +
+    theme_minimal(base_size = 12) + theme(legend.position = "bottom")
+  print(p_trend_x)
+  ggsave(file.path(OUT_DIR, paste0("yearly_expansion_vs_barenblitt_", label, ".png")), p_trend_x, width = 8, height = 7)
+
+  cat(sprintf("\n=== Yearly expansion trend vs Barenblitt classifica, ONSET_MIN=%d (bar_hull only) ===\n", onset_min))
+  print(trend_x, n = Inf)
+  cat(sprintf("\nCorrelation, ANNUAL (2007-2016 overlap): r = %.2f | CUMULATIVE: r = %.2f\n", cor_annual_x, cor_cum_x))
+  invisible(trend_x)
+}
+
+trend_2000 <- run_yearly_expansion_trend(onset_min = 2000L)   # does the floor pileup just move to ~2001-2003?
+trend_2007 <- run_yearly_expansion_trend(onset_min = 2007L)   # Barenblitt's own window -- directly comparable
 
 #### 9. Continuity check at the backdating/classifier seam (2026-11-05) ####
 # Barenblitt's classifica field is fixed at 2007-2017 (confirmed by Section 8's full year
