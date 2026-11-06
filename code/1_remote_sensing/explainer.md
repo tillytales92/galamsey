@@ -355,14 +355,11 @@ so every `classifica` point is, by construction, inside the anchor, and whatever
 disagreement remains can't be blamed on "we didn't even detect that pixel."
 
 **Motivated by a 2026-11-06 conversation** working through why `diag_04_backdating.R`'s existing
-classifica accuracy (14.3%/51.0%/60.6%) looked low: reading Barenblitt's own methods section
-(`notes/barenblitt_dataset_documentation.md`) found their **own** algorithm only matches independent
-visual-analyst review at 33.8%/69.4%/76.1% — so `classifica` was never a clean ground truth to begin
-with — and confirmed a structural, unfixable input-data mismatch: their Step 1 cloud-masks via
-`pixel_qa` (Landsat **Collection 1**'s QA band name), while this script (like `build_04`) reads
-Collection 2's `QA_PIXEL` collections, since Collection 1 is now retired by USGS. This script tests
-how much of the remaining gap is attributable to that algorithm/input-vintage difference specifically,
-once the spatial-footprint confound is removed by anchoring to their own data.
+classifica accuracy (14.3%/51.0%/60.6% exact/±1/±2yr, classifier-anchored) looked low. Also
+confirmed (separately, not part of this script's own comparison) a structural, unfixable
+input-data mismatch with Barenblitt's own pipeline: their Step 1 cloud-masks via `pixel_qa`
+(Landsat **Collection 1**'s QA band name), while this script (like `build_04`) reads Collection 2's
+`QA_PIXEL` collections, since Collection 1 is now retired by USGS.
 
 **Caveat:** `FullConversiontoMiningExtent2019.shp` cumulates through 2019; `classifica`
 (`MiningConversion_2007-2017Vec.shp`) only runs 2007–2017, so pixels mined only in 2018–2019 are
@@ -370,8 +367,24 @@ simply unscored here (no error, just no reference to compare against). Window us
 `ONSET_MIN=2007`/`ONSET_MAX=2017` (classifica's own full range — unlike `build_04`'s `ONSET_MAX=2016`,
 there's no reason to truncate early here since this isn't feeding our classifier's handoff at all).
 
-**Not yet run** — needs the interactive EE session. Output:
-`outputs/tables/backdating/validate_backdating_fidelity_classifica.csv`.
+**RUN 2026-11-06 — result: footprint-matching closes a real chunk of the gap.** Scored against the
+same 53,793 classifica points, footprint-matched vs. the existing classifier-anchored comparison:
+
+| | Coverage | Exact | ±1yr | ±2yr |
+|---|---|---|---|---|
+| Classifier-anchored (existing) | 70.1% (37,689/53,793) | 14.3% | 51.0% | 60.6% |
+| **Footprint-matched (this script)** | **89.2% (48,006/53,793)** | **17.1%** | **58.3%** | **71.3%** |
+
+Every metric improved, and scorable coverage nearly doubled — consistent with a real chunk of the
+original gap being the spatial-detection confound (points our classifier never recognized at all),
+not purely a dating-algorithm difference. Median absolute error 1yr, mean 2.16yr — most remaining
+disagreement is small. The residual gap is plausibly the Collection 1-vs-2 mismatch above, but that
+hasn't been separately tested here, just offered as the most likely remaining candidate.
+(Deliberately NOT compared to Barenblitt's own self-validation ceiling, 33.8/69.4/76.1% —
+that's their algorithm vs. independent human judgment, a different comparison type that doesn't
+belong in this algorithm-vs-algorithm-output series; mentioned here only so it isn't re-added later.)
+
+Output: `outputs/tables/backdating/validate_backdating_fidelity_classifica.csv`.
 
 ---
 
