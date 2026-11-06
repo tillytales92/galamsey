@@ -31,11 +31,9 @@ write-up of §1's classifier + backdating).*
 
 The dependent variable of the whole project: where and when land was converted to mining. Barenblitt
 is the current source; the RS panel below (this project's own classifier + backdating) is being
-developed to **replace** it (the `mine_data` swap point in Part 2/3 scripts) — see "Why we had to
-build our own product" below for why none of the existing shapefiles were enough on their own. For
-the full script-by-script detail behind the summary here, see
-`code/1_remote_sensing/explainer.md` (current status/config of every RS script) and
-`code/1_remote_sensing/embedding_classifier_approach.md` (the plain-language methodology write-up).
+developed to **replace** it (the `mine_data` swap point in Part 2/3 scripts). Full rationale and
+script-by-script detail: `code/1_remote_sensing/explainer.md` and
+`code/1_remote_sensing/embedding_classifier_approach.md`.
 
 | Dataset | Source | Coverage | Years | Status | Use | Script |
 |---------|--------|----------|-------|--------|-----|--------|
@@ -54,8 +52,7 @@ the full script-by-script detail behind the summary here, see
 
 ### 1.1 Raw satellite imagery — the classifier's inputs
 
-Moved here from its own section (2026-11-06) — this is an *input* to §1's classifier, not a
-separate final dataset in its own right.
+An *input* to §1's classifier, not a separate final dataset.
 
 | Dataset | Source (GEE collection) | Coverage | Years | Resolution | Status | Use | Script |
 |---------|-------------------------|----------|-------|-----------|--------|-----|--------|
@@ -81,29 +78,13 @@ Legal/industrial mining context — used to relate galamsey to formal concession
 | Ghana Mining Repository — owner register (Excel) | same | All Ghana, 20,494 companies/individuals | per-owner `Incorporation Date` (range not yet checked) | ✅ | Potential — EDA only | `0_data/d_12_mining_repository.R` |
 | **Historical mine-licence register** | Minerals Commission / PMMC archive | All Ghana | licence issue dates (historical) | 🔒 | Potential | — |
 
-**Note:** the table above was wrong in two ways until 2026-11-06 — (1) `d_12_mining_repository.R`
-already exists and does real EDA (parsing, cross-file join-key checks, a `gold` dummy, 5 figures in
-`outputs/figures/mining_repository/`) on all four files, not just "inspect raw files"; (2) this
-*is* a real time series, not a flat 2025 snapshot — checking the cleaned outputs directly
-(`data/processed/mining_repository/`) shows `start_date` in **both** the active-licence KML and the
-license register spans **1995–04–19 to 2025–10–03** (confirmed, not assumed), with a real if thin
-pre-2010 tail (2 rows in 1995, 13 in 1997, etc.) under a heavy recent skew (2019–2025 = ~64% of
-rows). One thing worth checking before trusting it fully: **392 of 1,786 rows share the exact value
-`2025-01-01`** — plausibly a default/placeholder rather than a genuine issue date; `d_12` extracts
-the field but doesn't yet analyze its completeness/range, so this hasn't been resolved.
-
-**Pending-applications backlog:** 6,894 pending vs. 1,279 granted licences (~5.4×) — a real
-backlog, but mostly recent rather than decades-old: 81% of pending applications (5,614 of 6,894)
-were filed 2022–2025 alone, against a thin trickle before that (single/double digits per year back
-to 1997). Plausibly tied to Ghana's galamsey regularization/crackdown push in that window, but that
-specific link hasn't been checked — flagging as a hypothesis, not a confirmed cause.
-
-**Source / update check:** [ghana.revenuedev.org/map](https://ghana.revenuedev.org/map) — presents
-Minerals Commission cadastre data, but note the domain itself is a third-party portal (RevenueDev),
-not a `gov.gh` site, so this is Minerals Commission *data*, accessed via someone else's interface,
-not a direct government download — worth keeping in mind for provenance. Since the backlog above
-shows this register is actively changing (granted/pending counts will keep moving), re-check that
-portal for a newer export before treating the 09-11-2025 snapshot as current.
+**Notes:** `start_date` genuinely spans 1995–2025 in both the active-licence KML and the license
+register — but 392 of 1,786 rows share the exact value `2025-01-01`, plausibly a placeholder rather
+than a real issue date, not yet checked. Pending applications (6,894) outnumber granted licences
+(1,279) ~5.4×, but it's mostly a recent surge, not a decades-old backlog: 81% were filed 2022–2025.
+The RevenueDev portal is a third-party interface onto Minerals Commission data, not a direct
+`gov.gh` download — re-check it for a newer export before treating the 09-11-2025 snapshot as
+current.
 
 ---
 
@@ -134,23 +115,18 @@ for the full river-definition comparison.)
 |---------|--------|----------|-------|-----------|--------|-----|--------|
 | OSM waterways (lines) | OpenStreetMap, via [Geofabrik](https://download.geofabrik.de/africa.html) | Ghana | current snapshot | vector | ✅ | Current | `0_data/d_03_waterways.R` |
 | MERIT Hydro (`dir`/`upa`/`wth`/`elv`) | Yamazaki et al. (2019), *Water Resources Research* 55:5053–5073. DOI: [10.1029/2019WR024873](https://doi.org/10.1029/2019WR024873) | Study area + Ankobra tiles | static | ~90 m | ✅ | Current | `0_data/d_04_merit.R` |
-| JRC Global Surface Water | [`JRC/GSW1_4/GlobalSurfaceWater`](https://developers.google.com/earth-engine/datasets/catalog/JRC_GSW1_4_GlobalSurfaceWater) (GEE) | Global | 1984–2021 | 30 m | ✅ | **Current** — `occurrence>=90` knocks out permanent water + a coast strip in `build_03_embedding_panel.R` (`APPLY_WATER_MASK`, deployed 2026-09-09); corrected here 2026-11-06, was wrongly listed as not-yet-acquired | `1_remote_sensing/build_03_embedding_panel.R` |
+| JRC Global Surface Water | [`JRC/GSW1_4/GlobalSurfaceWater`](https://developers.google.com/earth-engine/datasets/catalog/JRC_GSW1_4_GlobalSurfaceWater) (GEE) | Global | 1984–2021 | 30 m | ✅ | Current — `occurrence>=90` knocks out permanent water + a coast strip in `build_03_embedding_panel.R` (`APPLY_WATER_MASK`) | `1_remote_sensing/build_03_embedding_panel.R` |
 | HydroBASINS (level-9 sub-basins) | WWF/HydroSHEDS [`WWF/HydroSHEDS/v1/Basins/hybas_9`](https://developers.google.com/earth-engine/datasets/catalog/WWF_HydroSHEDS_v1_Basins_hybas_9) (GEE) | Study area | static | ~sub-basin polygons | ✅ | Current | `0_data/d_01_download_gee.R` (download) → `0_data/d_07_hydrobasins.R` (hex assignment) |
 | HydroSHEDS / HydroRIVERS | WWF / Lehner & Grill (2013), *Hydrological Processes* 27:2171–2186. DOI: [10.1002/hyp.9740](https://doi.org/10.1002/hyp.9740) | Global | static | 15 arc-sec | ⬜ | Potential | — |
 
-**Why several:** **OSM** gives real, named rivers (distance-to-river, display) but is gap-prone.
-**MERIT Hydro** is a modelled, gap-free channel network that reaches small tributaries and provides
-the **D8 flow direction** for the upstream→downstream hex graph (must be traced on its native 4326
-grid). **JRC** is used for exactly the role once planned for it — flagging actual standing water —
-though currently as a *postprocessing knockout in the RS classifier* (§1), not yet as a
-cross-validation check on MERIT's channels in Part 2/3's own hex covariates; that original
-"validate MERIT channels" use is still open.
-**HydroBASINS** now supplies real **sub-basin IDs** for the event-study SE clustering — downloaded
-2026-07-06 (`d_01` Sec 6b, 453 basins in the study region) and assigned to hexes by `d_07_hydrobasins.R`
-(280 level-9 basins over the 5 km grid, `basin_num` factor), replacing the earlier 25 km
-centroid-block stand-in (`event_study_design.md` SE-clustering section; the stand-in remains a
-fallback where `basin_num` is unpopulated, e.g. the deferred 1 km grid). **HydroRIVERS** (vector
-river lines/topology) remains a candidate, distinct from the already-integrated HydroBASINS polygons.
+**Why several:** **OSM** gives real, named rivers but is gap-prone; **MERIT Hydro** is a modelled,
+gap-free network providing the **D8 flow direction** for the upstream→downstream hex graph (native
+4326 grid, must not be reprojected). **JRC** currently knocks out permanent water in the RS
+classifier (§1) — its originally-planned role, cross-validating MERIT's channels in Part 2/3, is
+still open. **HydroBASINS** supplies real sub-basin IDs for event-study SE clustering (`basin_num`,
+via `d_07_hydrobasins.R`), replacing an older 25 km centroid-block stand-in that remains a fallback
+where `basin_num` is unpopulated (e.g. the 1 km grid) — see `event_study_design.md`. **HydroRIVERS**
+remains an unacquired candidate.
 
 ---
 
@@ -180,36 +156,12 @@ descriptives.
 | MODIS VI (NDVI + EVI) | `MODIS/061/MOD13Q1` (QA-filtered 16-day series; annual mean derived locally) | All Ghana | 2000–2025 | 250 m | ✅ | Current | `0_data/d_01_download_gee.R` |
 | Landsat annual VI (NDVI + EVI) | `LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_NDVI` + `_ANNUAL_EVI` | All Ghana | 1995–2025 | 30 m | 🔄 | Potential — **not used for now** (high NA share) | `0_data/d_01_download_gee.R` |
 
-**Why both sensors:** **MODIS** (`MOD13Q1`, 250 m, from 2000) is the one actually in use — QA-filtered
-to ~16% NA/year, far more complete than **Landsat** (finer at 30 m, back to 1995, but ~30–36%
-NA/year from cloud). The event study is built on MODIS peak (max) NDVI/EVI, masked by ESA CCI land
-cover — checked against the actual scripts 2026-11-06, since this had gone stale: `a_05_event_study_1.Rmd`
-(Q0, own-hex) now heads with the **`no-mine-crop`** mask (`evi_modis_nominecrop_max`, headline since
-2026-07-16) — `veg_narrow` was its *former* headline and has since been dropped there entirely;
-`a_05_event_study_2.Rmd` (Q1, upstream→downstream) heads with **`evi_modis_veg_narrow_max`** (EVI,
-the `veg_narrow` cropland-union-forest mask) — i.e. the two files' headlines are NOT what they were
-when this note was last written (veg_narrow moved from `_1`'s headline to `_2`'s, and NDVI/cropland
-is not actually either file's headline). The full NDVI/EVI × {veg-narrow, no-mine-crop, cropland}
-outcome grid is still looped as robustness in both.
-**Landsat VI is downloaded but not used for now** — its ~30–36% NA/year (cloud) share is too high for
-the annual panel; it is retained as the finer-grained (30 m), longer-history (from 1995) alternative
-to revisit once a better cloud-gap-filling composite is in place. Missingness diagnostics:
-`0_data/d_05_ndvi.R`. *(MODIS VI upgraded from the 1 km `MOD13A2` to the 250 m `MOD13Q1` on
-2026-07-03 — same bands and `SummaryQA` scheme and scale factor; re-export complete, full
-2000–2025 16-day series and annual stacks are on disk.)*
-
-**Export region (2026-07-03):** `d_01` now restricts **all** its GEE exports to the Barenblitt study
-area (SW Ghana + 25 km buffer) via a single `export_region` variable — the full-Ghana 30 m Landsat
-export tiled into multiple GeoTIFFs, and the study area is all the analysis needs. The full-Ghana
-region is retained but commented out (one-line scale-up). The existing land-cover / CHIRPS files on
-disk are still national (not re-exported, since their data is unchanged); re-running those sections
-would produce study-area versions.
-
-**MODIS VI is now downloaded as the full QA-masked 16-day series** (`modis_{ndvi,evi}_16day_ghana_{yr}.tif`,
-~23 bands/yr), not a GEE-side annual mean — this is what the peak-EVI outcome (ESA CCI mask per
-16-day step → per-hex mean → annual max) requires. `d_01` Section 9 derives the annual-mean stacks
-(`modis_{ndvi,evi}_ghana_stack.tif`) from them locally, so the current annual-outcome scripts are
-unaffected.
+**Why both sensors:** **MODIS** (`MOD13Q1`, 250 m, from 2000) is the one actually in use —
+QA-filtered to ~16% NA/year, far more complete than **Landsat** (finer at 30 m, back to 1995, but
+~30–36% NA/year from cloud, so downloaded but not used). The event study runs on MODIS peak (max)
+NDVI/EVI masked by ESA CCI land cover — current headline outcomes, confirmed against the scripts
+2026-11-06: `a_05_event_study_1.Rmd` (Q0) → `evi_modis_nominecrop_max`; `a_05_event_study_2.Rmd`
+(Q1) → `evi_modis_veg_narrow_max`. Missingness diagnostics: `0_data/d_05_ndvi.R`.
 
 ---
 
@@ -224,25 +176,17 @@ unaffected.
 | ESA WorldCover | `ESA/WorldCover/v200` (Sentinel-1/2) | Global | 2020, 2021 | 10 m | ⬜ | Potential | — |
 | Google Dynamic World | `GOOGLE/DYNAMICWORLD/V1` (Sentinel-2) | Global | 2015–present | 10 m | ⬜ | Potential | — |
 
-**ESA CCI (300 m, 1995–2022) is the preferred land-cover source** and the mask for the peak-EVI
-outcome — its finer legend separates evergreen/deciduous tree cover and rainfed cropland from
-mosaics, covers the full VI history, and doesn't stop at 2020 like the MODIS stack. MODIS MCD12Q1
-(IGBP) is retained only as a coarser comparison. Diagnostics for both: `d_05_ndvi.R`.
-
-**No separate "Landsat land cover" exists** — the `*_landsat_forestcrop` panel columns just resample
-the MODIS/CCI layer onto the Landsat 30 m grid (`b_03a_vi_panel.R`). MODIS motivated the CCI switch:
-it under-detects Ghana's forest (Evergreen Broadleaf ~6–11% of pixels), leaving `*_forestcrop` ~80%
-NA at 5 km, and its stack still ends 2020 (`\*` above) despite `d_01` requesting through 2024. A 10 m
-product (ESA WorldCover / Dynamic World) or Hansen tree-cover/loss would improve both the forest and
-cropland masks — Hansen is downloaded (since 2026-07-07) but not yet used as either; see
+**ESA CCI is the preferred land-cover source** (mask for the peak-EVI outcome) — finer legend,
+covers the full VI history, doesn't stop at 2020 like MODIS MCD12Q1 (IGBP under-detects Ghana's
+forest, ~80% NA at 5 km; retained only as a coarser comparison). No separate "Landsat land cover"
+exists — `*_landsat_forestcrop` just resamples MODIS/CCI onto the Landsat grid. Diagnostics:
+`d_05_ndvi.R`. A 10 m product or Hansen would improve both forest and cropland masks; see
 `galamsey_tasklist.md`.
 
-**ForTy would be valuable specifically for cocoa-land loss.** It's already used for forest-type
-attribution generally — the mining-vs-ForTy demo (`explore_mining_vs_forest_type_app.js`) found
-76.9% of Nkotumso's mining growth traced back to forest — but ForTy's classes don't isolate cocoa
-as its own category, so a genuine **cocoa-specific loss** breakdown needs an additional layer
-(Hansen + a cocoa-specific classifier, e.g. Kalischek et al.'s cocoa map) layered on top — identified
-as a next step, not started.
+**ForTy would help specifically with cocoa-land loss** — it's already used for forest-type
+attribution generally (76.9% of Nkotumso's mining growth traced to forest), but its classes don't
+isolate cocoa, so that needs an added layer (Hansen + a cocoa-specific classifier, e.g. Kalischek et
+al.) — identified, not started.
 
 ---
 
@@ -295,25 +239,11 @@ miners sell at prices closely tied to the world spot price. Nightlights / WorldP
 open, gridded proxies for local economic activity, population exposure, and wealth — cheaper
 alternatives to the (blocked) survey microdata for the labour/welfare questions.
 
-**AReNA DHS-GIS (IFPRI, 2020)** links DHS clusters to >1,000 geo-referenced layers on agricultural
-production, agroecology, climate and infrastructure, split across 13 files. Two are directly relevant
-here: **DHS_SPAM** (MapSPAM crop production / yield / harvested-area, ~10 km grid) and **DHS_NDVI** —
-co-located at the same DHS clusters, so it offers an independent **agricultural-production benchmark
-for the NDVI/EVI proxy** (§6): where SPAM crop output/yield is high, the VI signal should track it.
-**Caveat:** the unit is the DHS *cluster* (point), not our hex grid, and Ghana clusters are jittered
-(±2–5 km) for confidentiality — so it validates the VI↔production relationship at cluster resolution
-rather than plugging into the hex panel directly. The underlying MapSPAM raster can be pulled
-separately if a gridded crop-production covariate is wanted. Ties into the existing DHS row above.
-
-**MapSPAM 2020 v2.0 Release 2 (IFPRI, `doi:10.7910/DVN/SWPENT`)** is that underlying raster, pulled
-directly rather than through the DHS-cluster link above: a cross-entropy allocation of national/
-sub-national crop statistics to a global **~5 arcmin (~10 km) grid**, for the **2020** crop year.
-Files (CSV + GeoTIFF) give **harvested area, physical area, production, and yield**, each split by
-farming technology (irrigated / rainfed high-input / rainfed low-input / rainfed subsistence, summed
-to "all technologies"). Because it is a native grid (not jittered DHS points), it can plug directly
-into the hex panel as a gridded agricultural-productivity covariate or outcome-validation layer for
-the NDVI/EVI proxy (§6) — unlike the AReNA row above, no DHS-cluster matching or jitter caveat
-applies. Single cross-section (2020 only), so it cannot itself provide a time series.
+**AReNA DHS-GIS** links DHS clusters to agricultural/climate layers incl. MapSPAM and NDVI — an
+independent production benchmark for the NDVI/EVI proxy (§6), but at jittered DHS-cluster (point)
+resolution, not hex resolution. **MapSPAM** is the underlying ~10 km crop-production raster (2020
+only), pulled directly — it plugs into the hex panel with no jitter caveat, but as a single
+cross-section, not a time series.
 
 ---
 
@@ -336,8 +266,8 @@ computed in the RS index pipeline and could be extracted for downstream reaches.
 ## Key Data Caveats
 
 Dataset-specific caveats (Barenblitt, Girard, land cover, the admin shapefile's crash-prone date
-columns) now live in their own sections rather than duplicated here (2026-11-06 cleanup). What
-remains is genuinely cross-cutting, or not resolved anywhere else yet.
+columns) live in their own sections, not duplicated here. What's below is genuinely cross-cutting,
+or not resolved anywhere else yet.
 
 - **MERIT Hydro's flow direction must not be reprojected** — trace the flow graph on its native
   EPSG:4326 grid; coverage is also still study-area + Ankobra tiles only, not all of Ghana.
