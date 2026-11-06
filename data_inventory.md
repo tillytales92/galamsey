@@ -48,49 +48,9 @@ the full script-by-script detail behind the summary here, see
 | SmallMinesDS | Ofori-Ampofo et al. (2025), *IEEE GRSL*, dense expert masks, 10 m. DOI: [10.1109/LGRS.2025.3566356](https://doi.org/10.1109/LGRS.2025.3566356); data: [HuggingFace `ellaampy/SmallMinesDS`](https://huggingface.co/datasets/ellaampy/SmallMinesDS) (CC-BY-SA-4.0) | 5 SW districts | Jan 2016 + Jan 2022 (2 epochs) | ✅ | Current (held-out validation — never enters training; primary accuracy benchmark) | `1_remote_sensing/build_01_labels.R` / `diag_02_scoring.R` |
 | Africa Mining Watch — early detections | MLP detector (GeoJSON boxes + rectpolys). [africaminingwatch.org](https://www.africaminingwatch.org/) | SW Ghana (pilot bbox, not national) | 2025 snapshot | ✅ | Current, but **own EDA only** (confidence/coverage stats, Part 1) — deliberately NOT compared against our classifier output (dropped from the per-pixel overlay in Part 3, 2026-08-05: site-level polygons + unconfirmed imagery vintage don't suit that check); SmallMinesDS gets that treatment instead, not AMW | `1_remote_sensing/diag_02_external_references.R` |
 
-**How the RS panel was built, and how its two eras differ** (brief — see
-`embedding_classifier_approach.md` for the full walkthrough):
-
-- **2017–2025 is a genuinely new, independent detection method** (`build_02`): a Random Forest
-  trained on Google AlphaEarth's annual satellite embeddings (10 m, 64-band summary of everything
-  the satellites saw that year), learning 4 classes (mine / urban / water / other — urban and water
-  assigned at training time from GHSL `built_surface` + JRC water `occurrence`, with "mine always
-  wins"). **Training data:** Barenblitt + Tang & Werner polygons (Maus was tried and ablated out —
-  `no_maus` won every matched-precision comparison, 2026-08-18), held-out against SmallMinesDS. Run
-  nationally per year → annual mine-probability tiles; `build_03` thresholds those (cutoff 70) and
-  knocks out permanent water, roads, urban land, and named industrial mines → an annual binary mask.
-  Barenblitt's polygons feed this only as *training labels* — the detection method itself owes it
-  nothing.
-
-- **2005–2016 is the opposite: not a new method at all, but a direct port of Barenblitt's own
-  dating algorithm** (`build_04`), because AlphaEarth embeddings don't exist before 2017 so there is
-  nothing new to classify on. Barenblitt's public GEE script
-  ([abarenblitt/GhanaArtisanalMining](https://github.com/abarenblitt/GhanaArtisanalMining)) dates a
-  conversion as the year of **steepest decline in a 3-year centred rolling NDVI average** — not
-  necessarily the year mining actually started, just the year of the sharpest vegetation-loss
-  *disturbance* (and since the underlying composites are Jan–Jun/dry-season only, mining that starts
-  in H2 can register a year late). `build_04` replicates that exact method, pixel by pixel, but only
-  applies it to pixels the *classifier* already knows are mined by 2017 (the "anchor") — so it's
-  Barenblitt's dating logic running on our detection's footprint, extending the panel backward to
-  where no embeddings exist. Being the same method, it inherits the same caveat, which is why its
-  robustness to the choice of onset-year window is currently being tested (see
-  `code/1_remote_sensing/explainer.md`'s `diag_04_backdating.R`/`build_04_backdating.R` sections).
-
-**Why we had to build our own product** (condensed from `embedding_classifier_approach.md` §1):
-none of the existing Ghana mining shapefiles give an **annual, national** panel, which is what the
-economic analysis needs as its treatment clock, not a snapshot:
-- **Barenblitt** — the best available before this project, but SW Ghana only, 2007–2017 only (no
-  updates since), and 75.6% producer accuracy (positive labels only).
-- **Maus et al. / Tang & Werner** — each a single snapshot (not a time series), no usable
-  artisanal/industrial split for Ghana, and incomplete ASM coverage (Tang: case-study only; Maus:
-  drawn around known *industrial* sites, so riverine galamsey is systematically under-drawn).
-- **Africa Mining Watch** — a pilot bounding box only (not national), a single 2025 snapshot.
-
-So instead of picking one, all three (Barenblitt + Maus + Tang & Werner) were harmonised as
-candidate *training* labels (`build_01_labels.R`), with SmallMinesDS held back as an independent
-*referee* never used in training — and a classifier trained on AlphaEarth embeddings generalises
-from the learned *signature* of mining to produce the annual, national panel none of the source
-shapefiles could supply on their own.
+**How it was built, why none of the existing shapefiles were enough on their own, and how the
+2017–2025 (new detection) vs. 2005–2016 (ported Barenblitt dating) eras differ** — all in
+`embedding_classifier_approach.md`; not re-explained here to avoid two copies drifting apart.
 
 ### 1.1 Raw satellite imagery — the classifier's inputs
 
@@ -144,14 +104,6 @@ not a `gov.gh` site, so this is Minerals Commission *data*, accessed via someone
 not a direct government download — worth keeping in mind for provenance. Since the backlog above
 shows this register is actively changing (granted/pending counts will keep moving), re-check that
 portal for a newer export before treating the 09-11-2025 snapshot as current.
-
-This changes the D3c picture (`a_04`'s "does galamsey accelerate after the first formal mine
-appears?" event study): it was recorded as **blocked** because "the 2025 snapshot has no
-establishment-year field" — that's no longer accurate, the field exists and goes back decades. The
-**remaining** blocker is narrower: confirming `start_date` means *first issuance* rather than
-*most recent renewal* (which the 2025-01-01 pileup above makes worth checking first), not acquiring
-a wholly separate historical register. The 🔒 row above is kept for a genuinely separate
-PMMC/archival source, in case `start_date` turns out not to answer D3c on its own.
 
 ---
 
