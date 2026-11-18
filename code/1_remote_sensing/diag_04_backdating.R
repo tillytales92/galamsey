@@ -15,8 +15,9 @@
 #
 # Pixels are picked from the deployed asset by category (2026-11-16: 5 categories, two figures, see
 # Section 4): clean + gradual loss (method figure); one-year dip, bare at start, early vs Barenblitt
-# et al. (weak-spots figure). Rule e is overlaid where it changes the series.
-# The onset is recomputed here from the raw observations and checked against the asset's value
+# et al. (weak-spots figure). Figures show the deployed rule-e series; the plain replica is overlaid in
+# the weak-spots figure where it differs.
+# The rule-e onset is recomputed here from the raw observations and checked against the asset's value
 # ("recomputed_matches" in the CSV) -- a mismatch means this script and build_04 disagree, and the
 # figure would then not show what the asset actually did.
 #
@@ -42,7 +43,10 @@ ee_Initialize(project = EE_PROJECT)
 #### 2. Parameters (must match build_04_backdating.R) ####
 ONSET_MIN <- 2000L; ONSET_MAX <- 2017L
 IMG_START <- 1998L; IMG_END   <- 2018L
-ONSET_ASSET <- file.path(EE_ASSET_HOME, sprintf("mine_onset_year_%d_%d_barenblitt", ONSET_MIN, ONSET_MAX))
+# 2026-11-17: deployed = rule e (build_04 rewrite); the plain-replica asset is kept and read for the
+# weak-spots figure only (its onset band = "onset_plain"), to show what rule e changed.
+ONSET_ASSET <- file.path(EE_ASSET_HOME, sprintf("mine_onset_year_%d_%d_rulee", ONSET_MIN, ONSET_MAX))
+PLAIN_ASSET <- file.path(EE_ASSET_HOME, sprintf("mine_onset_year_%d_%d_barenblitt", ONSET_MIN, ONSET_MAX))
 N_PER_YEAR  <- 40L    # candidate pixels sampled per onset year
 SEED        <- 7L
 
@@ -54,7 +58,8 @@ bar_hull_ee <- sf_as_ee(st_sf(geometry = st_convex_hull(st_combine(st_geometry(c
 
 #### 2b. By-year summary of the whole deployed asset (for the report's results section) ####
 # One exact frequency histogram over the saved asset (cheap: no Landsat). Packed code per pixel:
-#   in_hull*1e8 + onset_idx*1e6 + lt_agree*1e5 + start_class*1e4 + deriv_bin*100 + n_computable
+#   persistent_loss*1e9 + in_hull*1e8 + onset_idx*1e6 + lt_agree*1e5 + start_class*1e4 + deriv_bin*100 + n_computable
+#   (max ~1.12e9, inside int32)
 #   onset_idx = onset_year - 1999 (0 = undatable); lt_agree 0/1/2, 9 -> 3 (undated);
 #   start_class 0 = bare <0.4, 1 = 0.4-0.6, 2 = >=0.6, 3 = no data; deriv_bin = loss x1000 / 10, 0-49.
 asset   <- ee$Image(ONSET_ASSET)
@@ -65,7 +70,8 @@ start_class <- ee$Image$constant(3L)$
   where(sn$gte(400)$And(sn$lt(600)), 1L)$
   where(sn$gte(600), 2L)
 onset   <- asset$select("onset_year")$toInt32()
-code_s  <- in_hull$multiply(100000000L)$
+code_s  <- asset$select("persistent_loss")$toInt32()$multiply(1000000000L)$
+  add(in_hull$multiply(100000000L))$
   add(onset$subtract(1999L)$max(0L)$multiply(1000000L))$
   add(asset$select("lt_agree")$toInt32()$min(3L)$multiply(100000L))$
   add(start_class$multiply(10000L))$
@@ -76,7 +82,8 @@ ghana_bounds <- ee$FeatureCollection(file.path(EE_ASSET_HOME, "rs05_ghana"))$geo
 h <- code_s$reduceRegion(reducer = ee$Reducer$frequencyHistogram(), geometry = ghana_bounds, scale = 30L,
                          maxPixels = 1e11, tileScale = 8L)$getInfo()
 summary_tbl <- tibble(code = as.numeric(names(h$code)), n_pixels = unlist(h$code)) |>
-  mutate(region       = if_else(code %/% 1e8 == 1, "bar_hull", "outside"),
+  mutate(persistent_loss = as.integer(code %/% 1e9),
+         region       = if_else((code %/% 1e8) %% 10 == 1, "bar_hull", "outside"),
          onset_year   = if_else((code %/% 1e6) %% 100 == 0, 0, 1999 + (code %/% 1e6) %% 100),
          lt_agree     = c("agree", "disagree", "no_signal", "undated")[(code %/% 1e5) %% 10 + 1],
          start_class  = c("bare", "partly", "vegetated", "no_data")[(code %/% 1e4) %% 10 + 1],
@@ -152,7 +159,7 @@ message("Classifier-era series written (2017 stock: ",
 }
 
 #### 3. Candidate pixels: stratified by onset year, with every asset band ####
-cand <- asset$stratifiedSample(numPoints = N_PER_YEAR, classBand = "onset_year", region = bar_hull_ee,
+cand <- asset$addBands(ee$Image(PLAIN_ASSET)$select("onset_year")$rename("onset_plain"))$stratifiedSample(numPoints = N_PER_YEAR, classBand = "onset_year", region = bar_hull_ee,
                                scale = 30L, seed = SEED, geometries = TRUE, tileScale = 4L) |>
   ee_as_sf(via = "getInfo")
 hits <- st_intersects(cand, conv)
@@ -164,10 +171,20 @@ message(nrow(cand), " candidate pixels, ", sum(!is.na(cand$bar_year)), " with a 
 #   method (report 1.2): how the method works -- one clean and one gradual loss;
 #   weak   (report 4):   the weak spots the text discusses -- one-year dip (the 2002 pile-up / rule e
 #                        case, diag_06), bare at start (bare_pre2005 flag), dated early vs Barenblitt et al.
+# 2026-11-17 (rule e deployed): method pixels are ones where rule e and the plain replica agree, so the
+# method figure is the plain method as described in report 1.2; the dip pixel is one the plain replica
+# dated 2002 and rule e moved, so the weak-spots figure shows the fix.
+# 2026-11-18: method pixels must also be typical GOOD cases -- loss persists, Barenblitt et al. (+1) within
+# +-1 yr, dense enough imagery; the gradual one dated 2010+ (the random draw had picked a 2005 pixel with a
+# 2007-2012 data gap and a later NDVI rise, i.e. a weak spot, not an illustration of the method).
+bar_ok <- quote(!is.na(bar_year) & abs(onset_year - (bar_year + 1L)) <= 1L)
 cats <- list(
-  "Clean loss"    = quote(start_ndvi_x1000 >= 650 & ndvi_deriv_x1000 >= 200 & lt_agree == 0 & n_computable_years >= 12),
-  "Gradual loss"  = quote(start_ndvi_x1000 >= 600 & between(ndvi_deriv_x1000, 60, 110) & lt_agree != 1),
-  "One-year dip"  = quote(onset_year == 2002 & start_ndvi_x1000 >= 600),
+  "Clean loss"    = bquote(start_ndvi_x1000 >= 650 & ndvi_deriv_x1000 >= 200 & lt_agree == 0 & n_computable_years >= 12 &
+                             onset_plain == onset_year & persistent_loss == 1 & .(bar_ok)),
+  "Gradual loss"  = bquote(start_ndvi_x1000 >= 600 & between(ndvi_deriv_x1000, 60, 110) & lt_agree != 1 &
+                             onset_plain == onset_year & persistent_loss == 1 & onset_year >= 2010 &
+                             n_computable_years >= 12 & .(bar_ok)),
+  "One-year dip"  = quote(onset_plain == 2002 & onset_year != 2002 & start_ndvi_x1000 >= 600),
   "Bare at start" = quote(start_ndvi_x1000 < 400 & onset_year > 0),
   # Fidelity test: 19% of points dated >= 4 yrs before Barenblitt et al. (+1). Onset >= 2008 keeps
   # the 2007 window-edge cases out.
@@ -178,7 +195,7 @@ FIG_GROUPS <- list(
   method = list(cats = c("Clean loss", "Gradual loss"), file = "ndvi_timeseries_method",
                 title = "How the Barenblitt-replica method dates mining onset", show_e = FALSE),
   weak   = list(cats = c("One-year dip", "Bare at start", "Early vs Barenblitt et al."), file = "ndvi_timeseries_weakspots",
-                title = "Weak spots of the Barenblitt-replica dating", show_e = TRUE)
+                title = "Weak spots of the dating (rule e deployed)", show_e = TRUE)
 )
 set.seed(SEED)
 picked <- imap_dfr(cats, function(cond, label) {
@@ -253,7 +270,8 @@ series <- obs |> group_by(category, year) |> summarise(ndvi_max = max(ndvi), n_o
                     if (sum(ok) >= 2) { iv <- approx(year[ok], ndvi_max[ok], xout = year, rule = 1)$y
                                         if_else(n_obs == 1L & !is.na(iv), iv, ndvi_max) } else ndvi_max },
          ma3_e    = (lag(ndvi_e) + ndvi_e + lead(ndvi_e)) / 3,
-         winner_e = win_year(year, lag(ma3_e) - ma3_e)) |>
+         loss_e   = lag(ma3_e) - ma3_e,
+         winner_e = win_year(year, loss_e)) |>
   ungroup()
 
 # One-year dip: keep the first candidate whose lowest year in 2002-2003 rests on ONE observation and
@@ -275,25 +293,29 @@ if (length(dip_c)) {
 
 check <- series |> group_by(category) |>
   summarise(recomputed = year[winner][1], recomputed_e = year[winner_e][1], .groups = "drop") |>
-  right_join(st_drop_geometry(picked) |> select(category, onset_year, ndvi_deriv_x1000, start_ndvi_x1000,
-                                                lt_agree, n_computable_years, bar_year), by = "category") |>
-  mutate(recomputed_matches = !is.na(recomputed) & recomputed == onset_year)
+  right_join(st_drop_geometry(picked) |> select(category, onset_year, onset_plain, ndvi_deriv_x1000, start_ndvi_x1000,
+                                                lt_agree, n_computable_years, persistent_loss, bar_year), by = "category") |>
+  # deployed asset = rule e; the plain recompute is checked against the kept plain asset
+  mutate(recomputed_matches = !is.na(recomputed_e) & recomputed_e == onset_year,
+         plain_matches      = !is.na(recomputed) & recomputed == onset_plain)
 print(check, width = Inf)
 if (!all(check$recomputed_matches))
   message("NOTE: recomputed onset differs from the asset for some pixels -- the asset is at 30 m in ",
           "EPSG:4326, this is the UTM pixel under the point, so a neighbouring-pixel mismatch is possible.")
 
 # LandTrendr's year isn't stored when it disagrees/doesn't fire; show it only via lt_agree in the label
-labels <- check |> mutate(label = sprintf("%s | onset %s | LT %s | Barenblitt et al.+1 %s | start NDVI %.2f",
+labels <- check |> mutate(label = sprintf("%s | onset %s%s | LT %s | Barenblitt et al.+1 %s | start NDVI %.2f",
                                           category, onset_year,
+                                          if_else(onset_plain != onset_year, sprintf(" (plain replica %s)", onset_plain), ""),
                                           c("agrees", "disagrees", "no signal", "-")[match(lt_agree, c(0, 1, 2, 9))],
                                           if_else(is.na(bar_year), "-", as.character(bar_year + 1L)),
                                           start_ndvi_x1000 / 1000))
 lab <- setNames(labels$label, labels$category)
 
 #### 7. Figures: NDVI (left) and the year-on-year loss that picks the onset (right), one per FIG_GROUP ####
-# Rule e is drawn (orange dashed 3-yr average + orange line at its onset) only in figures with show_e
-# (weak spots), and there only in panels where it changes something; the method figure stays clean.
+# Drawn = the DEPLOYED rule-e series (thick line, bars, red onset). The plain replica (grey dashed 3-yr
+# average + grey dashed onset) is overlaid only in figures with show_e (weak spots), and there only in
+# panels where it differs; method pixels are picked so that it doesn't.
 fig_dir <- here("outputs", "figures", "backdating"); dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 make_fig <- function(g) {
   cat_order <- intersect(g$cats, unique(series$category))
@@ -309,22 +331,22 @@ make_fig <- function(g) {
 
   p_ndvi <- ggplot(s, aes(year)) +
     geom_point(data = o, aes(decimal_date(date), ndvi), colour = "grey70", size = 0.7) +
-    geom_line(aes(y = ndvi_max), colour = "#2C7FB8", linewidth = 0.5) +
-    geom_line(aes(y = ma3), colour = "#253494", linewidth = 1.1) +
-    geom_line(data = se, aes(y = ma3_e), colour = "#eb6834", linewidth = 0.9, linetype = "dashed") +
+    geom_line(aes(y = ndvi_e), colour = "#2C7FB8", linewidth = 0.5) +
+    geom_line(aes(y = ma3_e), colour = "#253494", linewidth = 1.1) +
+    geom_line(data = se, aes(y = ma3), colour = "grey35", linewidth = 0.8, linetype = "dashed") +
     geom_vline(data = mk, aes(xintercept = onset_year), colour = "#D7301F", linewidth = 0.8) +
-    geom_vline(data = mke, aes(xintercept = recomputed_e), colour = "#eb6834", linewidth = 0.8, linetype = "dashed") +
+    geom_vline(data = mke, aes(xintercept = recomputed), colour = "grey35", linewidth = 0.8, linetype = "dashed") +
     geom_vline(data = filter(mk, !is.na(bar_plus1)), aes(xintercept = bar_plus1),
                colour = "black", linetype = "dotted", linewidth = 0.8) +
     facet_wrap(~ category, ncol = 1, labeller = as_labeller(lab)) +
     coord_cartesian(ylim = c(-0.1, 1)) +
     labs(x = NULL, y = "NDVI",
-         subtitle = paste0("grey = clear observations, thin = annual max, thick = 3-yr average; red = onset,\n",
+         subtitle = paste0("grey dots = clear observations, thin = annual max, thick = 3-yr average; red = onset,\n",
                            "dotted = Barenblitt et al. year + 1",
-                           if (length(e_differs)) "; orange dashed = rule e (1-obs years interpolated)" else "")) +
+                           if (length(e_differs)) "; grey dashed = plain replica (without rule e)" else "")) +
     theme_minimal(base_size = 10) + theme(strip.text = element_text(hjust = 0, size = 8))
 
-  p_loss <- ggplot(filter(s, !is.na(loss)), aes(year, loss, fill = winner)) +
+  p_loss <- ggplot(filter(s, !is.na(loss_e)), aes(year, loss_e, fill = winner_e)) +
     geom_col(width = 0.8) +
     geom_hline(yintercept = 0, colour = "grey50") +
     scale_fill_manual(values = c(`FALSE` = "grey65", `TRUE` = "#D7301F"), guide = "none") +

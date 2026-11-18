@@ -194,12 +194,18 @@ al.) — identified, not started.
 
 | Dataset | Source (GEE collection) | Coverage | Years | Resolution | Status | Use | Script |
 |---------|-------------------------|----------|-------|-----------|--------|-----|--------|
-| CHIRPS v2.0 rainfall (annual total) | `UCSB-CHG/CHIRPS/DAILY` → annual | Ghana | 1990–2025 | ~5.5 km | 🔄 | Potential | `0_data/d_01_download_gee.R` |
-| ERA5-Land reanalysis (temp, PET) | `ECMWF/ERA5_LAND/MONTHLY` | Global | 1950–present | ~9 km | ⬜ | Potential | — |
+| CHIRPS v2.0 rainfall | `UCSB-CHG/CHIRPS/DAILY` → monthly totals per unit | 5 km hexes (b_01 study area) + 260 districts | 1990–2025 | ~5.5 km | ✅ | Potential | `0_data/d_09_weather.R` |
+| ERA5-Land 2 m air temperature (monthly mean, max, min) | `ECMWF/ERA5_LAND/MONTHLY_AGGR` → per unit | same | 1990–2025 | ~11 km | ✅ | Potential | `0_data/d_09_weather.R` |
+| ERA5-Land potential evapotranspiration | `ECMWF/ERA5_LAND/MONTHLY_AGGR` | Global | 1950–present | ~11 km | ⬜ | Potential (SPEI) | — |
+| CHIRTS daily Tmax/Tmin | Climate Hazards Center (download, likely not in GEE) | Global land | 1983– | ~5.5 km | ⬜ | Potential (temperature robustness) | — |
 
-**Use:** CHIRPS is downloaded but not yet wired in — intended for the climate-shock trigger (D3b,
-blocked on extraction). Building a **SPEI/SPI drought index** (a candidate expansion trigger) needs
-potential evapotranspiration, which CHIRPS lacks — hence **ERA5-Land** as a companion.
+**Use:** `d_09` reduces both sources to unit means in GEE and writes monthly + annual tables to
+`data/processed/weather/` (annual: total and wet-season rainfall, mean / hottest-month max /
+coldest-month min temperature, anomalies vs the 1991–2020 normal). Intended for the climate-shock
+trigger (D3b) and as panel covariates; not yet wired in. Coastal units with no ERA5-Land land cell
+are filled from nearby land cells (`t2m_land_share` flags them). A **SPEI drought index** would
+additionally need potential evapotranspiration (ERA5-Land, same collection). `d_01` Section 7
+(annual CHIRPS rasters, never downloaded) is superseded.
 
 ---
 
@@ -230,14 +236,35 @@ and could substitute or complement the survey data.
 | MapSPAM 2020 v2.0 (crop production/yield/area) | IFPRI, via Harvard Dataverse (`doi:10.7910/DVN/SWPENT`) | Global (subset to Ghana) | 2020 | ⬜ | Potential — gridded agric.-productivity covariate | — |
 | Ghana census microdata | GSS / IPUMS International | All Ghana | 2000, 2010, 2021 | 🔒 | Potential (D6a–b) | `a_04` |
 | GLSS 7 (Living Standards Survey) | Ghana Statistical Service | All Ghana | 2016/17 | 🔒 | Potential (D6c) | `a_04` |
-| Nighttime lights | VIIRS `NOAA/VIIRS/DNB/MONTHLY_V1`, DMSP | All Ghana | 1992–present | ⬜ | Potential | — |
+| Nighttime lights, harmonised DMSP + VIIRS | Chiovelli, Michalopoulos, Papaioannou & Regan (2026), "Illuminating the Global South", *Economic Journal*, [doi:10.1093/ej/ueaf134](https://doi.org/10.1093/ej/ueaf134). Data: [Zenodo](https://doi.org/10.5281/zenodo.20558766), CC BY 4.0. Variant used: `bloomtopcode_fix` | Global, 55.9°S–75°N, 30 arc-sec (~1 km) annual GeoTIFFs | 1992–2025 | ✅ | Potential | `0_data/d_13_nightlights.R` |
 | Gridded population | WorldPop | All Ghana | 2000–2020 | ⬜ | Potential | — |
-| DHS (geocoded clusters) | USAID DHS Program | Ghana | 2003/08/14/22 | ⬜ | Potential | — |
+| DHS (women's recode + geocoded clusters) | USAID DHS Program, via `rdhs` | Ghana | all 7 rounds 1988–2022 | ✅ | Potential | `0_data/d_08_dhs_data.R` |
 
 **Note:** the global gold price is a proxy (no Ghana-specific series) but reasonable, since artisanal
 miners sell at prices closely tied to the world spot price. Nightlights / WorldPop / DHS are
-open, gridded proxies for local economic activity, population exposure, and wealth — cheaper
+open proxies for local economic activity, population exposure, and wealth — cheaper
 alternatives to the (blocked) survey microdata for the labour/welfare questions.
+
+**Nighttime lights:** the Chiovelli et al. series makes DMSP (1992–2013) and VIIRS (2012–) comparable,
+which raw lights are not, so one series covers the whole panel. Zenodo holds four zip archives (3.2 GB
+in all): `clean_dmsp`, `bloom_fix`, `topcode_fix`, `bloomtopcode_fix`, apparently processing variants
+(blooming = light spilling beyond its source; top-coding = DMSP saturation in bright centres); the record
+page doesn't define them. We use **`bloomtopcode_fix`** (both corrections), in
+`data/raw/nightlights/bloomtopcode_fix/`: one GeoTIFF per year, `DMSP{year}_bltcfix.tif`, EPSG:4326,
+30 arc-sec (~1 km), integer values, 0 = unlit; every year is on the DMSP-style scale (VIIRS years too),
+with values above DMSP's 63 cap where top-coding was corrected (Ghana max 92–194). Ghana checks: lit share
+of cells rises from 1.2% (1992) to 16.7% (2020), with no jump at the 2013→2014 DMSP→VIIRS switch (sum
+of lights 140k → 157k). `d_13` writes per hex (5 km) and district, per year: mean, coverage-weighted
+sum, lit share of area, and max, to `data/processed/nightlights/`. **Caveat:** the lit share of the hex
+study area climbs steeply after 2015 (18% → 64% by 2025, vs 3–12% in 1992–2013). Part is real
+electrification, but part is likely VIIRS picking up dim rural light that DMSP missed, which the
+harmonisation may not fully remove; check the paper before reading post-2014 levels (especially the lit
+share) at face value. Cite the paper when using it.
+
+**DHS:** `d_08` pulls economic/employment, wealth and maternal/newborn-health variables from the women's
+recode (IR) plus cluster coordinates (GE) into `data/raw/dhs/`. Not yet joined to hexes or districts.
+Clusters are displaced on purpose (urban ≤2 km, rural ≤5 km, 1% of rural ≤10 km), which matters at 5 km
+hexes; household (HR) and child (KR) recodes are not pulled yet.
 
 **AReNA DHS-GIS** links DHS clusters to agricultural/climate layers incl. MapSPAM and NDVI — an
 independent production benchmark for the NDVI/EVI proxy (§6), but at jittered DHS-cluster (point)

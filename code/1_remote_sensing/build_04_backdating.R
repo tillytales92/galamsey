@@ -1,33 +1,31 @@
-# build_04_backdating.R -- SKETCH, RUN INTERACTIVELY, EXPECT TO DEBUG THE ARRAY OPS
-# Backdates the 2017-2025 embedding-classifier mine footprint (build_03's
-# mine_mask_ghana_c4_{yr}) to per-pixel ONSET YEARS for ONSET_MIN-ONSET_MAX, by dating each
-# ever-mined pixel's vegetation-loss break in the Landsat archive.
+# build_04_backdating.R -- RUN INTERACTIVELY
+# Backdates the 2017 embedding-classifier mine footprint (build_03's mine_mask_ghana_c4_2017) to
+# per-pixel ONSET YEARS for ONSET_MIN-ONSET_MAX, by dating each mined pixel's vegetation-loss
+# break in the Landsat archive.
 #
-# Two methods, both always computed:
-#   - Barenblitt replica (Section 7) -- DEPLOYED (Section 12). Annual max-NDVI -> 3yr
-#     moving average -> first difference -> qualityMosaic picks the steepest-loss year.
-#     No magnitude gate (always assigns a year). Ported from Barenblitt et al. (2021)'s
-#     own GEE script (abarenblitt/GhanaArtisanalMining). Chosen as deploy over LandTrendr
-#     because its tolerance accuracy (+-1/+-2yr) against `classifica` matches or beats
-#     LandTrendr's, and it dates ~93-100% of the footprint vs LandTrendr's ~32-34%.
-#   - LandTrendr (Section 6) -- cross-check only, NOT deployed. Segmentation of an
-#     annual -NBR series; onset = first year of the greatest-loss segment, gated LT-GEE style
-#     on magnitude/duration/pre-value as in Barenblitt's own comparison. Chosen over CCDC (too data-hungry for this era's sparse
-#     Landsat 5/7 imagery). Feeds `lt_agree` (Section 8), a confidence flag on the
-#     deployed Barenblitt dates.
+# Deployed (Section 7, 2026-11-17): Barenblitt replica + RULE E. Annual max-NDVI, but a year with
+#   exactly ONE clear observation is replaced by linear interpolation between the nearest years
+#   with >= 2 -> 3yr moving average -> first difference -> qualityMosaic picks the steepest loss.
+#   Rule e removes most single-image fake dips (the 2002 pile-up) without dropping any year.
+#   Validation + rule comparison: code/1_remote_sensing/explainer.md (backdating section).
+# Cross-check (Section 6): LandTrendr, feeds the lt_agree flag only.
 #
-# CAVEATS:
-#   - Only dates pixels still visible as mined in 2017+ (the anchor mask).
-#   - A break is a spectral DISTURBANCE, not necessarily the mining event itself.
-#   - 30 m Landsat vs the 10 m mask: aggregated majority-mined per 30 m cell.
-#   - NOT validated against ground truth. `classifica` (Section 10) is Barenblitt's own
-#     algorithm's output -- agreement with it means agreement with another algorithm,
-#     nothing stronger. See `reference_tier`, Section 8.
+# Bands (Section 12): two onset conventions + credibility flags --
+#   onset_year           rule-e onset, 2000-2017 (main spec in b_04)
+#   onset_from{LATER_MIN}  rule-e steepest loss restricted to LATER_MIN-2017 ("no mining before
+#                        LATER_MIN"; same rule-e series as onset_year, only the candidate years differ)
+#   loss_from{LATER_MIN}_x1000  size of that loss (small = probably earlier mining, b_04 can send to stock)
+#   persistent_loss      1 = some candidate-year loss stays >= PERSIST_DROP below the 3 years before
+#                        it over the 3 years after (rule f, used as a FLAG). Imagery runs to
+#                        PERSIST_END so 2015-2017 onsets get a full 3-year confirmation window.
+#   + ndvi_deriv_x1000, reference_tier, lt_agree, n_obs_years, n_computable_years,
+#     n_interp_years, bare_pre{LATER_MIN}, start_ndvi_x1000
 #
-# Prereq: build_03_embedding_panel.R has exported mine_mask_ghana_c4_{2017..2025}.
-# Run INTERACTIVELY: ee_Authenticate()/ee_Initialize() block on a browser login.
-# TUNE <- TRUE clips everything (including Sections 8/8b/9) to TUNE_AOI for fast
-# iteration -- flip to FALSE only once you're ready for the full national run.
+# CAVEATS: only dates pixels mined in 2017; a break is a spectral disturbance, not necessarily
+# the mining event; 30 m Landsat vs the 10 m mask (majority-mined per 30 m cell).
+#
+# Prereq: build_03_embedding_panel.R has exported mine_mask_ghana_c4_2017.
+# TUNE <- TRUE clips everything to TUNE_AOI for fast iteration.
 
 ####1. Environment ####
 rgee_env_dir <- "C:\\Users\\ADMIN\\AppData\\Local\\r-miniconda\\envs\\rgee_py\\"
@@ -49,39 +47,26 @@ ee_check()
 ####3. Parameters ####
 EE_ASSET_HOME <- sprintf("projects/%s/assets/ghana_mining", EE_PROJECT)
 
-METHOD <- "barenblitt"   # "landtrendr" | "barenblitt" -- which method's classifica CSV Section
-                          # 8/8b exports (deploy is always barenblitt, see header; this doesn't
-                          # change that).
+METHOD <- "barenblitt"   # "landtrendr" | "barenblitt" -- which method's classifica CSV Section 10
+                          # exports (deploy is always the rule-e Barenblitt replica).
 
 MASK_PREFIX <- "mine_mask_ghana_c4_"
-MASK_YEARS  <- 2017L   # anchor = mined-as-of-2017 only, not the 2017-2025 union -- a pixel first
-                        # mined in 2018+ is already correctly dated by build_03 itself, and
-                        # including it here would just force a spurious "no break"/invented
-                        # pre-2017 onset.
+MASK_YEARS  <- 2017L   # anchor = mined-as-of-2017 only; 2018+ is dated by build_03 itself
 
-ONSET_MIN <- 2000L  # output onset-year window start. Compromise between Barenblitt's own 2007
-                      # start and the original 2000: classifica agreement improves at 2007, but
-                      # that's mostly a label-floor artifact (classifica never has a year < 2007)
-                      # rather than evidence 2000-2006 imagery is worse -- scene-coverage data
-                      # shows no real cliff at 2007, only at 2013 (Landsat 8). See `reference_tier`
-                      # (Section 8): nothing dated 2005-2006 has ANY classifica comparison at all.
-ONSET_MAX <- 2017L   # 2026-11-13: was 2016. At 2016, pixels whose steepest loss falls in 2017 (the
-                      # last computable candidate) were masked as "undatable" (8.9% of the footprint;
-                      # old diag_04 run-length check, removed 2026-11-13). 2017 is the anchor-mask year, so dating them 2017 is
-                      # consistent with b_04 taking 2018+ from the embedding masks.
-IMG_START <- 1998L   # imagery context window (padding for the 3yr MA / LandTrendr fit). NOT fully
-                      # independent of ONSET_MIN despite candidate onset years being gated
-                      # separately below: the "barenblitt" branch's deriv_years starts at
-                      # IMG_START+2 (3yr MA needs a year each side, then a first difference needs
-                      # one more), so IMG_START must be <= ONSET_MIN-2 or the window's REAL floor
-                      # silently becomes ONSET_MIN+1 (the gte(ONSET_MIN) mask below then has nothing
-                      # at ONSET_MIN to pass through). 1999 has 6yr of headroom for ONSET_MIN=2005
-                      # (more than the minimum, deliberately -- LandTrendr's cross-check benefits
-                      # from more fitting context). Re-running at a different ONSET_MIN (e.g. to
-                      # test whether early-years pileup is a window-floor artifact, see explainer.md)
-                      # needs IMG_START dropped to match -- e.g. ONSET_MIN=2000 needs IMG_START<=1998.
-IMG_END   <- 2018L
-EXPORT_SCALE <- 30L   # Landsat native
+ONSET_MIN  <- 2000L
+ONSET_MAX  <- 2017L    # 2017 = anchor-mask year (was 2016: masked 8.9% of the footprint as undatable)
+LATER_MIN  <- 2007L    # "no mining before LATER_MIN" convention (2026-11-17: 2007 = start of
+                       # Barenblitt et al.'s dated series; was 2005). Also names the bands below.
+IMG_START  <- 1998L    # must be <= ONSET_MIN - 2 (3yr MA + first difference need 2 years of padding)
+IMG_END    <- 2018L    # dating window end (unchanged from the validated runs)
+PERSIST_END <- 2020L   # imagery end for the persistence check ONLY (2017 onset -> 2018-2020 window)
+PERSIST_DROP <- 0.15   # persistent_loss: median annual max y+1..y+3 >= this below y-3..y-1
+BARE_NDVI    <- 0.4    # bare_pre{LATER_MIN}: median rule-e annual max in the 3 years before LATER_MIN below this
+BARE_YEARS   <- (LATER_MIN - 3L):(LATER_MIN - 1L)
+B_ONSET_LATER <- sprintf("onset_from%d", LATER_MIN)          # band names
+B_LOSS_LATER  <- sprintf("loss_from%d_x1000", LATER_MIN)
+B_BARE        <- sprintf("bare_pre%d", LATER_MIN)
+EXPORT_SCALE <- 30L    # Landsat native
 
 LT_PARAMS <- list(
   maxSegments            = 6L,
@@ -93,27 +78,25 @@ LT_PARAMS <- list(
   bestModelProportion    = 0.75,
   minObservationsNeeded   = 6L
 )
-# 2026-11-13: matched to Barenblitt et al. (2021)'s LandTrendr comparison ("magnitude threshold of
-# 200, duration threshold of 4, and a pre-value of 100"). The paper doesn't give the operators or
-# the index; these follow the LT-GEE change-map convention (mag > 200, dur < 4, preval > 100, on
-# NBR*1000), which those three numbers match. Applied LT-GEE style: take the greatest-magnitude
-# loss SEGMENT, then mask it if it fails any gate (no fallback to the next-largest segment).
-LT_MIN_MAGNITUDE <- 200   # segment loss, NBR*1000 units, strictly greater
-LT_MAX_DURATION  <- 4     # segment length in years, strictly less
-LT_MIN_PREVAL    <- 100   # NBR*1000 at segment start, strictly greater (= vegetated before the loss)
+# Matched to Barenblitt et al. (2021)'s LandTrendr comparison (mag > 200, dur < 4, preval > 100 on
+# NBR*1000, LT-GEE change-map convention): greatest-magnitude loss segment, masked if it fails a gate.
+LT_MIN_MAGNITUDE <- 200
+LT_MAX_DURATION  <- 4
+LT_MIN_PREVAL    <- 100
 START_NDVI_YEARS <- 1998:2002   # window for the start_ndvi_x1000 band (Section 8)
 
-TUNE <- FALSE   # TRUE clips to TUNE_AOI for fast iteration. Sections 10/11/12 are all guarded by
-                # !TUNE below -- conv_pts spans the whole SW hull, so running them against an
-                # AOI-restricted onset raster would silently return near-empty results.
+TUNE <- FALSE   # TRUE clips to TUNE_AOI. Sections 10/11/12 are guarded by !TUNE.
 TUNE_AOI <- ee$Geometry$Rectangle(c(-2.05, 5.98, -1.87, 6.15))   # Awomaso
 
-RUN_ONSET_EXPORT       <- TRUE    # submit Section 10's onset-vs-classifica CSV for METHOD
-RUN_VALIDATION         <- TRUE    # upload/merge the classifica validation points (Section 10)
-RUN_DROPOUT_DIAGNOSTIC <- TRUE    # submit Section 11's LandTrendr dropout breakdown
-RUN_NATIONAL_EXPORT    <- TRUE   # submit the deployed 4-band national asset (Section 12)
+# 2026-11-17: Sections 10/11 off by default -- rule e's fidelity vs classifica was already scored by
+# validate_backdating_method_fidelity.R (Section 6). Flip on to re-score the deployed asset itself.
+RUN_ONSET_EXPORT       <- FALSE   # submit Section 10's onset-vs-classifica CSV for METHOD
+RUN_VALIDATION         <- FALSE   # upload/merge the classifica validation points (Section 10)
+RUN_DROPOUT_DIAGNOSTIC <- FALSE   # submit Section 11's LandTrendr dropout breakdown
+RUN_NATIONAL_EXPORT    <- TRUE    # submit the deployed national asset (Section 12)
 
-OUT_ASSET <- sprintf("%s/mine_onset_year_%d_%d_barenblitt", EE_ASSET_HOME, ONSET_MIN, ONSET_MAX)
+# New name (2026-11-17) -- the pre-rule-e asset mine_onset_year_2000_2017_barenblitt is kept as is.
+OUT_ASSET <- sprintf("%s/mine_onset_year_%d_%d_rulee", EE_ASSET_HOME, ONSET_MIN, ONSET_MAX)
 
 ghana <- ee$FeatureCollection(file.path(EE_ASSET_HOME, "rs05_ghana"))$geometry()
 aoi   <- if (TUNE) TUNE_AOI else ghana
@@ -150,17 +133,16 @@ maskL2 <- function(img) {
   sat <- img$select("QA_RADSAT")$eq(0)
   img$updateMask(clear)$updateMask(sat)
 }
-# Roy et al. (2016) OLS coefficients, OLI -> ETM+ (Table 2). Derived for C1 SR;
-# applied to C2 SR here per community practice -- residual bias is small next to
-# LandTrendr's segmentation tolerance. Only the bands NBR/NDVI need are corrected.
+# Roy et al. (2016) OLS coefficients, OLI -> ETM+ (Table 2). Derived for C1 SR; applied to C2 SR.
 ROY <- list(RED   = list(s = 0.9047, i = 0.0061),
             NIR   = list(s = 0.8462, i = 0.0412),
             SWIR2 = list(s = 0.9071, i = 0.0172))
 
+# Collection runs to PERSIST_END; every dating step below selects years <= IMG_END itself.
 prep_col <- function(id, bands, is_oli) {
   ee$ImageCollection(id)$
     filterBounds(aoi)$
-    filterDate(sprintf("%d-01-01", IMG_START), sprintf("%d-01-01", IMG_END + 1L))$
+    filterDate(sprintf("%d-01-01", IMG_START), sprintf("%d-01-01", PERSIST_END + 1L))$
     map(maskL2)$
     map(function(img) {
       sr <- img$select(bands, c("RED", "NIR", "SWIR2"))$
@@ -183,11 +165,10 @@ landsat <- prep_col("LANDSAT/LT05/C02/T1_L2", tm,  FALSE)$
   merge(prep_col("LANDSAT/LE07/C02/T1_L2", tm,  FALSE))$
   merge(prep_col("LANDSAT/LC08/C02/T1_L2", oli, TRUE))
 
-YRS <- IMG_START:IMG_END
-# A year with NO scene over the region (e.g. 1998 over the small TUNE_AOI) would reduce to a
-# ZERO-band image and break every add/multiply across years ("Image.multiply: If one image has no
-# bands, the other must also have no bands", 2026-11-13). Fall back to a 1-band, fully masked image
-# instead -- identical results wherever scenes exist.
+YRS   <- IMG_START:IMG_END       # dating window
+YRS_P <- IMG_START:PERSIST_END   # persistence window
+# A year with NO scene over the region would reduce to a ZERO-band image and break every
+# add/multiply across years -- fall back to a 1-band, fully masked image instead.
 annual_composite <- function(yr, band, reducer) {
   col   <- landsat$filter(ee$Filter$calendarRange(yr, yr, "year"))$select(band)
   empty <- ee$Image$constant(0)$toFloat()$updateMask(ee$Image$constant(0))
@@ -225,9 +206,7 @@ annual_composite <- function(yr, band, reducer) {
   # then pair each vertex with the next one.
   arr   <- lt$select("LandTrendr")
   verts <- arr$arrayMask(arr$arraySlice(0L, 3L, 4L))           # 4 x nVertices
-  # arraySlice(0, ...) leaves a redundant length-1 axis-0 -- arrayProject(1) drops it so these
-  # become true 1D series. Without this, arrayArgmax()/arrayFlatten() error with
-  # "Coordinate labels had 1 lists of names, but image has 2 dimensions".
+  # arrayProject(1) drops the redundant length-1 axis-0 left by arraySlice(0, ...).
   v_year <- verts$arraySlice(0L, 0L, 1L)$arrayProject(list(1L))
   v_fit  <- verts$arraySlice(0L, 2L, 3L)$arrayProject(list(1L))
 
@@ -252,79 +231,117 @@ annual_composite <- function(yr, band, reducer) {
     round()$toInt16()
 }
 
-####7. Barenblitt -- their "NDVI Anomaly Timeline", C1 -> C2. DEPLOYED (Section 12). ####
+####7. Barenblitt replica + rule e -- DEPLOYED (Section 12). ####
 {
-  # Their step 4: annual MAX-NDVI (greenest pixel of the year).
-  ndvi_max <- lapply(YRS, function(y) annual_composite(y, "NDVI", ee$Reducer$max()))
-  names(ndvi_max) <- as.character(YRS)
+  k_p <- as.character(YRS_P)
+  # Raw annual max-NDVI (Barenblitt's step 4) and clear-observation counts per year.
+  ndvi_raw <- setNames(lapply(YRS_P, function(y) annual_composite(y, "NDVI", ee$Reducer$max())), k_p)
+  n_clear  <- setNames(lapply(YRS_P, function(y) {
+    col <- landsat$filter(ee$Filter$calendarRange(y, y, "year"))$select("NDVI")
+    ee$Image(ee$Algorithms$If(col$size()$gt(0), col$count(), ee$Image$constant(0L)))$unmask(0)$rename("n")
+  }), k_p)
+
+  # Rule e: forward/backward passes carry the nearest well-observed (>= 2 obs) value and year;
+  # a 1-obs year with a well-observed year on BOTH sides gets the linear interpolation. Same logic
+  # as validate_backdating_vs_classifier_groundtruth.R's annual_max_e (duplicated, not sourced).
+  # Note: the passes span YRS_P, so a 1-obs 2018 can interpolate towards 2019 (post-2013 1-obs
+  # years are rare, so dating is effectively unchanged vs the validated 1998-2018 runs).
+  sentinel <- ee$Image$constant(-9)$toFloat()
+  pv <- pyr <- nv <- nyr <- list()
+  lv <- sentinel; ly <- sentinel
+  for (y in k_p) {
+    pv[[y]] <- lv; pyr[[y]] <- ly
+    good <- n_clear[[y]]$gte(2L)
+    lv <- lv$where(good, ndvi_raw[[y]]$unmask(-9)); ly <- ly$where(good, ee$Image$constant(as.numeric(y))$toFloat())
+  }
+  lv <- sentinel; ly <- sentinel
+  for (y in rev(k_p)) {
+    nv[[y]] <- lv; nyr[[y]] <- ly
+    good <- n_clear[[y]]$gte(2L)
+    lv <- lv$where(good, ndvi_raw[[y]]$unmask(-9)); ly <- ly$where(good, ee$Image$constant(as.numeric(y))$toFloat())
+  }
+  interp <- setNames(lapply(k_p, function(y)
+    n_clear[[y]]$eq(1L)$And(pv[[y]]$neq(-9))$And(nv[[y]]$neq(-9))), k_p)
+  ndvi_e <- setNames(lapply(k_p, function(y) {
+    frac <- ee$Image$constant(as.numeric(y))$toFloat()$subtract(pyr[[y]])$divide(nyr[[y]]$subtract(pyr[[y]]))
+    iv   <- pv[[y]]$add(nv[[y]]$subtract(pv[[y]])$multiply(frac))
+    ndvi_raw[[y]]$where(interp[[y]], iv)$rename("NDVI")
+  }), k_p)
+
+  # Dating uses the rule-e series over YRS only (Sections 8+ read ndvi_max).
+  ndvi_max <- ndvi_e[as.character(YRS)]
 
   # 3-year moving average, x -1 so a decline reads positive (NDVI_avg).
   avg_years <- (IMG_START + 1L):(IMG_END - 1L)
-  ndvi_avg <- lapply(avg_years, function(y) {
-    a <- ndvi_max[[as.character(y - 1L)]]
-    b <- ndvi_max[[as.character(y)]]
-    c <- ndvi_max[[as.character(y + 1L)]]
-    a$add(b)$add(c)$divide(3)$multiply(-1)$rename("NDVI_avg")$set("year", y)
-  })
-  names(ndvi_avg) <- as.character(avg_years)
+  ndvi_avg <- setNames(lapply(avg_years, function(y) {
+    ndvi_max[[as.character(y - 1L)]]$add(ndvi_max[[as.character(y)]])$add(ndvi_max[[as.character(y + 1L)]])$
+      divide(3)$multiply(-1)$rename("NDVI_avg")
+  }), avg_years)
 
   # first difference NDVI_deriv[y] = NDVI_avg[y] - NDVI_avg[y-1]; carry Year band.
   deriv_years <- (min(avg_years) + 1L):max(avg_years)
-  deriv_col <- ee$ImageCollection(lapply(deriv_years, function(y) {
-    d <- ndvi_avg[[as.character(y)]]$select("NDVI_avg")$
-      subtract(ndvi_avg[[as.character(y - 1L)]]$select("NDVI_avg"))$
-      rename("NDVI_deriv")
-    d$addBands(ee$Image$constant(y)$toInt()$rename("Year"))$updateMask(ever_mined)
-  }))
+  deriv_list <- setNames(lapply(deriv_years, function(y) {
+    ndvi_avg[[as.character(y)]]$subtract(ndvi_avg[[as.character(y - 1L)]])$rename("NDVI_deriv")$
+      addBands(ee$Image$constant(y)$toInt()$rename("Year"))$updateMask(ever_mined)
+  }), deriv_years)
 
-  # qualityMosaic: per pixel keep the year with the max derivative (steepest loss).
-  qm <- deriv_col$qualityMosaic("NDVI_deriv")
-  bar_in_window <- qm$select("Year")$gte(ONSET_MIN)$And(qm$select("Year")$lte(ONSET_MAX))
+  # qualityMosaic over candidate years only: per pixel keep the year with the steepest loss.
+  pick_onset <- function(y0, y1) {
+    qm <- ee$ImageCollection(unname(deriv_list[as.character(intersect(deriv_years, y0:y1))]))$
+      qualityMosaic("NDVI_deriv")
+    list(year  = qm$select("Year")$updateMask(ever_mined)$toInt16()$rename("onset_year"),
+         deriv = qm$select("NDVI_deriv")$updateMask(ever_mined)$rename("ndvi_deriv"))
+  }
+  main <- pick_onset(ONSET_MIN, ONSET_MAX)
+  onset_year_dep <- main$year
+  ndvi_deriv_dep <- main$deriv      # magnitude of the winning loss (no gate; near zero = likely noise)
 
-  onset_year_bar <- qm$select("Year")$
-    updateMask(bar_in_window)$
-    updateMask(ever_mined)$
-    toInt16()$rename("onset_year")
+  later <- pick_onset(LATER_MIN, ONSET_MAX)
+  onset_later <- later$year$rename(B_ONSET_LATER)
+  loss_later  <- later$deriv$rename("loss_later")
 
-  # Magnitude of the derivative that WON the qualityMosaic pick -- same role as LandTrendr's
-  # max_mag_lt. Barenblitt's method has no gate, so a near-zero value flags likely noise.
-  ndvi_deriv_bar <- qm$select("NDVI_deriv")$
-    updateMask(bar_in_window)$
-    updateMask(ever_mined)$
-    rename("ndvi_deriv")
+  # persistent_loss: any candidate year whose loss persists (windows clipped to the imagery; a fully
+  # masked window counts as not persistent). Uses the rule-e series out to PERSIST_END.
+  med <- function(ys) ee$ImageCollection(unname(ndvi_e[intersect(as.character(ys), k_p)]))$median()
+  persistent_loss <- ee$ImageCollection(lapply(ONSET_MIN:ONSET_MAX, function(y) {
+    med((y - 3L):(y - 1L))$subtract(med((y + 1L):(y + 3L)))$gte(PERSIST_DROP)$unmask(0)$toInt16()$rename("p")
+  }))$max()$rename("persistent_loss")$updateMask(ever_mined)
+
+  bare_ndvi    <- med(BARE_YEARS)
+  bare_pre <- bare_ndvi$lt(BARE_NDVI)$toInt16()$rename(B_BARE)$updateMask(ever_mined)
+
+  n_interp_years <- ee$Image$cat(unname(lapply(interp[as.character(YRS)], function(im) im$toInt16())))$
+    reduce(ee$Reducer$sum())$rename("n_interp_years")
 }
 
-####8. Confidence/uncertainty bands for the deployed Barenblitt onset layer ####
-# None of this is ground-truth validation (see header) -- these flag uncertainty, not resolve it.
+####8. Confidence/uncertainty bands for the deployed onset layer ####
+# None of this is ground-truth validation -- these flag uncertainty, not resolve it.
 #   reference_tier: 0 = no_reference (onset < 2007, no classifica comparison possible at all),
 #                   1 = classifica_comparable (onset >= 2007), 9 = undated sentinel (Section 12).
-#   n_obs_years / n_computable_years / start_ndvi_x1000: see the block at the end of this section.
-#   ndvi_deriv (Section 7): continuous confidence score, no fixed cutoff applied here.
-#   lt_agree: 0 = agree (LandTrendr cleared its own gate, within +-2yr of Barenblitt),
-#             1 = disagree (LandTrendr cleared its gate, >2yr off), 2 = no_lt_signal (LandTrendr
-#             found no confident break), 9 = undated sentinel.
-bar_dated <- onset_year_bar$mask()
+#   lt_agree: 0 = agree (LandTrendr cleared its own gate, within +-2yr of the deployed onset),
+#             1 = disagree (LandTrendr cleared its gate, >2yr off), 2 = no_lt_signal, 9 = undated.
+dep_dated <- onset_year_dep$mask()
 
 reference_tier <- ee$Image$constant(0L)$toInt16()$rename("reference_tier")$
-  where(onset_year_bar$gte(2007L), ee$Image$constant(1L))$
-  updateMask(bar_dated)
+  where(onset_year_dep$gte(2007L), ee$Image$constant(1L))$
+  updateMask(dep_dated)
 
 lt_cleared      <- onset_year_lt$mask()           # LandTrendr cleared its own LT_MIN_MAGNITUDE gate
 onset_lt_filled <- onset_year_lt$unmask(-9999)     # sentinel so the diff below never sees a masked value
-lt_diff         <- onset_lt_filled$subtract(onset_year_bar)$abs()
+lt_diff         <- onset_lt_filled$subtract(onset_year_dep)$abs()
 
 lt_agree <- ee$Image$constant(2L)$toInt16()$rename("lt_agree")$              # default: no_lt_signal
   where(lt_cleared, ee$Image$constant(1L))$                                  # LT fired: default disagree
   where(lt_cleared$And(lt_diff$lte(2L)), ee$Image$constant(0L))$             # LT fired, within +-2yr: agree
-  updateMask(bar_dated)
+  updateMask(dep_dated)
 
-# Data-support flags (2026-11-13; flags, NOT masks -- the panel decides what to do with them):
+# Data-support flags (flags, NOT masks -- the panel decides what to do with them):
 #   n_obs_years: years in IMG_START..IMG_END with >= 1 clear observation.
 #   n_computable_years: candidate years whose NDVI_deriv could be computed at all (4 consecutive
-#     observed years y-2..y+1) = how many years the "steepest loss" pick really chose from.
-#   start_ndvi_x1000: median annual max NDVI over START_NDVI_YEARS. Low = already bare when the
-#     series starts, so the real onset may predate it (old diag_04 start-NDVI check: 3% of dated pixels < 400).
-# Same definitions as the old diag_04 run-length and start-NDVI checks (removed 2026-11-13).
+#     observed years y-2..y+1).
+#   start_ndvi_x1000: median rule-e annual max NDVI over START_NDVI_YEARS (low = already bare).
+# Rule e only changes VALUES of observed years, never which years are observed, so the masks of
+# ndvi_max are the raw observation masks.
 has_obs <- lapply(YRS, function(y) ndvi_max[[as.character(y)]]$mask()$unmask(0)$rename(paste0("has", y)))
 names(has_obs) <- as.character(YRS)
 # unname(): a named R list reaches Python as a dict, which cat() rejects
@@ -337,80 +354,51 @@ start_ndvi <- ee$ImageCollection(unname(ndvi_max[as.character(START_NDVI_YEARS)]
   rename("start_ndvi")
 
 ####9. Quick sanity-check sample (TUNE mode only) ####
-# A numeric preview of what the deployed raster (Section 12) would look like, for a handful of
-# ever-mined pixels in TUNE_AOI -- not a map (build_04_backdating_prototype.js, now in notes/archive/, already covers
-# that), just the band values side by side so the reference_tier/2007 boundary, ndvi_deriv's
-# scale, and lt_agree's categories can be eyeballed before committing to a national export.
+# Band values side by side for a handful of mined pixels in TUNE_AOI, before a national export.
 if (TUNE) {
-  sample_img <- onset_year_bar$rename("onset_bar")$
-    addBands(ndvi_deriv_bar$multiply(1000)$round()$rename("ndvi_deriv_x1000"))$
+  sample_img <- onset_year_dep$rename("onset")$
+    addBands(ndvi_deriv_dep$multiply(1000)$round()$rename("ndvi_deriv_x1000"))$
+    addBands(onset_later)$
+    addBands(loss_later$multiply(1000)$round()$rename(B_LOSS_LATER))$
+    addBands(persistent_loss)$
+    addBands(bare_pre)$
+    addBands(n_interp_years)$
     addBands(reference_tier)$
     addBands(lt_agree)$
     addBands(onset_year_lt$rename("onset_lt"))$
-    addBands(max_mag_lt$rename("lt_mag"))$          # greatest-loss segment, BEFORE the gates --
-    addBands(dur_lt$rename("lt_dur"))$              # shows which gate kills an undated LT pixel
-    addBands(preval_lt$rename("lt_preval"))$
     addBands(n_obs_years)$
     addBands(n_computable_years)$
     addBands(start_ndvi$multiply(1000)$round()$rename("start_ndvi_x1000"))$
-    # dropNulls drops a pixel if ANY band is masked -- without this, every pixel LandTrendr leaves
-    # undated would vanish from the sample. Sentinel inside the footprint, back to NA in R below.
+    # dropNulls drops a pixel if ANY band is masked -- sentinel inside the footprint, NA in R below.
     unmask(-9999)$updateMask(ever_mined)
 
-  # numPixels is drawn from the WHOLE TUNE_AOI bounding box, then dropNulls discards anything
-  # that misses the (much smaller) mined footprint -- so this needs to be large relative to how
-  # sparse mining is in the box, not just the number of rows actually wanted.
+  # numPixels is drawn from the WHOLE TUNE_AOI box, then dropNulls discards non-mined pixels.
   sample_pts <- sample_img$sample(region = TUNE_AOI, scale = EXPORT_SCALE,
                                    numPixels = 3000, seed = 1, geometries = FALSE, dropNulls = TRUE)
   tune_check <- purrr::map_dfr(sample_pts$getInfo()$features, ~ tibble::as_tibble(.x$properties)) |>
     mutate(across(everything(), ~ if_else(.x == -9999, NA, .x)))
-  print(tune_check, n = Inf, width = Inf)
-
-  # one-glance summary of the new LandTrendr gates + data-support bands (2026-11-13)
-  if (nrow(tune_check) > 0) {
-    cat(sprintf("\nTUNE summary (%d pixels): Barenblitt dated %.0f%% | LT dated %.0f%%\n",
-                nrow(tune_check), 100 * mean(!is.na(tune_check$onset_bar)), 100 * mean(!is.na(tune_check$onset_lt))))
-    if ("lt_mag" %in% names(tune_check)) {
-      lt <- tune_check |> filter(!is.na(lt_mag))
-      cat(sprintf("LT gates, share passing: mag>%d %.0f%% | dur<%d %.0f%% | preval>%d %.0f%% | all three %.0f%%\n",
-                  LT_MIN_MAGNITUDE, 100 * mean(lt$lt_mag > LT_MIN_MAGNITUDE),
-                  LT_MAX_DURATION,  100 * mean(lt$lt_dur < LT_MAX_DURATION),
-                  LT_MIN_PREVAL,    100 * mean(lt$lt_preval > LT_MIN_PREVAL),
-                  100 * mean(lt$lt_mag > LT_MIN_MAGNITUDE & lt$lt_dur < LT_MAX_DURATION & lt$lt_preval > LT_MIN_PREVAL)))
-    }
-    print(tune_check |> count(lt_agree))
-    print(summary(tune_check[, intersect(c("n_obs_years", "n_computable_years", "start_ndvi_x1000"), names(tune_check))]))
-  }
+  print(tune_check, n = 30, width = Inf)
 
   if (nrow(tune_check) > 0) {
-    print(ggplot(tune_check, aes(onset_bar, fill = factor(reference_tier))) +
+    cat(sprintf(paste0("\nTUNE summary (%d pixels): dated %.0f%% | persistent_loss %.0f%% | bare_pre_later %.0f%% | ",
+                       "onset != onset_later %.0f%% | mean n_interp_years %.2f\n"),
+                nrow(tune_check), 100 * mean(!is.na(tune_check$onset)),
+                100 * mean(tune_check$persistent_loss == 1, na.rm = TRUE),
+                100 * mean(tune_check[[B_BARE]] == 1, na.rm = TRUE),
+                100 * mean(tune_check$onset != tune_check[[B_ONSET_LATER]], na.rm = TRUE),
+                mean(tune_check$n_interp_years, na.rm = TRUE)))
+    print(tune_check |> count(onset_lt_agree = lt_agree))
+    print(ggplot(tune_check, aes(onset, fill = factor(persistent_loss))) +
       geom_histogram(binwidth = 1, boundary = 0) +
-      scale_fill_manual(values = c("0" = "#d94fd0", "1" = "#450457"),
-                         labels = c("0" = "no_reference", "1" = "classifica_comparable"),
-                         name = "reference_tier") +
-      labs(title = "TUNE sample: Barenblitt onset year", x = "onset_bar", y = "count") +
+      scale_fill_manual(values = c("0" = "#d94fd0", "1" = "#450457"), name = "persistent_loss") +
+      labs(title = "TUNE sample: rule-e onset year", x = "onset_year", y = "count") +
       theme_minimal())
-
-    lt_compare <- tune_check |> filter(!is.na(onset_lt)) |> mutate(diff = onset_bar - onset_lt)
-    if (nrow(lt_compare) > 0) {
-      print(ggplot(lt_compare, aes(diff, fill = factor(lt_agree))) +
-        geom_histogram(binwidth = 1, boundary = 0) +
-        scale_fill_manual(values = c("0" = "#2171B5", "1" = "#D94701"),
-                           labels = c("0" = "agree (<=2yr)", "1" = "disagree (>2yr)"),
-                           name = "lt_agree") +
-        labs(title = "TUNE sample: Barenblitt - LandTrendr onset year", x = "onset_bar - onset_lt", y = "count") +
-        theme_minimal())
-    } else {
-      message("No pixels with onset_lt defined in this sample -- LandTrendr didn't clear its ",
-              "magnitude gate anywhere in the current draw.")
-    }
   }
 }
 
-####10. Validation vs Barenblitt classifica (RUN_VALIDATION) ####
+####10. Validation vs Barenblitt et al. classifica (RUN_VALIDATION) ####
 # classifica = 2-digit conversion year (07..17 -> 2007..2017). Upload the annual polygons as
-# points (one per polygon) once, then sample the onset raster at each. Guarded by !TUNE --
-# conv_pts spans the whole SW hull, not just TUNE_AOI (see TUNE's own comment).
+# points (one per polygon) once, then sample the onset raster at each. Guarded by !TUNE.
 if (!TUNE && RUN_VALIDATION) {
   pts_base <- file.path(EE_ASSET_HOME, "barenblitt_conversion_pts")
   conv_shp <- here("data", "raw", "barenblitt", "MiningConversion_2007-2017Vec.shp")
@@ -436,20 +424,16 @@ if (!TUNE && RUN_VALIDATION) {
     stop("chunk uploads submitted -- re-run Section 10 once they show COMPLETED to sample")
   }
 
-  # no separate merge/export step -- $merge() combines the chunk table assets
-  # into one FeatureCollection server-side, valid for sampleRegions() as-is.
   conv_pts <- Reduce(function(a, b) a$merge(b), lapply(chunk_ids, ee$FeatureCollection))
   if (RUN_ONSET_EXPORT) {
-    onset_year <- if (METHOD == "landtrendr") onset_year_lt else onset_year_bar
+    onset_year <- if (METHOD == "landtrendr") onset_year_lt else onset_year_dep
     sampled  <- onset_year$sampleRegions(collection = conv_pts,
                                          properties = list("classifica"),
                                          scale = EXPORT_SCALE, tileScale = 8L)
     task <- ee$batch$Export$table$toDrive(
       collection = sampled$select(c("classifica", "onset_year")),
-      # min/max suffixed (not just METHOD) -- re-running this section at a different ONSET_MIN/MAX
-      # window (e.g. the 2000/2007 comparison runs, see explainer.md) must NOT collide on Drive or
-      # locally with the already-scored 2005-2016 build_04_onset_vs_barenblitt_barenblitt.csv.
-      description = sprintf("build_04_onset_vs_barenblitt_%s_min%d_max%d", METHOD, ONSET_MIN, ONSET_MAX),
+      # window + rule suffixed so it never collides with earlier scored CSVs
+      description = sprintf("build_04_onset_vs_barenblitt_%s_rulee_min%d_max%d", METHOD, ONSET_MIN, ONSET_MAX),
       folder = "ghana_mining_gee_exports", fileFormat = "CSV")
     task$start()
     message("Submitted onset-vs-classifica export. Fetch it with util_fetch_drive_exports.R. ",
@@ -460,13 +444,7 @@ if (!TUNE && RUN_VALIDATION) {
 }
 
 ####11. Dropout diagnostic (RUN_DROPOUT_DIAGNOSTIC) ####
-# sampleRegions() drops a classifica point wherever the sampled band is masked there, which
-# conflates two causes: the pixel was never flagged as ever-mined, vs it WAS but LandTrendr found
-# no confident break. Samples ever_mined_flag unmasked (always valid) + the pre-mask
-# greatest-segment mag/dur/preval/onset_lt_raw (sentinel -9999) so every point survives; split in R:
-#   ever_mined_flag == 0                                   -> not_ever_mined
-#   ever_mined_flag == 1 & fails any LT gate (or -9999)    -> no_confident_break
-#   ever_mined_flag == 1 & passes all three gates          -> dated (Section 10's export)
+# Splits classifica points LandTrendr leaves undated into not_ever_mined vs no_confident_break.
 if (!TUNE && RUN_DROPOUT_DIAGNOSTIC) {
   if (!exists("conv_pts"))
     stop("conv_pts not built -- run with RUN_VALIDATION <- TRUE first (needs the bconv_c* chunk assets)")
@@ -476,7 +454,7 @@ if (!TUNE && RUN_DROPOUT_DIAGNOSTIC) {
     reduceResolution(reducer = ee$Reducer$mean(), maxPixels = 64L)$
     reproject(landsat_proj)$
     gte(0.5)$
-    rename("ever_mined_flag")            # deliberately NOT selfMask()'d -- see header note above
+    rename("ever_mined_flag")            # deliberately NOT selfMask()'d
 
   diag_img <- ever_mined_flag$
     addBands(max_mag_lt$unmask(-9999)$rename("max_mag"))$
@@ -488,50 +466,46 @@ if (!TUNE && RUN_DROPOUT_DIAGNOSTIC) {
                                          scale = EXPORT_SCALE, tileScale = 8L)
   diag_task <- ee$batch$Export$table$toDrive(
     collection = diag_sampled$select(c("classifica", "ever_mined_flag", "max_mag", "dur", "preval", "onset_raw")),
-    # hardcoded "landtrendr" (not METHOD) -- this diagnostic is always about onset_lt_raw/max_mag_lt
-    # regardless of what METHOD is set to. min/max suffixed -- LandTrendr's own result DOES depend
-    # on IMG_START/IMG_END/ONSET_MIN/MAX, so a different window's export must not collide with the
-    # already-scored 2005-2016 build_04_dropout_diagnostic_landtrendr.csv (same reasoning as Section 10).
     description = sprintf("build_04_dropout_diagnostic_landtrendr_min%d_max%d", ONSET_MIN, ONSET_MAX),
     folder = "ghana_mining_gee_exports", fileFormat = "CSV")
   diag_task$start()
-  message("Submitted dropout-diagnostic export (all classifica points, none dropped) -> ",
-          "outputs/tables/backdating/. To score by hand:\n",
-          "  d$bar_year <- 2000 + d$classifica\n",
-          "  pass <- d$max_mag > ", LT_MIN_MAGNITUDE, " & d$dur < ", LT_MAX_DURATION,
-          " & d$preval > ", LT_MIN_PREVAL, " & d$max_mag != -9999\n",
-          "  d$case <- ifelse(d$ever_mined_flag == 0, \"not_ever_mined\",\n",
-          "                    ifelse(pass, \"dated\", \"no_confident_break\"))\n",
-          "  table(d$case)")
+  message("Submitted dropout-diagnostic export -> outputs/tables/backdating/.")
 }
 
 ####12. Export national onset raster (flip TUNE <- FALSE first) ####
-# 4 bands, each with its own undated sentinel (0 is a real category for reference_tier/lt_agree):
-#   onset_year: Barenblitt's deployed onset year. 0 = ever-mined but undated.
-#   ndvi_deriv_x1000: ndvi_deriv_bar x1000, rounded (preserves precision through toInt16()).
-#                      -9999 = undated.
-#   reference_tier: 0 = no_reference, 1 = classifica_comparable, 9 = undated. See Section 8.
-#   lt_agree: 0 = agree, 1 = disagree, 2 = no_lt_signal, 9 = undated. See Section 8.
-# + 3 data-support bands (Section 8), defined for EVERY ever-mined pixel, dated or not:
-#   n_obs_years, n_computable_years: counts, 0 is a real value.
-#   start_ndvi_x1000: median 1998-2002 annual max NDVI x1000. -9999 = no clear obs in that window.
+# 12 Int16 bands, each with its own sentinel (0 is a real value for several):
+#   onset_year            rule-e onset 2000-2017. 0 = mined but undated.
+#   ndvi_deriv_x1000      winning loss x1000. -9999 = undated.
+#   onset_from{LATER_MIN}         rule-e onset restricted to LATER_MIN-2017. 0 = undated.
+#   loss_from{LATER_MIN}_x1000    that loss x1000. -9999 = undated.
+#   persistent_loss       0/1, defined for every mined pixel.
+#   reference_tier        0 = no_reference, 1 = classifica_comparable, 9 = undated.
+#   lt_agree              0 = agree, 1 = disagree, 2 = no_lt_signal, 9 = undated.
+#   n_obs_years, n_computable_years, n_interp_years   counts (0 is real).
+#   bare_pre{LATER_MIN}   0/1, 9 = no clear obs in the 3 years before LATER_MIN.
+#   start_ndvi_x1000      median rule-e 1998-2002 annual max x1000. -9999 = no clear obs.
 if (!TUNE && RUN_NATIONAL_EXPORT) {
   if (asset_exists(OUT_ASSET)) {
     message("[skip] ", OUT_ASSET, " exists -- delete it to re-export")
   } else {
-    deploy_image <- onset_year_bar$unmask(0)$rename("onset_year")$
-      addBands(ndvi_deriv_bar$multiply(1000)$round()$toInt16()$unmask(-9999)$rename("ndvi_deriv_x1000"))$
+    deploy_image <- onset_year_dep$unmask(0)$rename("onset_year")$
+      addBands(ndvi_deriv_dep$multiply(1000)$round()$toInt16()$unmask(-9999)$rename("ndvi_deriv_x1000"))$
+      addBands(onset_later$unmask(0)$rename(B_ONSET_LATER))$
+      addBands(loss_later$multiply(1000)$round()$toInt16()$unmask(-9999)$rename(B_LOSS_LATER))$
+      addBands(persistent_loss$unmask(0)$rename("persistent_loss"))$
       addBands(reference_tier$unmask(9L)$rename("reference_tier"))$
       addBands(lt_agree$unmask(9L)$rename("lt_agree"))$
       addBands(n_obs_years$unmask(0)$rename("n_obs_years"))$
       addBands(n_computable_years$unmask(0)$rename("n_computable_years"))$
+      addBands(n_interp_years$unmask(0)$rename("n_interp_years"))$
+      addBands(bare_pre$unmask(9L)$rename(B_BARE))$
       addBands(start_ndvi$multiply(1000)$round()$unmask(-9999)$rename("start_ndvi_x1000"))$
       updateMask(ever_mined)$
       toInt16()
 
     task <- ee$batch$Export$image$toAsset(
       image            = deploy_image,
-      description      = sprintf("mine_onset_year_%d_%d_barenblitt", ONSET_MIN, ONSET_MAX),
+      description      = basename(OUT_ASSET),
       assetId          = OUT_ASSET,
       region           = ghana$bounds(),
       scale            = EXPORT_SCALE,
@@ -540,13 +514,12 @@ if (!TUNE && RUN_NATIONAL_EXPORT) {
       pyramidingPolicy = list(".default" = "mode")   # categorical years/codes in every band
     )
     task$start()
-    message("Submitted: ", OUT_ASSET, " (7 bands -- see Section 12 header for sentinel coding)")
+    message("Submitted: ", OUT_ASSET, " (12 bands -- see Section 12 header for sentinel coding)")
   }
 }
 
-# NEXT (separate script): merge mine_onset_year_{ONSET_MIN}_{ONSET_MAX}_barenblitt with build_03's
-# mine_mask_ghana_c4_{2017..2025} into one continuous annual "mined" surface, then aggregate to the
-# hex x year panel (b_01_cross_section grid) -- NOT by resampling to a common pixel grid (10m vs 30m
-# seam is irrelevant at hex scale), but by computing per-hex mined area from each era's own native
-# raster and concatenating the resulting year-rows.
-message("\n=== build_04_backdating.R: done (deployed=barenblitt, cross-check=landtrendr) ===")
+# NEXT: b_04_rs_mining_panel.R merges this asset with build_03's mine_mask_ghana_c4_{2017..2025}
+# into the hex x year panel, in two conventions: A = onset_year (pre-LATER_MIN onsets = starting
+# stock), B = onset_from{LATER_MIN} ("no mining before LATER_MIN"); persistent_loss == 0 as a
+# robustness drop.
+message("\n=== build_04_backdating.R: done (deployed = Barenblitt replica + rule e) ===")

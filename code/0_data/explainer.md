@@ -259,3 +259,93 @@ natural rivers overlaid, and a hexes-per-basin histogram.
 `basin_num`.
 
 **Re-run when:** HydroBASINS export updates, or a new hex resolution is added.
+
+---
+
+## d_08_dhs_data.R
+
+**Purpose:** Pulls Ghana DHS (Demographic and Health Survey) data via `rdhs`, scoped to three
+domains: economic/employment, household wealth, and maternal/newborn health — all read off the
+IR (Individual Recode, women 15–49) file, since `v190`/`v191` (wealth index) is already merged
+onto each IR respondent, so no cross-recode-file join is needed to cover all three domains.
+GE (geographic cluster coordinates) is pulled separately (Sec 4) — the piece that will eventually
+let DHS clusters be located within the hex/district panel built in `2_build/`; this script does
+**not** do that spatial join itself, it only lands tidy raw extracts.
+
+**Extensible by design:** domains are entries in a `DOMAINS` list (`file_type` + candidate
+variable codes) that Secs 3–5 loop over generically — adding a new domain (e.g. household-level
+wealth from HR/PR via `hv270`/`hv271`, or child health from KR/BR) is one new list entry, no
+other code changes. DHS variable codes can drift slightly between survey rounds, so Sec 3 checks
+each candidate code against each survey's actual recode via `search_variables()` before
+extracting, and logs anything not found rather than silently dropping it.
+
+**Setup (one-time, before first run):** register a DHS Program project at
+dhsprogram.com/data/new-user-registration.cfm, get it approved for Ghana IR + GE, then set
+`DHS_EMAIL` / `DHS_PROJECT` environment variables (e.g. in `.Renviron`) — credentials are never
+hardcoded in the script. `rdhs` prompts for the DHS password on first use and caches config at
+`~/.rdhs.json`. GE approval can lag IR approval; Sec 4 degrades gracefully (logs and continues)
+if GE isn't yet authorised.
+
+**Outputs — `data/raw/dhs/`:**
+
+| File | Contents |
+|------|----------|
+| `ghana_dhs_surveys.csv` | Survey round metadata (year, IDs, ...) |
+| `dhs_clusters_ghana.csv` | GE cluster lat/lon (once authorised) |
+| `dhs_{economic,wealth,maternal_newborn_health}_ghana.csv` | One file per domain, all survey rounds row-bound, raw (not yet hex/district-aggregated) |
+
+**Re-run when:** a new DHS round lands, or a new domain is added to `DOMAINS`.
+
+## d_09_weather.R
+
+**Purpose:** Rainfall and temperature per unit (b_01 hex grid, 5 km by default; and the 260
+districts), monthly and annual, 1990–2025 — the weather covariates for the panel and for the
+D3b "expansion vs climate shocks" check in `a_04_motivating_facts.R`.
+
+**Sources:** CHIRPS v2.0 daily (`UCSB-CHG/CHIRPS/DAILY`, ~5.5 km) summed to monthly rainfall;
+ERA5-Land monthly (`ECMWF/ERA5_LAND/MONTHLY_AGGR`, ~11 km) 2 m air temperature — monthly mean,
+and the monthly max/min of hourly values. Both are averaged over each unit **in GEE** (reduced at
+1 km so units smaller than a source pixel still get an area-weighted value); only small CSVs leave
+GEE. This replaces `d_01` Section 7 (annual CHIRPS rasters for the study bounds, never downloaded).
+
+**Annual variables:** total and wet-season (March–October, covering both southern rainy seasons)
+rainfall; mean temperature, hottest-month max, coldest-month min; anomalies against the 1991–2020
+normal — rainfall z-score and ratio to the normal, temperature deviation in °C.
+
+**Caveats:** ERA5-Land is land-only. In the first run 39 coastal hexes (and 2 districts) fell only
+on sea cells and got no temperature; since v2 of the export, masked ERA5 cells are filled with the
+mean of land cells within 2 ERA5 pixels (~22 km), on ERA5's own grid. `t2m_land_share` (share of
+the unit on real land cells; 0 = fully filled) marks the filled units. ERA5 at ~11 km is coarse next to a 5 km hex, so
+neighbouring hexes share most of their temperature signal; rainfall (CHIRPS) is closer to the hex
+scale. Non-blocking workflow: re-run until the exports are downloaded.
+
+**Outputs — `data/processed/weather/`:** `weather_{hex5km,districts}_1990_2025_{monthly,annual}.{rds,csv}`
+(raw export CSVs in `data/raw/weather/`).
+
+**Re-run when:** extending the years, or adding a hex resolution to `HEX_SIZES_KM`.
+
+## d_13_nightlights.R
+
+**Purpose:** Annual nighttime lights per unit (b_01 hex grid, 5 km; and the 260 districts),
+1992–2025 — a proxy for local economic activity and electrification.
+
+**Source:** Chiovelli, Michalopoulos, Papaioannou & Regan (2026), "Illuminating the Global South",
+*Economic Journal* (doi:10.1093/ej/ueaf134); data on Zenodo (doi:10.5281/zenodo.20558766, CC BY 4.0
+— cite the paper). DMSP (to 2013) and VIIRS (from 2012) harmonised onto one DMSP-style scale, so the
+series runs continuously across the sensor switch. We use the `bloomtopcode_fix` variant (blooming
+and top-coding corrected), downloaded by hand to `data/raw/nightlights/`: one GeoTIFF per year,
+EPSG:4326, 30 arc-sec (~1 km), integer, 0 = unlit.
+
+**Method:** local, no GEE. All years are cropped to the units' bounding box and stacked; exactextractr
+(cells weighted by the share inside the unit, built-in summaries — an R summary function per unit was
+far too slow) gives per unit × year `ntl_mean`, `ntl_sum` (coverage-weighted), `ntl_lit` (share of
+area on lit cells) and `ntl_max`. Runs in under a minute.
+
+**Caveat:** no jump at 2013→2014, but the hex study area's lit share climbs steeply after 2015 (18% →
+64% by 2025). Partly real electrification, partly likely VIIRS detecting dim rural light that DMSP
+missed — check the paper before treating post-2014 levels, especially `ntl_lit`, at face value.
+Changes within a unit relative to the year are safer than levels across the switch.
+
+**Outputs — `data/processed/nightlights/`:** `nightlights_{hex5km,districts}_1992_2025.{rds,csv}`.
+
+**Re-run when:** a new year is released, or a hex resolution is added to `HEX_SIZES_KM`.
