@@ -41,7 +41,7 @@ The project has two sequential phases:
 - [ ] **River definition** for `dist_river_km` + flow treatment (OSM vs MERIT `upa` threshold vs RS measure) — see `rivers_exploration.Rmd`. **Blocked on geologist review.**
 - [~] **Peak-EVI outcome pipeline**: built in `b_03a_vi_panel.R`, run at 5/2 km, 1 km deferred (perf). Remaining: 1 km run; verify ESA CCI class sets against UN-LCCS legend; robustness vs DE Africa 2022 masks.
 - [ ] Re-download/re-stack the missing 2021–2024 MODIS land-cover layers (`d_01` Sec 9 requests 2001:2024, stack ends 2020).
-- [🔒] Acquire: historical mine-licence register (D3c — partially unblocked, see below), COCOBOD cocoa yields (D5c), census microdata / GLSS 7 (D6a–c). Wire CHIRPS into D3b (downloaded, unused).
+- [🔒] Acquire: historical mine-licence register (D3c — partially unblocked, see below), COCOBOD cocoa yields (D5c), census microdata / GLSS 7 (D6a–c). Wire weather into D3b: CHIRPS + ERA5-Land now built per hex5km/district 1990-2025 (`d_09_weather.R` v2, `data/processed/weather/`), unused so far.
 - [x] **Ghana Mining Repository EDA** (`d_12_mining_repository.R`): KML + Excel cadastre parsed, cross-file joins verified. `start_date` genuinely spans 1995–2025 (not a flat snapshot) — **this may partially unblock D3c**, pending confirmation it means first issuance, not latest renewal (a `2025-01-01` pileup in 392/1,786 rows needs checking first). See `data_inventory.md` §2.
 - [ ] Decide spatial aggregation unit for final analysis — hexagons (5/2/1 km), admin units (district/EA), or both; both are already built throughout Part 2. See `data_inventory.md`'s Key Data Caveats.
 
@@ -52,18 +52,20 @@ section, for anything below day-to-day). Current pipeline: `build_01_labels.R` �
 → `build_03_embedding_panel.R` → `build_04_backdating.R` → `2_build/b_04_rs_mining_panel.R`.
 
 - [x] **Classifier deployed**: `build_02`/`build_03` fully exported 2017–2025 (c4/no_maus, cutoff 70, GHSL/GSW/GRIP4 knockouts, ICMM/Maus/Tang&Werner industrial-mine exclusion — 14 named mines).
-- [x] **Backdating deployed**: `build_04` exported `mine_onset_year_2005_2016_barenblitt`. Validated against classifica: 14.3%/51.0%/60.6% exact/±1/±2yr (conditional on spatial agreement: 16.5%/58.6%/69.7%).
-- [~] **Backdating window robustness** (2026-11-06): found the deployed layer's cumulative mining through 2007 runs ~20× Barenblitt's own figure (narrowing to ~2× by 2016) — read as left-censoring at `ONSET_MIN`, consistent with Barenblitt's own documented pre-2012 early-detection bias. `validate_backdating_method_fidelity.R` RAN — footprint-matching (anchoring to Barenblitt's own 2019 extent instead of our classifier) improved every metric vs the existing classifier-anchored comparison (exact/±1/±2yr 17.1/58.3/71.3% vs 14.3/51.0/60.6%; coverage 89.2% vs 70.1%), confirming spatial-detection was a real part of the original gap. **NEXT SESSION:** check whether the two `ONSET_MIN`=2000/2007 `build_04` reruns submitted 2026-11-06 have landed yet — no local evidence either has as of 2026-11-06 (no `mine_onset_year_{2000,2007}_2016_barenblitt`-named files found) — check the Code Editor Tasks tab / Drive, then score via `diag_04_backdating.R`'s `report_existing_exports()` / Section 8c.
-- [ ] **`b_04_rs_mining_panel.R`** has a real 5 km hex CSV, scoped to the Barenblitt hull only. Not yet extended to 2/1 km or national extent; panel long/wide assembly (Section 4) not yet written; `MIN_CONFIDENCE` filtering policy undecided.
+- [x] **Backdating deployed** (2026-11-18): `build_04` → `mine_onset_year_2000_2017_rulee` (Barenblitt replica + rule e, 12 bands incl. `onset_from2007`, `persistent_loss`, `bare_pre2007`). National: 683 km² dated; persistent loss 65% (2000-06) vs 87% (2011-17). Validation + weak spots in `diag_04_backdating_report.Rmd` (rendered, slimmed 2026-11-18).
+- [ ] Backdating open: residual 2002 bump (4.6%, ~1.7× neighbours) and 2008 dip (28% bare-at-start); optional despike-rule test (replace any one-year dip, not only single-image years) deferred.
+- [x] **`b_04_rs_mining_panel.R`** run (2026-11-18): `data/processed/rs_mining_panel_hex5km_2000_2025.{rds,csv}`, 3,348 hexes (b_01 study area, 665 of 683 km²), conventions A / A_persist / B. Remaining: 2/1 km and national extent; `STOCK_MAX_LOSS_X1000` (25) provisional; definition question below.
 - [ ] Industrial-mine exclusion confirmed deployed and visually QA'd, but not formally scored.
 - [ ] Spatial cross-validation for the embedding classifier (by district) — not started.
 - [ ] Score Maus/Tang & Werner/SmallMinesDS against each other more formally (currently informal EDA-level comparisons only).
+- [ ] **Overhaul `embedding_classifier_approach.md`** (straighten + slim, like the backdating report). Key gap: reported accuracy (OA 0.891 / PA 0.870 / UA 0.907, SmallMinesDS 2022) is not for the deployed product, since the sweep stops at cutoff 64 and the deployed cutoff is 70. Re-score the deployed cutoff-70 masks against SmallMinesDS 2022 (and 2016 if usable); state the balanced-test-set and single-year/5-district caveats.
+- [ ] **Decide what counts as "mined" in the panel** (pre-2017 survivor-only vs raw flickering 2017+ masks; ever-mined + entry rule vs current mask + flicker rule) — see `notes/2026-11-18_what_counts_as_mined.md`.
 
 ### Build (`code/2_build/`)
 
 - [x] `b_01_cross_section.R` run (hex 1/2/5 km + district caches exist). `b_02_firststage_models.R` full ladder run (`d03_maup_results.rds` exists). `b_03a`–`e` event panels exist at 1/2/5 km.
 - [ ] Extend the MERIT D8 hex flow graph beyond the study-area clip to all of Ghana.
-- [ ] `b_04_rs_mining_panel.R` — see Remote Sensing section above; this is the main open Build item now.
+- [~] `b_04_rs_mining_panel.R` — 5 km panel built; see Remote Sensing section above for what remains.
 
 ### Analysis (`code/3_analysis/`)
 
