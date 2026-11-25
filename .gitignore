@@ -7,6 +7,10 @@
 !/.gitignore
 !/data_inventory.md
 !/galamsey_tasklist.md
+# rendered HTML reports (moved out of code/ 2026-11-25) stay tracked; rest of outputs/ is not
+!/outputs/
+/outputs/*
+!/outputs/reports/
 
 # R / RStudio cruft (in case it appears under code/)
 .Rhistory

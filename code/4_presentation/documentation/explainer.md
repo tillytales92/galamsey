@@ -19,7 +19,7 @@ model, and the event-study designs — see the companion
 Spillovers." A single Quarto source that renders to **two formats** from the same content:
 
 - **reveal.js** HTML (`theme: simple`, self-contained) — the interactive web slides, output
-  `galamsey_motivation.html`.
+  `outputs/reports/galamsey_motivation.html` (render with `--output-dir`, see the qmd header).
 - **Beamer** PDF (`theme: Madrid`, galamsey-wine colour scheme, `aspectratio=169`) — the LaTeX/PDF
   deck.
 

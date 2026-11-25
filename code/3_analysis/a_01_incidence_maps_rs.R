@@ -4,9 +4,10 @@
 # SEPARATE script/output set, not a replacement (2026-11-05 decision: keep both sources available
 # for comparison, see code/2_build/documentation/explainer.md once b_04 gets its own entry there).
 #
-# Scope note: b_04 currently only has a 5km hex CSV, bar_hull-scoped (not national) -- see that
-# script's own header. This script inherits both limits; extending either is a b_04-level decision,
-# not something to silently work around here.
+# Input: data/processed/rs_mining_panel_hex5km_2000_2025.rds (long, hex_id x year), written by b_04.
+# Mapped column = PANEL_COL: mined_ha_A = "ever mined" (Option 1; pre-2007 onsets kept as starting
+# stock). Repointed 2026-11-25 from the superseded 2026-11-05 wide CSV in outputs/tables/backdating/.
+# Scope: b_04 is 5 km, b_01 study area only (not national); this script inherits both limits.
 
 ####0. Setup ####
 pacman::p_load(tidyverse, sf, here, scales, patchwork, gganimate, gifski, conflicted)
@@ -14,7 +15,8 @@ conflicts_prefer(dplyr::filter, dplyr::select, dplyr::mutate, dplyr::summarise, 
 UTM30N <- 32630
 
 PLASMA <- c("#FCFDBF", "#FEC287", "#FD9567", "#F1605D", "#CD4071", "#9E2F7F", "#721F81", "#450457")
-YEARS  <- 2005:2025
+YEARS  <- 2001:2025          # panel starts 2000; 2001 + every 4th year -> 7 map panels
+PANEL_COL <- "mined_ha_A"    # ever mined (Option 1); see b_04 header for the other conventions
 
 out_dir <- here("outputs", "figures", "maps", "hex5km_rs")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -24,8 +26,8 @@ cache     <- readRDS(here("data", "processed", "hex_5km_crosssection.rds"))
 hex_sf    <- cache$hex_sf           # bar_hull-scoped, SAME grid b_04 reused -- hex_id lines up
 study_area <- cache$study_area
 
-panel_raw <- read_csv(here("outputs", "tables", "backdating", "b_04_rs_mining_panel_5km.csv"),
-                       show_col_types = FALSE)
+panel_raw <- readRDS(here("data", "processed", "rs_mining_panel_hex5km_2000_2025.rds"))
+stopifnot(PANEL_COL %in% names(panel_raw))
 
 industrial_sf <- st_read(here("data", "processed", "ghana_industrial_mines.gpkg"), quiet = TRUE) |>
   st_transform(UTM30N)
@@ -42,15 +44,13 @@ p_inset_ghana <- ggplot() +
   theme_void() +
   theme(panel.background = element_rect(fill = "white", colour = "grey40", linewidth = 0.5))
 
-####2. Reshape: wide (y2005..y2025, m2) -> long (year, area_ha), join to hex_sf ####
+####2. Select the mapped column (panel is already long, in hectares) ####
 panel_long <- panel_raw |>
-  select(hex_id, starts_with("y20")) |>
-  pivot_longer(starts_with("y20"), names_to = "year", values_to = "area_m2") |>
-  mutate(year = as.integer(str_remove(year, "^y")), area_ha = area_m2 / 1e4) |>
-  select(hex_id, year, area_ha)
+  transmute(hex_id, year = as.integer(year), area_ha = .data[[PANEL_COL]]) |>
+  filter(year %in% YEARS)
 
 ####3. D1a-RS -- small-multiple maps: cumulative mining extent by year ####
-years_show <- seq(min(YEARS), max(YEARS), by = 4)   # 2005, 2009, ..., 2025 -- 6 panels
+years_show <- seq(min(YEARS), max(YEARS), by = 4)   # 2001, 2005, ..., 2025 -- 7 panels
 
 map_data_small <- hex_sf |>
   left_join(panel_long |> filter(year %in% years_show), by = "hex_id")
@@ -68,8 +68,8 @@ p_small <- ggplot(map_data_small) +
   ) +
   labs(
     title    = "Cumulative mined area by 5km hex -- RS-derived panel",
-    subtitle = "2005-2016 backdated (Barenblitt method) + 2017-2025 embedding classifier, no magnitude gate",
-    caption  = "Barenblitt study-area hull only (not national -- see b_04_rs_mining_panel.R header)."
+    subtitle = "Ever mined: 2000-2016 backdated (Barenblitt replica, rule e) + 2017-2025 embedding classifier",
+    caption  = "b_01 study area only (not national -- see b_04_rs_mining_panel.R header)."
   ) +
   theme_void(base_size = 10) +
   theme(
@@ -85,7 +85,7 @@ p_small_final <- p_small + inset_element(p_inset_ghana,
 ggsave(file.path(out_dir, "d1a_hex5km_rs_cumulative.png"), p_small_final, width = 14, height = 10, dpi = 150)
 message("Saved: maps/hex5km_rs/d1a_hex5km_rs_cumulative.png")
 
-####4. D1a-RS -- animated GIF: cumulative mining extent, 2005-2025 ####
+####4. D1a-RS -- animated GIF: cumulative mining extent, 2001-2025 ####
 plot_data_anim <- panel_long |>
   right_join(hex_sf, by = "hex_id") |>
   st_as_sf()
@@ -100,8 +100,8 @@ p_anim <- ggplot(plot_data_anim) +
   ) +
   labs(
     title    = "Cumulative mined area -- RS-derived panel -- {closest_state}",
-    subtitle = "5km hex, Barenblitt study-area hull. Backdated 2005-2016 + classifier 2017-2025.",
-    caption  = "Dashed outline: Barenblitt SW Ghana survey area."
+    subtitle = "5km hex, b_01 study area. Ever mined: backdated 2000-2016 + classifier 2017-2025.",
+    caption  = "RS mining panel (b_04_rs_mining_panel.R)."
   ) +
   theme_void(base_size = 12) +
   theme(
@@ -159,7 +159,7 @@ p_ind <- ggplot() +
 p_types <- p_art + p_ind +
   plot_annotation(
     subtitle = "RS-derived (build_02/03/04) artisanal proxy vs ICMM/Maus/Tang&Werner industrial reference",
-    caption  = "Barenblitt study-area hull. Industrial panel is a static reference layer, not a time series.",
+    caption  = "b_01 study area. Industrial panel is a static reference layer, not a time series.",
     theme    = theme(plot.subtitle = element_text(colour = "grey40", size = 9),
                       plot.caption  = element_text(colour = "grey50", size = 8))
   )

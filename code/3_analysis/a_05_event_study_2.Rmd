@@ -1,4 +1,5 @@
 ---
+knit: (function(input, ...) rmarkdown::render(input, output_dir = here::here("outputs", "reports"), envir = globalenv()))   # HTML goes to outputs/reports/
 title: "Galamsey event study — Q1 (part 1): upstream mining → downstream vegetation (C&S mbar sweep)"
 author: "Sree Ayyar, Till Meissner"
 date: "`r format(Sys.Date(), '%d %B %Y')`"
@@ -359,7 +360,7 @@ hydrological distance:
   falls **57% → 27%** as $\bar m$ goes 0 → 20 ha, and at $\bar m \ge 10$ roughly a third of treated
   hexes are invisible to the 1-hop definition (ring 1 never crosses) while another third have their
   onset pulled earlier by rings 2–3. So `≤3 hops` is a genuinely different design from 1-hop at the
-  higher thresholds, not a dose rescaling. See `ring1_dominance_diagnostic.R` and
+  higher thresholds, not a dose rescaling. See `notes/archive/ring1_dominance_diagnostic.R` and
   `event_study_design.md`'s hop-ring note. (The disjoint rings `up_hop{2,3}_*` also sit in the panel
   from `b_03e`, should you want to enter them separately to trace attenuation.)
 - **all reachable** (`up_*` / `down_*`) — the full catchment ($k = \infty$, via `subcomponent()`).

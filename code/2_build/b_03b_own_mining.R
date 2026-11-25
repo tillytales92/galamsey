@@ -1,6 +1,6 @@
 # b_03b_own_mining.R
 # Compute per-hex annual new mining area (own-hex) and queen-adjacency neighbour mining
-# from Barenblitt 2007-2017. Part 2 of 4 in the modular event-panel build.
+# from Barenblitt 2007-2017. Part 2 of 5 in the modular event-panel build.
 #
 # Outputs: data/processed/hex_{N}km_own_mining.rds
 #   tibble(hex_id, year, own_new_ha, adj_new_ha)

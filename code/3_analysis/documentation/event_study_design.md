@@ -208,7 +208,7 @@ follow:
    cumulative-within-3 treatment is a genuinely different design from 1-hop, not a dose rescaling:
    ~⅓ of treated hexes are invisible to the 1-hop definition and another ~⅓ have their onset pulled
    earlier by rings 2–3. **The cumulative treatment is worth featuring specifically at m̄ ≥ 10.**
-   Diagnostic script: `code/3_analysis/ring1_dominance_diagnostic.R` (see changelog 2026-07-13).
+   Diagnostic script: `notes/archive/ring1_dominance_diagnostic.R` (see changelog 2026-07-13).
 
    These cumulative treatments are implemented as the `up_le3_*` (treatment) and `down_le3_*`
    (symmetric placebo) exposures — derived in `a_05_event_study_2.Rmd`'s `derive-le3` chunk (a
@@ -268,7 +268,7 @@ hexes between them, giving an effective cluster count (inverse-Herfindahl, $1/\s
 **3**, not 34 — exactly the kind of severe size imbalance that makes `did::att_gt`'s multiplier
 bootstrap (`bstrap = TRUE`) erratic. `basin_num`'s much larger absolute cluster count (138 basins
 touch that same event-time cell, vs. `main_basin`'s 34) doesn't have this failure mode. See
-`cluster_se_diagnostic.R` for the reproducible three-way comparison.
+`notes/archive/cluster_se_diagnostic.R` for the reproducible three-way comparison.
 
 ### Helpers
 

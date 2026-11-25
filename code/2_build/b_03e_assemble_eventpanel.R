@@ -1,6 +1,6 @@
 # b_03d_assemble.R
 # Assemble the final event-study panel from the four component caches.
-# Part 4 of 4 in the modular event-panel build.
+# Part 5 of 5 in the modular event-panel build.
 #
 # Inputs (all per resolution N):
 #   hex_{N}km_vi_panel.rds             — 25 VI/urban columns, hex x year  (from b_03a)

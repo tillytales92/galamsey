@@ -1,4 +1,5 @@
 ---
+knit: (function(input, ...) rmarkdown::render(input, output_dir = here::here("outputs", "reports"), envir = globalenv()))   # HTML goes to outputs/reports/
 title: "Defining 'rivers' for the galamsey study — OSM vs MERIT Hydro vs remote sensing"
 subtitle: "An exploration on the Ankobra basin — notes and open questions"
 author: "Till Meissner"

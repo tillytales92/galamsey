@@ -1,4 +1,5 @@
 ---
+knit: (function(input, ...) rmarkdown::render(input, output_dir = here::here("outputs", "reports"), envir = globalenv()))   # HTML goes to outputs/reports/
 title: "The 2017-2025 mining product: how it is built, and how good it is"
 author: "Till Meissner"
 date: "`r Sys.Date()`"

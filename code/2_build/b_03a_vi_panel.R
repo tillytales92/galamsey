@@ -1,6 +1,6 @@
 # b_03a_vi_panel.R
 # Peak-EVI / peak-NDVI zonal extraction per hex per year (Vashold et al. 2026 methodology).
-# Part 1 of 4 in the modular event-panel build (see b_03b/c/d/e for the other components).
+# Part 1 of 5 in the modular event-panel build (see b_03b/c/d/e for the other components).
 #
 # PIPELINE (per index x mask x year):
 #   1. Source: MODIS MOD13Q1 16-day composites, 250 m, QA-masked server-side

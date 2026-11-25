@@ -1,4 +1,5 @@
 ---
+# Render to outputs/reports/:  quarto render code/3_analysis/a_06_mining_by_region.qmd --output-dir ../../outputs/reports
 title: "Galamsey by Region and District"
 subtitle: "Cumulative extent, growth, and protected-area encroachment"
 date: "`r Sys.Date()`"

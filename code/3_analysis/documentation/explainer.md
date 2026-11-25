@@ -123,9 +123,23 @@ from the hex-level Callaway–Sant'Anna designs in `a_05`.
 
 ---
 
-## a_05_event_study.Rmd
+## a_05_event_study_{1,2,2b,3}.Rmd
 
-**Purpose:** The **event-study report** — the causal core of the downstream-impact analysis. Reads
+Split on 2026-07-08 into self-contained reports that share one panel:
+
+| File | Question | Knitted |
+|---|---|---|
+| `a_05_event_study_1.Rmd` | Q0: own-hex mining → own-hex vegetation (mechanics sanity check) | yes |
+| `a_05_event_study_2.Rmd` | Q1 part 1: upstream mining → downstream vegetation (C&S, stock-threshold sweep) | yes |
+| `a_05_event_study_2b.Rmd` | Q1 part 2: same question, dCDH continuous dose | yes |
+| `a_05_event_study_3.Rmd` | Q2: neighbour mining → own mining | not yet |
+
+One-off diagnostics behind design choices here (C&S clustering level, ring-1 dominance of the
+within-3-hop clock) are archived in `notes/archive/` (`cluster_se_diagnostic.R`,
+`mask_missingness_e2_diagnostic.R`, `ring1_dominance_diagnostic.R`); results are in
+`event_study_design.md`.
+
+**Purpose:** The **event-study reports** — the causal core of the downstream-impact analysis. Reads
 the shared hex × year panel (`event_panel_{1,2,5}km.rds`, resolution set via `params$resolution_km`)
 and estimates two questions that share it:
 
@@ -151,12 +165,14 @@ columns).
 
 ---
 
-## (former a_06) awomaso_case_study.R — moved out (2026-08-05)
+## a_01_incidence_maps_rs.R
 
-Relocated to `code/1_remote_sensing/validate_awomaso_case_study.R` — on reflection it's a
-single-site visual QA check on the classifier's own output (does Awomaso's before/after look
-plausible?), not a descriptive/causal result for the paper/deck like the rest of this folder.
-Briefly lived here 2026-08-04–2026-08-05 (moved from the former `rs08_visualisation.R`).
+**Purpose:** Remote-sensing counterpart of `a_01_incidence_maps.R`'s D1a/D1b maps (same palette and
+layout) on the 5 km hex grid: cumulative mining maps and artisanal vs industrial.
+**Outputs:** `outputs/figures/maps/hex5km_rs/`.
+**Stale input:** it still reads the 2026-11-05 panel `outputs/tables/backdating/b_04_rs_mining_panel_5km.csv`,
+not the current `data/processed/rs_mining_panel_hex5km_2000_2025.{rds,csv}` written by `b_04`
+(different columns); repoint before re-running.
 
 ---
 
