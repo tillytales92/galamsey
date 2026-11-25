@@ -20,7 +20,8 @@ EP   <- file.path(TAB, "embedding_product")          # diag_03_embedding_product
 YEARS <- 2017:2025
 CUTOFF <- 70L                                        # = build_03_embedding_panel.R
 pending <- function(what) cat(sprintf("\n> **Pending:** %s\n\n", what))
-read_if <- function(p) if (file.exists(p)) read_csv(p, show_col_types = FALSE) else NULL
+read_if <- function(p) if (file.exists(p)) read_csv(p, show_col_types = FALSE) |>
+  select(-any_of(c("system:index", ".geo"))) else NULL   # drop the columns EE adds to every CSV export
 details_open  <- function(title = "Show table") cat(sprintf('<details class="more"><summary>%s</summary>\n\n', title))
 details_close <- function() cat("\n\n</details>\n\n")
 rlab <- c(ghana = "All of Ghana", bar_hull = "Barenblitt et al. study area")
