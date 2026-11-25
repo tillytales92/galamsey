@@ -56,7 +56,7 @@
 //   overlay in place and is kept as a separate, lighter-weight way to scrub years.
 //
 // *** 2026-11-03 FOLLOW-UP #2 (user request): real satellite imagery GIF ***
-// Added true-colour composite helpers (STEP 3b, same technique as validate_change_gif.js: Sentinel-2
+// Added true-colour composite helpers (STEP 3b, same technique as notes/archive/validate_change_gif.js: Sentinel-2
 // from SENTINEL2_START_YEAR (2018) on, Landsat 5/7/8 before that -- that script confirmed ZERO
 // Sentinel-2 scenes over this kind of AOI for the 2017 dry season). Used by "Generate satellite GIF"
 // (STEP 7b) -- a second, District-mode-only GIF alongside the original forest-type one: real imagery
@@ -182,7 +182,7 @@ var PROTECTED_AREAS = ee.FeatureCollection("WCMC/WDPA/current/polygons")
     ee.Filter.eq("STATUS", "Designated")
   ));
 
-// Populated 2026-11-05 from diag_05_mining_by_region.qmd Section 6c's output
+// Populated 2026-11-05 from a_06_mining_by_region.qmd Section 6c's output
 // (outputs/figures/mining_protected_overlap_by_district.csv, converted to this literal object --
 // not an EE asset, a plain JS object keeps the lookup a zero-cost client-side read, no round trip
 // at all). Re-run Section 6c and regenerate (same conversion, see that session's scratch script)
@@ -481,10 +481,10 @@ EMBED_YEARS.forEach(function (yr) {
 
 // ====================================================================================================
 // STEP 3b -- true-colour composite helpers, for the satellite GIF (STEP 7b). Same technique as
-// validate_change_gif.js (dry-season window to dodge cloud-driven flicker, SCL/QA cloud masks),
+// notes/archive/validate_change_gif.js (dry-season window to dodge cloud-driven flicker, SCL/QA cloud masks),
 // parametrized by geometry (not a fixed AOI) since this app renders over whichever district is
 // currently selected, not one fixed site. Sentinel-2 from SENTINEL2_START_YEAR on; Landsat 5/7/8
-// before that -- confirmed in validate_change_gif.js that COPERNICUS/S2_SR_HARMONIZED has ZERO
+// before that -- confirmed in notes/archive/validate_change_gif.js that COPERNICUS/S2_SR_HARMONIZED has ZERO
 // scenes over this kind of AOI for the 2017 dry season (2018 itself stays on Sentinel-2 but will
 // look visibly sparser/noisier than 2019 on, ~5 scenes). The GIF runs the full EMBED_YEARS
 // (2017-2025, not DISPLAY_YEARS) BECAUSE of this Landsat fallback -- unlike the ForTy-dependent
@@ -512,7 +512,7 @@ function s2DrySeasonComposite(yr, geom) {
 }
 
 // ---- Landsat 5/7/8 true-colour fallback (pre-Sentinel-2-coverage years only) -- same QA_PIXEL
-// cloud-mask bits + C2 L2 scale factors as build_04_backdating.R Section 5 / validate_change_gif.js.
+// cloud-mask bits + C2 L2 scale factors as build_04_backdating.R Section 5 / notes/archive/validate_change_gif.js.
 var LANDSAT_CLOUD_MAX = 80;   // % scene cloud cover, loose on purpose -- Landsat's revisit is sparse
 
 function maskLandsatQA(img) {
@@ -534,7 +534,7 @@ function prepLandsat(id, bands) {
     .map(function (img) {
       // .select(...).multiply(...).add(...) strips system:time_start -- copyProperties re-attaches
       // it. Without this, every later filterDate() silently matches nothing, for every image, every
-      // year (validate_change_gif.js hit exactly this bug -- "FIX 2" in its own comments).
+      // year (notes/archive/validate_change_gif.js hit exactly this bug -- "FIX 2" in its own comments).
       return img.select(bands, ["RED", "GREEN", "BLUE"]).multiply(0.0000275).add(-0.2)
         .copyProperties(img, ["system:time_start"]);
     });
@@ -562,7 +562,7 @@ function imageryVis(yr, geom) {
 
 // ====================================================================================================
 // STEP 4 -- restrict the Region/District dropdowns to the regions that actually matter. The
-// diag_05_mining_by_region.qmd region chart made it clear only 5 regions carry any real galamsey
+// a_06_mining_by_region.qmd region chart made it clear only 5 regions carry any real galamsey
 // footprint -- ALLOWED_REGIONS hardcodes those (explicit user call, 2026-11-03), rather than relying
 // on a km2 threshold to infer it. MIN_MINING_KM2 still does a second, finer job: dropping the
 // near-zero-mining DISTRICTS *within* those 5 regions (every region has a few scattered noise
@@ -585,7 +585,7 @@ function isAllowedRegion(regionName) {
 }
 
 // MIN_MINING_KM2: within the 5 allowed regions, drops districts with only scattered noise pixels.
-// Provisional value pending diag_05_mining_by_region.qmd (companion R report, same folder), which
+// Provisional value pending a_06_mining_by_region.qmd (companion R report, code/3_analysis), which
 // plots the district-level mining-area distribution and units retained at several candidate cutoffs.
 var MIN_MINING_KM2 = 1;
 var areaKm2 = ee.Image.pixelArea().divide(1e6);
@@ -650,7 +650,7 @@ var DEFAULT_REGION = REGION_NAMES.filter(function (r) { return r.toLowerCase() =
 // NOTE 2026-11-03: a national region-by-region overview chart (2020 level + growth to 2025, summed
 // from districtRows above) used to live here and get appended to every "Generate stats" run. Pulled
 // back out (user call) -- it's a static, selection-independent figure, better suited to a documented
-// report than to a per-unit exploration tool. See diag_05_mining_by_region.qmd (same folder) instead.
+// report than to a per-unit exploration tool. See a_06_mining_by_region.qmd (code/3_analysis) instead.
 
 // ====================================================================================================
 // STEP 5 -- shared selection state. District-only (Region mode REMOVED 2026-11-04, user call -- a

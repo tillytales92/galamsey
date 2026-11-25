@@ -56,8 +56,8 @@ An *input* to §1's classifier, not a separate final dataset.
 
 | Dataset | Source (GEE collection) | Coverage | Years | Resolution | Status | Use | Script |
 |---------|-------------------------|----------|-------|-----------|--------|-----|--------|
-| Landsat 5/7/8/9 surface reflectance | `LANDSAT/LC0{8,9}/C02/T1_L2` (+ archive) | All Ghana | 1995–2025 | 30 m | 🔄 | Current (Part 1) | `1_remote_sensing/explore_landsat_sentinel.R` |
-| Sentinel-2 surface reflectance | `COPERNICUS/S2_SR_HARMONIZED` | All Ghana | 2015–2025 | 10 m | 🔄 | Current (Part 1) | `1_remote_sensing/explore_landsat_sentinel.R` |
+| Landsat 5/7/8/9 surface reflectance | `LANDSAT/LC0{8,9}/C02/T1_L2` (+ archive) | All Ghana | 1995–2025 | 30 m | 🔄 | Current (Part 1) | `notes/archive/explore_landsat_sentinel.R` (archived) |
+| Sentinel-2 surface reflectance | `COPERNICUS/S2_SR_HARMONIZED` | All Ghana | 2015–2025 | 10 m | 🔄 | Current (Part 1) | `notes/archive/explore_landsat_sentinel.R` (archived) |
 | AlphaEarth satellite embeddings | `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` | All Ghana | 2017–2025 | 10 m, 64-band | 🔄 | Current (Part 1) | `1_remote_sensing/build_02_embedding_classifier.R` |
 
 **Why several:** Landsat gives the long historical archive (feeds `build_04`'s backdating);
@@ -281,7 +281,7 @@ The waterborne hypothesis (upstream mining → downstream degradation) is curren
 
 | Dataset | Source | Coverage | Years | Status | Use | Script |
 |---------|--------|----------|-------|--------|-----|--------|
-| Sentinel-2 turbidity / NDTI | `COPERNICUS/S2_SR_HARMONIZED` | All Ghana | 2015– | 🔄 | Potential | `1_remote_sensing/explore_landsat_sentinel.R` |
+| Sentinel-2 turbidity / NDTI | `COPERNICUS/S2_SR_HARMONIZED` | All Ghana | 2015– | 🔄 | Potential | `notes/archive/explore_landsat_sentinel.R` (archived) |
 | In-situ water quality (Hg, turbidity, TSS) | Water Resources Commission / field campaigns / literature | River gauging points | varies | 🔒 | Potential | — |
 
 **Note:** in-situ mercury/turbidity measurements are the gold-standard validation but sparse and hard

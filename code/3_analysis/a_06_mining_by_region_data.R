@@ -1,5 +1,5 @@
-# diag_05_data_prep.R -- EE auth, downloads, and figure/table generation for
-# diag_05_mining_by_region.qmd. Run this interactively in RStudio first (needs a live EE login);
+# a_06_mining_by_region_data.R -- EE auth, downloads, and figure/table generation for
+# a_06_mining_by_region.qmd. Run this interactively in RStudio first (needs a live EE login);
 # the .qmd only reads what this script writes to outputs/figures/diag_05/ and outputs/tables/diag_05/
 # (plus the three canonical outputs/tables/*.csv also consumed elsewhere -- see explainer.md).
 
@@ -331,5 +331,5 @@ saveRDS(
   here(tbl_dir, "diag05_meta.rds")
 )
 
-message("diag_05_data_prep.R done -- figures in ", fig_dir, ", tables in ", tbl_dir,
-        ". Render diag_05_mining_by_region.qmd next.")
+message("a_06_mining_by_region_data.R done -- figures in ", fig_dir, ", tables in ", tbl_dir,
+        ". Render a_06_mining_by_region.qmd next.")

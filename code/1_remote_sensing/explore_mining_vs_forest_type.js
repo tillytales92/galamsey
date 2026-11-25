@@ -8,8 +8,8 @@
 // district. Map + two bar charts (a per-year stacked trend, and a single "what did the 2017-2025
 // GROWTH in mining actually displace" breakdown) + a GIF.
 //
-// MULTI-DISTRICT UI (2026-11-02, user request, "along the lines of validate_change_gif.js"): a
-// dropdown (top-right) picks among DISTRICTS below -- reuses 4 of validate_change_gif.js's known
+// MULTI-DISTRICT UI (2026-11-02, user request, "along the lines of notes/archive/validate_change_gif.js"): a
+// dropdown (top-right) picks among DISTRICTS below -- reuses 4 of notes/archive/validate_change_gif.js's known
 // artisanal-mining-corridor sites (Amansie/Obuasi/Dunkwa-Offin/Prestea) plus this script's own
 // original Nkotumso/Upper Denkyira West hotspot as the default. Two buttons trigger the heavy work
 // on whichever district is CURRENTLY selected: "Generate GIF" (the animated cumulative-mining-vs-
@@ -122,7 +122,7 @@ var currentScope = "district";   // mutated by the scope dropdown below
 var lastBigRegionGeom = null, lastBigRegionLabel = null;
 
 // ---- GIF title label (2026-11-02, user request) -- reuses the EXACT recipe already fixed and
-// confirmed working in validate_change_gif.js this session: fontSize 24 is the only font-size
+// confirmed working in notes/archive/validate_change_gif.js this session: fontSize 24 is the only font-size
 // asset `gena/packages:text` actually has (`users/gena/fonts/Arial24`; other sizes 404); LABEL_SCALE
 // 30 was the confirmed-good render scale for a similarly-sized (~20-28km) box there. Top-left,
 // same as that script's final (reverted-back-to) setting.

@@ -312,7 +312,7 @@ message("Wrote ", maus_shp, ", ", tw_shp, ", ", final_shp, " and ", icmm_shp)
 
 ####6. Upload to Earth Engine ####
 # NOT sf_as_ee(x, assetId = ...) directly -- broken for this Cloud-Project account (legacy-namespace
-# bug, same as upload_gold_leases.R / build_02 / validate_finalproduct.R). Build the FeatureCollection
+# bug, same as upload_gold_leases.R / build_02 / upload_reference_products.R). Build the FeatureCollection
 # inline via sf_as_ee() with NO assetId (via = "getInfo", fine at this size), then persist with EE's
 # own Export$table$toAsset, which resolves Cloud-Project asset paths correctly.
 rgee::ee_Initialize(drive = TRUE, project = EE_PROJECT)

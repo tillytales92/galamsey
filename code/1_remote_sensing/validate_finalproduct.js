@@ -4,7 +4,7 @@
 // SPLIT 2026-09-28 from the combined cutoff-tuning + final-product-QA script: this file is now
 // ROUTINE QA ONLY -- does the deployed product look right, year by year, against every reference
 // mining product we have. The cutoff/GHSL-urban-threshold sweep (raw prob>=cutoff, +GHSL layers,
-// their sliders) moved to the companion script validate_cutoff_tuning.js, for revisiting that
+// their sliders) moved to the companion script notes/archive/validate_cutoff_tuning.js, for revisiting that
 // (already-settled, cutoff=70/GHSL@500) decision if it's ever reopened. Both scripts are
 // standalone paste-ins (no shared require() module, matching every other validate_*.js here) so
 // each duplicates the S2 composite / CHECK_SITES / reference-outline plumbing.
@@ -16,7 +16,7 @@
 //   * every reference mining product we have, as outlines: Barenblitt 2019, Maus 2022,
 //     Tang & Werner 2023, SmallMinesDS -- fixed-vintage snapshots (~2019-2022), so their geometry
 //     doesn't move with the year slider, but their VISIBILITY does: only the outline(s) matching
-//     the slider year are shown (see NOTE 6). NATIONAL (validate_finalproduct.R uploads all four
+//     the slider year are shown (see NOTE 6). NATIONAL (upload_reference_products.R uploads all four
 //     as national assets, chunked to dodge EE's inline payload limit).
 //   * the named industrial-mine footprints (build_03 Section 7's gate+confirm exclusion set,
 //     uploaded per-mine by upload_industrial_candidate_maus.R as industrial_final_selected_<date>)
@@ -36,8 +36,8 @@
 // slider currently shows, so dragging never fires a burst of reduceRegion calls (this project has
 // hit GEE quota/memory limits before -- see explainer.md).
 //
-// NOTE 3 -- Barenblitt/Maus/Tang & Werner/SmallMinesDS are fixed-vintage snapshots (2019/2022/
-// 2023/2022), not an annual series. Comparing a slider year far from a source's own vintage year
+// NOTE 3 -- Barenblitt/Maus/Tang & Werner/SmallMinesDS are fixed-vintage snapshots (imagery years
+// 2019/2019/~2021/2022 -- see VINTAGE_YEAR), not an annual series. Comparing a slider year far from a source's own vintage year
 // is misleading -- galamsey expands over time, so e.g. Final product 2025 vs Maus 2022 would show
 // inflated "ours only" area for reasons that are just post-2022 mining growth, not classifier
 // error. So the area-stat comparison is GATED: "Print area stats" only computes the chosen
@@ -45,8 +45,9 @@
 // picking a source in "Compare to:" auto-snaps the slider there.
 //
 // NOTE 4 -- the "Show area-over-time chart" button (bottom-right) plots Final product km2 by
-// year (National or the selected site, picked via the adjoining dropdown) as a line, with each
-// reference source's own km2 drawn as a bar AT ITS OWN VINTAGE YEAR ONLY (2019/2022/2023) --
+// year for all of Ghana (one chart since 2026-11-25; Barenblitt et al. included and footnoted,
+// SmallMinesDS left off) as a line, with each
+// reference source's own km2 drawn as a bar AT ITS OWN VINTAGE YEAR ONLY (2019/2019/2021/2022) --
 // gated behind a button like "Print area stats", for the same reduceRegion-burst reason.
 //
 // NOTE 5 -- Barenblitt (SW Ghana only) and SmallMinesDS (~5-district gold belt) do NOT cover all
@@ -60,7 +61,7 @@
 //
 // NOTE 6 -- each reference outline's VISIBILITY (not just the area stats/chart) is year-gated
 // too: loadYear() calls REFERENCE_LAYER[label].setShown(VINTAGE_YEAR[label] === yr) for all four,
-// so e.g. selecting year 2022 shows only Maus/SmallMinesDS and hides Barenblitt/Tang & Werner --
+// so e.g. selecting year 2022 shows only SmallMinesDS and hides Barenblitt/Maus/Tang & Werner --
 // a layer that's irrelevant at the current year no longer sits on the map implying otherwise.
 // Still manually toggleable afterward via the layer list if you want to see it anyway.
 
@@ -85,7 +86,7 @@ var industrialMines = ee.FeatureCollection(ASSET_HOME + "/industrial_final_selec
 
 // Barenblitt (SW Ghana only) and SmallMinesDS (~5-district Amansie-Bekwai-Obuasi gold belt) do
 // NOT cover all of Ghana -- unlike Maus/Tang & Werner, which are genuinely national/global. Each
-// source's own convex hull (same construction diag_03_product_overlap.R uses for "bar_hull") is
+// source's own convex hull (same construction notes/archive/diag_03_product_overlap.R uses for "bar_hull") is
 // its real study area -- comparing it to the whole country, or to a site outside that hull, reads
 // "no mining" when the honest answer is "not surveyed" (CLAUDE.md caveat). Computed directly from
 // the already-uploaded FeatureCollections -- no new EE asset/upload needed.
@@ -97,8 +98,10 @@ var smdsHull       = smds.geometry().convexHull();
 // hide each outline layer -- only the source(s) matching the slider year stay visible.
 var VINTAGE_YEAR = {
   "Barenblitt 2019":    2019,
-  "Maus et al. 2022":   2022,
-  "Tang & Werner 2023": 2023,
+  // 2026-11-25: IMAGERY years, not publication years (labels keep the citation year). Same dating as
+  // build_01_labels.R's VINTAGE: Maus v2 = 2019, Tang & Werner = mixed ~2019-22 -> 2021. Was 2022/2023.
+  "Maus et al. 2022":   2019,
+  "Tang & Werner 2023": 2021,
   "SmallMinesDS 2022":  2022
 };
 
@@ -288,7 +291,7 @@ function outsideCoverage(label, testRegion) {
 // i.e. what share of OUR flagged area the chosen source corroborates. That's closer to
 // precision/agreement-with-that-source than true recall (which would need the denominator to be
 // the source's own total mapped area). The real Barenblitt recall number (85.8% at the deployed
-// config) is in diag_03_product_overlap.R's output.
+// config) is in notes/archive/diag_03_product_overlap.R's output.
 // Comparison is only MEANINGFUL when (a) testRegion actually falls inside the source's own
 // coverage and (b) the slider year equals the source's own vintage year (see NOTE 3) -- rather
 // than print a caveat on a bad comparison, just don't compute one; unavailableReason (if given)
@@ -338,42 +341,35 @@ var SOURCE_COLOR = {   // matches each source's own outline colour above, for a 
   "Tang & Werner 2023": "D94701",
   "SmallMinesDS 2022":  "ff2a2a"
 };
-var trendScopeLabel = "National";
-function trendRegion() { return trendScopeLabel === "National" ? GHANA : currentAoi; }
+// 2026-11-25: ONE chart, all of Ghana (scope dropdown removed). Barenblitt et al. is drawn too, although it
+// only covers its SW study area -- footnoted, since that area holds the bulk of galamsey (98% of the 2017
+// footprint, diag_04). Its polygons all lie inside its hull, so summing over GHANA = its full area.
+// SmallMinesDS (~5 districts) stays off the chart: a national bar from it would read as "no mining elsewhere".
+var TREND_REGION = GHANA;
 
 // ee.Feature property names reject "." and "&" (e.g. "Maus et al. 2022" -> "Invalid property
 // name") -- chart-safe stand-ins for the COMPARE_SOURCES/VINTAGE_YEAR labels, used ONLY for
 // Feature properties/chart column names below; every other UI (dropdowns, print labels) keeps
 // the real label.
-var CHART_COL = {
-  "Barenblitt 2019":    "Barenblitt 2019",
-  "Maus et al. 2022":   "Maus 2022",
-  "Tang & Werner 2023": "Tang and Werner 2023",
+var CHART_COL = {   // letters, digits and spaces only
+  "Barenblitt 2019":    "Barenblitt 2019 study area only",
+  "Maus et al. 2022":   "Maus 2019 imagery",
+  "Tang & Werner 2023": "Tang and Werner 2021 imagery",
   "SmallMinesDS 2022":  "SmallMinesDS 2022"
 };
 
 function showTrendChart() {
-  var region = trendRegion();
-  // Drop any source whose own coverage doesn't actually reach this chart's region -- a 0-height
-  // bar at every year for a source that was never going to have mining data here (National scope
-  // for Barenblitt/SmallMinesDS, or a Selected site outside either source's hull) would otherwise
-  // look like "we checked, found nothing" rather than "not surveyed" (same OWN_REGION/
-  // outsideCoverage logic as "Print area stats").
-  var srcLabels = Object.keys(VINTAGE_YEAR).filter(function (l) {
-    return trendScopeLabel === "National" ? OWN_REGION[l].national : !outsideCoverage(l, region);
-  });
+  var region = TREND_REGION;
+  var srcLabels = Object.keys(VINTAGE_YEAR).filter(function (l) { return l !== "SmallMinesDS 2022"; });
   var seriesCols = ["Final product"].concat(srcLabels.map(function (l) { return CHART_COL[l]; }), "Industrial mines");
-  // Industrial mines are a STATIC named-mine footprint (not a time series, see NOTE 6-adjacent
-  // comment at the top of this file) and build_03 excludes them from every year's Final product
-  // mask identically -- one reduceRegion, replicated across all years as a flat reference line
-  // (not stacked -- Final product and this are mutually exclusive by construction of the mask).
+  // Industrial mines are a STATIC named-mine footprint and build_03 excludes them from every year's
+  // Final product mask identically -- one reduceRegion, drawn as a flat reference line (not stacked).
   var industrialKm2 = km2(ee.Image().byte().paint(industrialMines, 1).selfMask(), region);
   var feats = YEARS.map(function (yr) {
     var props = {year: yr, "Final product": km2(deployedForYear(yr), region), "Industrial mines": industrialKm2};
     srcLabels.forEach(function (srcLabel) {
-      // 0, not null -- a mix of null/number values in one column makes Google Charts throw "All
-      // series on a given axis must be of the same data type" (every feature needs a consistent
-      // numeric type per column). A 0-height bar at a non-vintage year is visually a no-op anyway.
+      // 0, not null -- mixed null/number in one column makes Google Charts throw "All series on a
+      // given axis must be of the same data type". A 0-height bar at a non-vintage year is a no-op.
       props[CHART_COL[srcLabel]] = (VINTAGE_YEAR[srcLabel] === yr)
         ? km2(ee.Image().byte().paint(COMPARE_SOURCES[srcLabel], 1).selfMask(), region)
         : 0;
@@ -388,31 +384,22 @@ function showTrendChart() {
   var chart = ui.Chart.feature.byFeature(ee.FeatureCollection(feats), "year", seriesCols)
     .setChartType("ComboChart")
     .setOptions({
-      title: trendScopeLabel + " mined area by year (km2) -- Final product vs. reference snapshots",
+      title: "Mined area by year, Ghana (km2) -- Final product vs. reference maps",
       hAxis: {title: "Year", format: "####"},
       vAxis: {title: "km2"},
       seriesType: "line",
       series: seriesStyle
     });
   print(chart);
-  print("Area-over-time chart note: each reference source shown only has a bar at its own " +
-        "vintage year (Barenblitt 2019, Maus/SmallMinesDS 2022, Tang & Werner 2023) -- see NOTE " +
-        "3/4 at the top of this script. Barenblitt/SmallMinesDS are additionally dropped " +
-        "entirely when they don't cover this chart's region (National scope, or a Selected site " +
-        "outside their own study area) -- same coverage check as \"Print area stats\". The " +
-        "yellow dashed \"Industrial mines\" line is flat by construction (same static footprint " +
-        "every year) and is NOT part of Final product -- build_03 subtracts it from every " +
-        "year's mask identically, so the two series are mutually exclusive, not stacked.");
+  print("Barenblitt 2019 study area only: Barenblitt et al. map only their SW Ghana study region, not the whole country -- but that " +
+        "region covers >95% of galamsey (98% of our 2017 footprint lies inside it).");
+  print("Notes: each reference map is a single snapshot, drawn as a bar at its imagery year (Barenblitt " +
+        "et al. and Maus 2019, Tang & Werner ~2021). References include industrial mining; the yellow " +
+        "dashed line is the industrial footprint that build_03 removes from every year of Final product.");
 }
 
-var trendScopeSelect = ui.Select({
-  items: ["National", "Selected site"],
-  value: trendScopeLabel,
-  onChange: function (key) { trendScopeLabel = key; },
-  style: {width: "140px"}
-});
 Map.add(ui.Panel(
-  [ui.Label("Area trend:", {fontWeight: "bold"}), trendScopeSelect,
+  [ui.Label("Area trend (Ghana):", {fontWeight: "bold"}),
    ui.Button({label: "Show area-over-time chart (Console)", onClick: showTrendChart})],
   ui.Panel.Layout.flow("vertical"),
   {position: "bottom-right", width: "260px"}
@@ -498,7 +485,7 @@ var infoPanel = ui.Panel({
              "entirely wherever they don't cover the chosen region)."),
     ui.Label("Jump to a specific site with the dropdown (top-center)."),
     ui.Label("For adjusting the detection cutoff / GHSL urban threshold instead of just viewing " +
-             "the deployed product, use the companion script validate_cutoff_tuning.js.",
+             "the deployed product, use the companion script notes/archive/validate_cutoff_tuning.js.",
              {fontStyle: "italic", color: "666666"}),
     ui.Button({
       label: "Got it",

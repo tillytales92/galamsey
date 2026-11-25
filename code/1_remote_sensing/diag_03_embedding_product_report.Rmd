@@ -1,0 +1,442 @@
+---
+title: "The 2017-2025 mining product: how it is built, and how good it is"
+author: "Till Meissner"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = "center")
+pacman::p_load(here, tidyverse, knitr, conflicted)
+conflicts_prefer(dplyr::filter, dplyr::select, dplyr::mutate, dplyr::summarise, here::here)
+
+TAB  <- here("outputs", "tables")
+EP   <- file.path(TAB, "embedding_product")          # diag_03_embedding_product.R
+YEARS <- 2017:2025
+CUTOFF <- 70L                                        # = build_03_embedding_panel.R
+pending <- function(what) cat(sprintf("\n> **Pending:** %s\n\n", what))
+read_if <- function(p) if (file.exists(p)) read_csv(p, show_col_types = FALSE) else NULL
+details_open  <- function(title = "Show table") cat(sprintf('<details class="more"><summary>%s</summary>\n\n', title))
+details_close <- function() cat("\n\n</details>\n\n")
+rlab <- c(ghana = "All of Ghana", bar_hull = "Barenblitt et al. study area")
+olab <- c(raw = "raw masks (no rule)", cur = "Option 2: currently mined", ever = "Option 1: ever mined")
+ocol <- c(`raw masks (no rule)` = "grey55", `Option 2: currently mined` = "#FDB863", `Option 1: ever mined` = "#2C7FB8")
+
+# --- classifier scoring (diag_02_scoring.R) ---
+sweep <- read_if(file.path(TAB, "deployed_threshold_sweep_2022.csv"))
+abl   <- read_if(file.path(TAB, "rs05_ablation_smallminesds2022.csv"))
+
+# --- GEE exports (diag_03_embedding_product.R) ---
+areas <- read_if(file.path(EP, "diag03_areas.csv"))
+pts   <- read_if(file.path(EP, "diag03_points_2022.csv"))
+km2 <- function(x) x / 1e6
+if (!is.null(areas)) {
+  along <- areas |> pivot_longer(-region, values_to = "m2") |> mutate(km2 = km2(m2))
+  by_year <- along |> filter(str_detect(name, "^(raw|cur|ever)_\\d{4}$")) |>
+    separate(name, c("series", "year"), "_", convert = TRUE)
+  trans <- along |> filter(str_detect(name, "^(rgain|rloss|cgain|closs)_\\d{4}$")) |>
+    separate(name, c("kind", "year"), "_", convert = TRUE) |>
+    mutate(series = if_else(str_starts(kind, "r"), "raw", "cur"), dir = if_else(str_ends(kind, "gain"), "gain", "loss"))
+  sw <- along |> filter(str_detect(name, "^sw(raw|cur)_\\d+$")) |>
+    mutate(series = if_else(str_detect(name, "raw"), "raw", "cur"), n = as.integer(str_extract(name, "\\d+$")))
+  get1 <- function(reg, nm) along$km2[along$region == reg & along$name == nm]
+}
+```
+
+```{css, echo=FALSE}
+details.more { margin: 0.8em 0 1.6em; padding: 0.5em 1em; border-left: 3px solid #2C7FB8; background: #f6f8fa; }
+details.more > summary { cursor: pointer; font-weight: 600; color: #2C7FB8; }
+details.more[open] > summary { margin-bottom: 0.8em; }
+```
+
+# Summary
+
+**What this is.** For 2017-2025 we map mining every year directly, from Google's annual
+satellite embeddings, with a classifier trained on existing mining maps. This report covers how the
+annual maps are built, how a temporal rule cleans their year-to-year flicker, and what we know about
+their accuracy. The years before 2017 are dated separately by backdating (see
+`diag_04_backdating_report`).
+
+```{r bottom-line, results='asis'}
+if (!is.null(sweep)) {
+  s <- filter(sweep, threshold == CUTOFF)
+  cat(sprintf(paste0("- **Conservative by design:** at the deployed cutoff (%d), %.0f%% of the points the classifier calls ",
+                     "mining are mining (user's accuracy), but it finds only %.0f%% of true mines (producer's accuracy). ",
+                     "SmallMinesDS 2022, gold belt only (Section 2).\n"), CUTOFF, 100 * s$ua, 100 * s$pa))
+} else pending("classifier threshold sweep (`diag_02_scoring.R`)")
+if (!is.null(areas)) {
+  e25 <- get1("ghana", "ever_2025"); c25 <- get1("ghana", "cur_2025"); r25 <- get1("ghana", "raw_2025")
+  cat(sprintf(paste0("- **Two definitions of \"mined\"**, both from one temporal rule (Section 1.3): by 2025, %.0f km² ",
+                     "have *ever* been mined (Option 1, main spec), and %.0f km² are *currently* mined (Option 2). ",
+                     "The raw 2025 mask shows %.0f km².\n"), e25, c25, r25))
+} else cat("- **Two definitions of \"mined\"**, both from one temporal rule (Section 1.3): Option 1 \"ever mined\" (main spec) and Option 2 \"currently mined\". Numbers pending (`diag_03_embedding_product.R`).\n")
+cat("- **Artisanal and small-scale mining only:** the classifier maps all mining. The footprints of 14 named",
+    "industrial mines (ICMM, outlined with Maus et al. / Tang & Werner) are removed in every year (Section 1.2).\n")
+cat("- **What the rule fixes, and what it doesn't:** it removes one-year blips and fills one-year gaps. It cannot",
+    "remove false positives that persist for two years or more, recover missed mines, or tell a real one-year mine from a blip (Section 5).\n")
+cat("- **No reference product is ground truth.** Agreement with Barenblitt et al., Maus et al. and Tang & Werner is",
+    "triangulation, not accuracy (Section 3).\n")
+```
+
+# 1. Methods
+
+## 1.1 From embeddings to an annual mask
+
+1. **Input:** Google's annual satellite embeddings (`GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`,
+   64 bands at 10 m, one image per year). Each pixel's 64 numbers summarise that year's
+   optical, radar and other imagery.
+2. **Classifier** (`build_02`): a random forest (100 trees) with four classes: mine, urban,
+   water and other. It is trained on positives from Barenblitt et al. (2019) and Tang & Werner
+   (the `no_maus` combination, Section 2.3). The output is a mine probability, 0-100.
+3. **Threshold and clean-up** (`build_03`): a pixel is mined if its probability is at least
+   **`r CUTOFF`**. Then GHSL built-up areas, permanent water (JRC occurrence ≥ 90) plus the coast, and a
+   ~35 m buffer around GRIP4 roads are removed.
+4. **Industrial exclusion** (`build_03`, Section 7): the footprints of 14 named industrial mines
+   are removed in every year (Section 1.2).
+5. **Temporal rule** (`build_03b`, Section 1.3).
+
+<details class="more"><summary>Why cutoff 70</summary>
+
+Raising the cutoff from 45 to 70 (September 2026) removed about 95% of the over-flagging seen in
+visual checks. It costs recall: producer's accuracy against SmallMinesDS falls from about 0.82 to
+0.65 (Section 2.1). The trade-off was deliberate, because false positives in villages and on bare
+farmland would contaminate the downstream analysis more than missed pits. See
+`notes/2026-09-08_build03_config_decision.md`.
+
+</details>
+
+## 1.2 Separating artisanal from industrial mining
+
+The research target is galamsey, i.e. artisanal and small-scale mining. The classifier itself
+cannot tell the two apart. Barenblitt et al.'s positives are filtered to artisanal sites, but Tang &
+Werner's have no type field, and a pit looks much the same in either case. So the classifier maps
+*all* mining, and the large-scale operations are removed afterwards, as fixed footprints.
+
+1. **Locate** the industrial mines with the ICMM global mining dataset: named sites reported by
+   member companies, as points. This gives 14 mines in Ghana: Ahafo, Obuasi, Tarkwa, Chirano,
+   Bibiani, Damang, Wassa, Edikan, Iduapriem, Akyem, Asanko (Obotan), Bogoso-Prestea, Prestea and
+   Awaso.
+2. **Outline** each mine with polygons from Maus et al. (2022, v2) near the point. At three mines
+   (Edikan, Asanko Obotan, Prestea), Maus's polygon is implausibly large (100-300 km² for one mine),
+   so Tang & Werner's polygons are used instead.
+3. **Select** the polygons per mine, after a visual check of all 14 in high-resolution imagery:
+   - 8 mines: all polygons within 4 km of the point;
+   - Obuasi and Awaso: within 1 km;
+   - Prestea and Bogoso-Prestea: only the polygon touching the point;
+   - Edikan and Asanko Obotan: the touching polygon plus its direct neighbours.
+4. **Remove** the resulting footprint from every year's mask. The footprint does not change over time.
+
+<details class="more"><summary>What this means for the numbers</summary>
+
+- **Artisanal mining inside or right next to an industrial footprint is removed with it**, for
+  example galamsey on the edges of Obuasi or Prestea concessions. An earlier version subtracted
+  Barenblitt et al.'s artisanal polygons from the footprint to protect such sites. It was dropped in
+  favour of the per-mine visual check, because their polygons would have punched noisy holes into
+  otherwise clean outlines.
+- **Industrial mines missing from ICMM stay in the product.** ICMM is self-reported, so it is not
+  necessarily complete, and the Minerals Commission lease map could not be used because its
+  geometries are broken.
+- **Fixed footprints:** an industrial mine that expands after its outline was mapped (~2019-2021)
+  leaks the new area into the product.
+- **The reference maps include industrial mining.** Section 3 removes the same footprint from them
+  before comparing.
+
+</details>
+
+## 1.3 The temporal rule
+
+The raw annual masks flicker: a pixel can read mine, not mine, mine. Summing first detections
+then over-counts, because every one-year false positive becomes "mining". We apply **Rule B**,
+which only changes a pixel's status when two consecutive years agree:
+
+- if year T and T+1 both say mine, the pixel is mined in T;
+- if both say not mine, it is not;
+- if they disagree, it keeps last year's status.
+
+This gives two definitions:
+
+- **Option 1, "ever mined"** (main spec): mined from the first Rule-B year on, and never exits.
+  It uses the same definition as the backdated pre-2017 layer, which cannot observe exits either,
+  so the 2000-2025 panel uses this one.
+- **Option 2, "currently mined"**: the Rule-B status itself. It can exit, but only after two
+  years of "not mine" in a row. It applies to 2017+ only, for questions about active mining or reclamation.
+
+| Pixel | Raw (2017-2021) | Option 2 | Option 1 |
+|---|---|---|---|
+| steady mine | 1 1 1 1 1 | 1 1 1 1 1 | 1 1 1 1 1 |
+| flicker | 1 1 0 1 1 | 1 1 **1** 1 1 | 1 1 **1** 1 1 |
+| one-year blip | 0 0 1 0 0 | 0 0 **0** 0 0 | 0 0 **0** 0 0 |
+| abandoned | 1 1 1 0 0 | 1 1 1 0 0 | 1 1 1 **1 1** |
+
+<details class="more"><summary>Edge years, and why Rule B</summary>
+
+- **2017** has no earlier status to carry, so it is *confirmed*: mined only if 2017 and 2018
+  both say mine. This is also the anchor the backdating dates from, so one-off 2017 blips get no
+  pre-2017 onset year.
+- **2025** has no 2026 to confirm against and is left raw. Option 1 entries in 2025 are
+  therefore unconfirmed and flagged (`unconf_ha` in the panel).
+- **Why Rule B:** `notes/archive/diag_03_temporal_consistency.R` compared three rules. A centred majority vote (A)
+  smooths about as well but created an artificial dip at 2017-18. A sticky-exit rule (C) never
+  removes blips. Rule B, forward-only, avoids both problems.
+
+</details>
+
+# 2. Accuracy against SmallMinesDS 2022
+
+SmallMinesDS is an independent, hand-labelled dataset of small mines and non-mines for 2022, in
+the Amansie-Bekwai-Obuasi gold belt. It is the only reference we have that labels both mines and
+non-mines, so it is the only one we can compute producer's and user's accuracy from. Two limits
+apply: it covers one year and one area, and the gold belt is where mining is easiest to see.
+
+- **Producer's accuracy (PA)** = recall: of the true mines, how many do we find?
+- **User's accuracy (UA)** = precision: of what we call mining, how much is real?
+
+## 2.1 The classifier, by cutoff
+
+```{r sweep-fig, fig.height=3.6, fig.width=8}
+if (!is.null(sweep)) {
+  sweep |> select(threshold, `Producer's accuracy` = pa, `User's accuracy` = ua, F1 = f1) |>
+    pivot_longer(-threshold) |>
+    ggplot(aes(threshold, value, colour = name)) + geom_line(linewidth = 1) +
+    geom_vline(xintercept = CUTOFF, linetype = "dashed", colour = "grey40") +
+    annotate("text", x = CUTOFF + 1, y = 0.05, label = "deployed", hjust = 0, colour = "grey30", size = 3.2) +
+    scale_colour_manual(values = c(`Producer's accuracy` = "#450457", `User's accuracy` = "#D94701", F1 = "grey50")) +
+    labs(x = "probability cutoff", y = NULL, colour = NULL) + theme_minimal() + theme(legend.position = "top")
+}
+```
+
+```{r sweep-tab, results='asis'}
+if (is.null(sweep)) pending("classifier threshold sweep (`diag_02_scoring.R`)") else {
+  cat("<small>Script: `diag_02_scoring.R` (Part 3) · balanced points, 50% mines · classifier probability only, before the clean-up steps and the temporal rule</small>\n\n")
+  details_open()
+  f1max <- sweep$threshold[which.max(sweep$f1)]
+  sweep |> filter(threshold %in% c(f1max, 45, CUTOFF, 80)) |>
+    mutate(note = case_when(threshold == CUTOFF ~ "deployed", threshold == 45 ~ "previous setting",
+                            threshold == f1max ~ "best F1", TRUE ~ "")) |>
+    transmute(cutoff = threshold, note, PA = round(pa, 3), UA = round(ua, 3), F1 = round(f1, 3)) |>
+    kable() |> print()
+  details_close()
+}
+```
+
+## 2.2 The final product, with and without the temporal rule
+
+The same points, scored on the 2022 masks after the clean-up steps: the raw mask, and Options 1
+and 2.
+
+```{r pts, results='asis'}
+if (is.null(pts)) pending("final-mask point scoring (`diag_03_embedding_product.R`, export B)") else {
+  set.seed(42)
+  n_neg <- sum(pts$label == 0)
+  bal <- bind_rows(filter(pts, label == 0), slice_sample(filter(pts, label == 1), n = n_neg))
+  score <- function(d) map_dfr(names(olab), function(s) {
+    p <- d[[s]]; l <- d$label
+    tibble(series = olab[[s]], PA = sum(p == 1 & l == 1) / sum(l == 1), UA = sum(p == 1 & l == 1) / sum(p == 1))
+  })
+  cat(sprintf("<small>%s points (%s mines, %s non-mines); UA on a balanced subsample (mines downsampled to %s), matching 2.1</small>\n\n",
+              format(nrow(pts), big.mark = ","), format(sum(pts$label == 1), big.mark = ","),
+              format(n_neg, big.mark = ","), format(n_neg, big.mark = ",")))
+  score(bal) |> mutate(across(c(PA, UA), ~ round(.x, 3))) |>
+    kable(col.names = c("2022 mask", "producer's accuracy", "user's accuracy")) |> print()
+}
+```
+
+**Reading it:** the clean-up steps should raise UA slightly over 2.1, since they only remove
+pixels. Option 2 should lose a little PA compared with raw, because real mines that flicker off in
+2022 and 2023 drop out. Option 1 should recover some of that loss, since anything confirmed earlier stays in.
+
+## 2.3 Which training labels
+
+<details class="more"><summary>Show table: label-source ablation, 4-class scheme</summary>
+
+```{r ablation, results='asis'}
+if (is.null(abl)) pending("ablation table (`build_02` Section 7)") else {
+  abl |> filter(class_scheme == "c4") |>
+    transmute(`training positives` = combo, PA = round(mine_pa, 3), UA = round(mine_ua, 3),
+              F1 = round(mine_f1, 3), kappa = round(kappa, 3)) |> kable() |> print()
+}
+```
+
+Scored at the classifier's own class decision, not at cutoff 70. `no_maus` (Barenblitt et al. +
+Tang & Werner) was chosen because it matches or beats `all` on both PA and UA. Maus et al.'s
+polygons are mostly industrial and add little for galamsey.
+
+</details>
+
+# 3. Agreement with other mining maps
+
+None of these maps is ground truth. They are model outputs or manual delineations, each with its
+own omissions, so we use them for triangulation:
+
+- **Barenblitt et al. (2021):** Landsat-based random forest, SW Ghana only, 2019. Their own PA is
+  75.6%, so they miss about one in four mines. The only one with an artisanal/industrial split.
+- **Maus et al. (2022, v2):** global manual delineation of mining land use. It is biased towards
+  industrial mines.
+- **Tang & Werner (2023):** global deep-learning map from high-resolution imagery.
+
+To match our product, all references are shown with the industrial footprint removed. Each is
+compared with our mask for its imagery year, which predates its publication year: Barenblitt et al.
+and Maus et al. are 2019, and Tang & Werner is mixed 2019-2022, so 2021 (the same dating `build_01`
+uses for training labels). Tang & Werner is also shown against 2019.
+
+```{r refs, results='asis'}
+if (is.null(areas)) pending("reference overlap (`diag_03_embedding_product.R`, export A)") else {
+  rname <- c(bar_art = "Barenblitt et al., artisanal", bar_all = "Barenblitt et al., all", maus = "Maus et al.", tang = "Tang & Werner")
+  pub <- c(bar_art = 2019L, bar_all = 2019L, maus = 2019L, tang = 2021L)   # imagery years
+  ov <- along |> filter(str_starts(name, "both_")) |>
+    mutate(series = str_match(name, "^both_(raw|cur|ever)_")[, 2],
+           ref = str_match(name, "^both_(?:raw|cur|ever)_(.+)_(\\d{4})$")[, 2],
+           year = as.integer(str_match(name, "_(\\d{4})$")[, 2])) |>
+    filter(year == 2019L | year == pub[ref]) |>
+    left_join(by_year |> select(region, series, year, our_km2 = km2), by = c("region", "series", "year")) |>
+    left_join(along |> filter(str_starts(name, "refx_")) |> transmute(region, ref = str_remove(name, "refx_"), ref_km2 = km2),
+              by = c("region", "ref")) |>
+    filter(!(region == "ghana" & str_starts(ref, "bar_")))       # Barenblitt et al.: silent outside its hull
+  ov |> filter(series == "ever") |>
+    transmute(region = rlab[region], reference = rname[ref], `our year` = year,
+              `reference km²` = round(ref_km2), `ours km²` = round(our_km2), `both km²` = round(km2),
+              `share of reference we also map (%)` = round(100 * km2 / ref_km2, 1),
+              `share of ours the reference also maps (%)` = round(100 * km2 / our_km2, 1)) |>
+    arrange(region, reference, `our year`) |> kable() |> print()
+  cat("\n<small>Ours = Option 1 (ever mined). Option 2 and raw versions are in `diag03_areas.csv` (`both_cur_*`, `both_raw_*`).</small>\n\n")
+}
+```
+
+**Reading it:** a low share of the reference that we also map is expected for Maus et al.
+(industrial bias) and partly reflects our conservative cutoff (PA ≈ 0.65). A low share of ours
+that the reference also maps can mean false positives *or* artisanal sites the reference misses.
+Only the visual checks in `validate_finalproduct.js` can tell these apart.
+
+# 4. Over time
+
+## 4.1 Mined area by year
+
+```{r area-fig, fig.height=4.6, fig.width=9}
+if (!is.null(areas)) {
+  # One chart, all of Ghana (matches validate_finalproduct.js). Reference maps = one bar each at their
+  # imagery year, industrial footprint removed as for our product. Barenblitt et al.'s polygons all lie in
+  # their hull, so its Ghana total = its full map.
+  ref_bars <- tibble(ref = c("bar_all", "maus", "tang"), year = c(2019, 2019, 2021),
+                     label = c("Barenblitt et al.*", "Maus et al.", "Tang & Werner")) |>
+    mutate(km2 = map_dbl(ref, ~ get1(if (.x == "bar_all") "bar_hull" else "ghana", paste0("refx_", .x))),
+           x = year + c(-0.2, 0.2, 0)[match(ref, c("bar_all", "maus", "tang"))])   # side by side at 2019
+  by_year |> filter(region == "ghana") |> mutate(series = factor(olab[series], olab)) |>
+    ggplot(aes(year, km2)) +
+    geom_col(data = ref_bars, aes(x, km2, fill = label), width = 0.38, alpha = 0.75, inherit.aes = FALSE) +
+    geom_line(aes(colour = series), linewidth = 1) + geom_point(aes(colour = series), size = 1.6) +
+    scale_colour_manual(values = ocol) +
+    scale_fill_manual(values = c(`Barenblitt et al.*` = "#450457", `Maus et al.` = "#2171B5", `Tang & Werner` = "#D94701")) +
+    scale_x_continuous(breaks = YEARS) +
+    labs(x = NULL, y = "mined area (km², all of Ghana)", colour = NULL, fill = "reference maps (imagery year)",
+         caption = paste("* Barenblitt et al. map only their SW Ghana study region, but that region covers >95% of galamsey",
+                         "(98% of our 2017 footprint lies inside it).\nReference maps shown with the same industrial footprint removed as our product.")) +
+    theme_minimal() + theme(legend.position = "top", legend.box = "vertical", plot.caption = element_text(hjust = 0))
+}
+```
+
+```{r area-tab, results='asis'}
+if (is.null(areas)) pending("annual areas (`diag_03_embedding_product.R`, export A)") else {
+  cat("<small>Script: `diag_03_embedding_product.R` · native 10 m</small>\n\n")
+  details_open()
+  by_year |> filter(region == "ghana") |> select(series, year, km2) |>
+    pivot_wider(names_from = series, values_from = km2) |>
+    mutate(across(-year, round)) |> select(year, raw, cur, ever) |>
+    kable(col.names = c("year", olab[c("raw", "cur", "ever")])) |> print()
+  cat(sprintf("\nUnconfirmed Option 1 entries in 2025: %.0f km² (Ghana).\n", get1("ghana", "unconf")))
+  details_close()
+}
+```
+
+**Reading it:**
+
+- **Option 1** can only rise.
+- **Option 2** should rise with fewer, smaller dips than the raw series. A dip that survives Rule B
+  means pixels that read "not mine" for two years running: abandonment, revegetation or flooding,
+  not noise.
+- **Gap between Options 1 and 2:** the area that was mined and is no longer.
+- **Raw vs Option 2:** the flicker the rule removed.
+
+## 4.2 How much the masks flicker
+
+```{r trans-fig, fig.height=3.8, fig.width=9}
+if (!is.null(areas)) {
+  trans |> filter(region == "ghana") |> mutate(km2 = if_else(dir == "loss", -km2, km2),
+                                               series = factor(olab[series], olab)) |>
+    ggplot(aes(year, km2, fill = dir)) + geom_col() + geom_hline(yintercept = 0) +
+    facet_wrap(~ series) + scale_fill_manual(values = c(gain = "#2C7FB8", loss = "#D94701")) +
+    scale_x_continuous(breaks = YEARS[-1]) +
+    labs(x = "year (change from the previous year)", y = "km² gained (+) / lost (-)", fill = NULL,
+         title = "All of Ghana") + theme_minimal() + theme(legend.position = "top")
+}
+```
+
+```{r switch-tab, results='asis'}
+if (is.null(areas)) pending("flicker counts (`diag_03_embedding_product.R`, export A)") else {
+  cat("**On/off switches per pixel, 2017-2025** (share of all area ever flagged in that series, Ghana):\n\n")
+  sw |> filter(region == "ghana") |> group_by(series) |> mutate(pct = 100 * km2 / sum(km2)) |> ungroup() |>
+    mutate(n = if_else(n >= 4, "4+", as.character(n))) |> group_by(series, n) |> summarise(pct = sum(pct), .groups = "drop") |>
+    pivot_wider(names_from = n, values_from = pct) |> mutate(series = olab[series], across(-series, ~ round(.x, 1))) |>
+    kable() |> print()
+  cat("\n0 switches = mined in every year from first detection to 2025 (or in all years). 1 = entered (or exited) once. 2 or more = flicker or re-entry.\n\n")
+}
+```
+
+## 4.3 The edge years
+
+```{r edges, results='asis'}
+if (is.null(areas)) pending("annual areas") else {
+  g <- by_year |> filter(region == "ghana") |> select(series, year, km2) |> pivot_wider(names_from = series, values_from = km2)
+  d <- function(s, y) g[[s]][g$year == y] - g[[s]][g$year == y - 1]
+  cat(sprintf(paste0("- **2017→18:** raw %+.0f km², Option 2 %+.0f km². 2017 is confirmed against 2018, so it should no longer be ",
+                     "inflated relative to 2018 (the tested version left 2017 raw, which flattened 2017→18 to about −1 km²).\n",
+                     "- **2024→25:** raw %+.0f km², Option 2 %+.0f km². 2025 is left raw, so a jump here is partly unconfirmed blips.\n"),
+              d("raw", 2018), d("cur", 2018), d("raw", 2025), d("cur", 2025)))
+}
+```
+
+# 5. Weak spots
+
+- **Missed mines.** At cutoff 70 we find about two thirds of true mines in the gold belt. The rule
+  cannot add pixels, so it cannot fix this. Mined area is a lower bound.
+- **Persistent false positives.** A non-mine flagged two years running passes Rule B. The known
+  sources are bare farmland, quarries, construction and riverbanks. The September breakdown
+  (`fp_source_breakdown_2022.csv`) was done at cutoff 45 and needs re-running at 70.
+- **Real one-year mines are erased** together with blips, because they look identical.
+- **Industrial-only areas are removed by footprint.** Artisanal mining *inside* a
+  removed industrial footprint is removed with it.
+- **One year, one area of validation.** PA and UA come from 2022 in the gold belt only. A
+  visual-review sample spread across years and regions would give real accuracy elsewhere. It is planned but not started.
+- **Autocorrelation.** Any smoothing rule builds persistence into the treatment indicator, so the
+  event study should be run with and without it (`mined_ha_raw` is kept in the panel for this).
+
+# 6. Settings and why
+
+| Setting | Value | Why |
+|---|---|---|
+| Input | Google satellite embeddings, annual, 10 m, 2017-2025 | consistent annual input; no compositing choices of our own |
+| Classes | mine / urban / water / other | separating urban and water cut confusion with the mine class |
+| Training positives | Barenblitt et al. + Tang & Werner (`no_maus`) | ≥ `all` on PA and UA (Section 2.3) |
+| Cutoff | `r CUTOFF` | ~95% of visual over-flagging removed; PA ≈ 0.65, UA ≈ 0.95 |
+| Urban mask | GHSL built-up ≥ 5% per 100 m (nearest epoch) | Dynamic World removed mapped mines too |
+| Water / roads | JRC occurrence ≥ 90 + coast; GRIP4 roads ~35 m | narrow, high-confidence knockouts |
+| Industrial | 14 ICMM mines, Maus/Tang outlines, per-mine selection, hand-reviewed (Section 1.2) | the product covers artisanal and small-scale mining only |
+| Temporal rule | Rule B, 2017 confirmed, 2025 raw | removes blips without the edge artefacts of A, and unlike C |
+| Main definition | Option 1, ever mined | same as the backdated pre-2017 layer |
+
+# Appendix: deployed assets
+
+- `mine_mask_ghana_c4_{2017..2025}`: raw annual masks, 10 m, 0/1 (`build_03`).
+- `mine_status_ghana_c4_ruleB_2017_2025`: 10 m (`build_03b`). Pixels never flagged in any year are masked.
+
+| Band | Meaning |
+|---|---|
+| `cur_2017` … `cur_2025` | Option 2: Rule-B status, 0/1 |
+| `entry_year` | Option 1: first year with `cur` = 1 (0 = never); mined in year Y iff 0 < `entry_year` ≤ Y |
+
+Sources: `outputs/tables/embedding_product/` (`diag_03_embedding_product.R`),
+`outputs/tables/deployed_threshold_sweep_2022.csv` and `rs05_ablation_smallminesds2022.csv`
+(`diag_02_scoring.R`, `build_02`).

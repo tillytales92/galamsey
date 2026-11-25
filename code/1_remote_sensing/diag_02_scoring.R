@@ -10,7 +10,7 @@
 # build_02_embedding_classifier.R's rewrite. validate_probability_threshold.R's Section 6
 # (an EE round-trip GHSL urban-mask sweep against the stale binary 2022 asset) is DROPPED --
 # the urban-confusion question it explored is settled (see the project_4class_urban_confusion
-# memory / notes/2026-08-18): c4 + GHSL-100m epoch mask + cutoff 45.
+# memory / notes/2026-08-18): c4 + GHSL-100m epoch mask; cutoff later raised 45 -> 70 (2026-09-09).
 #
 # Offline -- no GEE, no auth. Just reads CSVs already on disk:
 #   outputs/tables/rs05_ablation_smallminesds2022.csv          (18 rows: 3 schemes x 6 combos)
@@ -30,7 +30,8 @@ conflicts_prefer(
   base::intersect, base::union, base::setdiff, here::here
 )
 
-SETTLED_CUTOFF <- 45L   # decided 2026-08-18 (project_4class_urban_confusion) -- annotated on the
+SETTLED_CUTOFF <- 70L   # = build_03's deployed CUTOFF (45 -> 70 on 2026-09-09 for FP reduction,
+                        # notes/2026-09-08_build03_config_decision.md) -- annotated on the
                         # curves below, NOT re-derived here; F1-max is reported for reference only.
 
 fig_dir <- here("outputs", "figures", "scoring")
@@ -189,6 +190,7 @@ cat(sprintf("\n=== PART 3: deployed c4/no_maus national model, %d SmallMinesDS-2
 cat(sprintf("  %d mining / %d non-mining\n", sum(dep$label == 1), sum(dep$label == 0)))
 
 dep_sweep <- map_dfr(0:100, ~ sweep_threshold(dep, .x))
+write_csv(dep_sweep, file.path(tab_dir, "deployed_threshold_sweep_2022.csv"))   # read by diag_03_embedding_product_report.Rmd
 
 p_pr_curve <- ggplot(dep_sweep, aes(threshold)) +
   geom_line(aes(y = pa, colour = "Recall (PA)"), linewidth = 1) +

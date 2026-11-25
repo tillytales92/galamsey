@@ -1,7 +1,7 @@
 # upload_protected_areas.R
 # Uploads Ghana's WDPA/WDOECM protected areas (code/0_data/d_11_protected_areas.R's merged layer)
 # to Earth Engine as a FeatureCollection asset, so explore_mining_vs_forest_type_app.js can show
-# them as a toggleable layer and diag_05_mining_by_region.qmd can compute per-district mining-
+# them as a toggleable layer and a_06_mining_by_region.qmd can compute per-district mining-
 # within-protected-area overlap.
 #
 # Source: data/processed/protected_areas/protected_areas_poly.shp (WDPA/WDOECM, UNEP-WCMC & IUCN,

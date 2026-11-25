@@ -62,7 +62,7 @@ must be run interactively — `ee_Authenticate()` / `ee_Initialize()` open brows
 
 ---
 
-## explore_landsat_sentinel.R
+## explore_landsat_sentinel.R -- ARCHIVED 2026-11-25 (notes/archive/, pre-embeddings exploration)
 
 **Purpose:** Interactive Landsat 8/9 + Sentinel-2 exploration of galamsey spectral signatures at the
 district level. Builds cloud-masked 2-year median composites, computes the galamsey spectral
@@ -280,6 +280,36 @@ the anchor footprint aggregated to majority-mined per 30 m cell; pre-2012 timing
 
 ---
 
+## build_03b_temporal_rules.R
+
+**Temporal-consistency rule (decided 2026-11-25).** The raw 2017–2025 masks flicker (mine → not
+mine → mine), and summing first detections over-counts: ~2,390 km² ever detected vs ~1,800 km² in
+the 2025 mask. Some of that gap is flicker, some is one-off false positives, and some is real
+reversion (revegetation, flooding). The script applies **Rule B** (forward-only; chosen over A
+centred-vote and C sticky-exit in `diag_03_temporal_consistency.R`) to each pixel: a status is
+adopted only when year T and T+1 agree, and otherwise the previous smoothed status is carried. This
+gives two definitions:
+
+- **Option 1, "ever mined"** (`entry_year`): mined from the first Rule-B year on, and never exits.
+  This is the **main spec** for the full 2000–2025 panel, because the backdated pre-2017 layer can't
+  observe exits either (it only dates pixels still mined in 2017).
+- **Option 2, "currently mined"** (`cur_{yr}`): the Rule-B status itself, which can exit. It applies
+  to 2017+ only, for questions about active mining or reclamation.
+
+**Edges.** 2017 is *confirmed* (raw17 AND raw18; a disagreement defaults to not mined), unlike the
+tested diag_03 version, which left 2017 raw and so inflated it relative to 2018. This also cleans
+the backdating anchor: `b_04` masks `build_04`'s onset asset with the confirmed footprint, which is
+equivalent to re-running `build_04` (per-pixel dating, subset anchor). 2025 is left raw because it
+can't be confirmed, so Option 1 entries in 2025 are flagged (`unconf_ha` in `b_04`).
+
+**What it does not fix:** persistent false positives (flagged two years running), missed mines
+(confirmation only removes pixels), the pre-2017 survivor bias, or onset accuracy. A side effect is
+that real one-year mines are erased together with blips. In the pilot, Rule B cut 2021 by ~15%, and
+it builds autocorrelation into the treatment indicator, so the event study should be run with and
+without it.
+
+---
+
 ## diag_04_backdating.R
 
 **Purpose:** Decision-ready diagnostics for `build_04_backdating.R` — re-run whenever the anchor,
@@ -343,7 +373,7 @@ The 2005–2016 portion of any downstream panel carries real, non-trivial dating
 
 ---
 
-## validate_backdating_method_fidelity.R
+## diag_04_method_fidelity.R (was diag_04_method_fidelity.R, renamed 2026-11-25)
 
 **Purpose:** a one-off question, deliberately kept OUT of `diag_04_backdating.R` since it isn't
 tied to `build_04`'s own config the way everything in that script is (2026-11-06 naming-convention
@@ -385,56 +415,6 @@ that's their algorithm vs. independent human judgment, a different comparison ty
 belong in this algorithm-vs-algorithm-output series; mentioned here only so it isn't re-added later.)
 
 Output: `outputs/tables/backdating/validate_backdating_fidelity_classifica.csv`.
-
----
-
-## diag_05_data_prep.R + diag_05_mining_by_region.qmd
-
-**Split 2026-11-06** into two files, on request, so the report can be re-rendered without a live EE
-session: `diag_05_data_prep.R` does the `ee_Authenticate()`/`ee_Initialize()`, the district
-`reduceRegions()` exports (district + protected-area overlap), and **also** builds every ggplot and
-calls `ggsave()` — it writes PNGs to `outputs/figures/diag_05/` and report-ready CSVs (already
-arranged/sliced, e.g. `top10_districts.csv`, `region_increase.csv`) plus a small `diag05_meta.rds`
-(the year range) to `outputs/tables/diag_05/`. `diag_05_mining_by_region.qmd` only
-`read_csv()`/`kable()`s those tables and `knitr::include_graphics()`s those PNGs — no `rgee`, `sf`,
-or `googledrive` in its dependency list, so it renders offline. Run the `.R` script first (in
-RStudio, interactively, for the EE browser login), then render the `.qmd`. The three canonical
-outputs consumed elsewhere (`outputs/tables/mining_by_district.csv`, `mining_by_region.csv`,
-`mining_protected_overlap_by_district.csv` — the last one feeds
-`explore_mining_vs_forest_type_app.js`'s `DISTRICT_PROTECTED_STATS`) are unchanged in content and
-path, just now written by the `.R` script instead of the `.qmd`.
-
-**Purpose:** District/region-level overview of cumulative galamsey extent (`mine_mask_ghana_c4_{yr}`,
-2017–2025, union-to-date) — national sanity check, region distribution/ranking/growth, top-10
-districts, and how much of each district's mining falls inside a WDPA/WDOECM **Designated**
-protected area (national parks, forest reserves — mostly the latter). Pulls protected areas
-directly from the **public GEE catalog** (`WCMC/WDPA/current/polygons` + `WCMC/WDOECM/current/polygons`,
-filtered to Ghana + Designated) — no upload needed, always current; `upload_protected_areas.R`
-(a local WDPA/WDOECM Jul 2026 extract) is kept only as a fallback, not the primary path.
-
-**Originally rewritten from `.Rmd` to Quarto `.qmd`** (2026-11-05), styled to match
-`code/4_presentation/galamsey_motivation.qmd`'s colour identity (galawine `#450457` + the project's
-plasma `MINING_PALETTE`) as a single scrollable HTML report, not a slide deck (a reveal.js format
-was considered and rejected — this report's dense per-district tables and multi-panel figures don't
-suit slide-by-slide presentation). The original `.Rmd`'s `MIN_MINING_KM2` cutoff-selection content
-(a district-level distribution histogram + candidate-cutoff table) was **dropped** — that question
-is settled (`explore_mining_vs_forest_type_app.js` already hardcodes `MIN_MINING_KM2 <- 1`) — and is
-archived at `notes/archive/diag_05_mining_by_region.Rmd` if that reasoning is ever needed again.
-
-**Feeds `explore_mining_vs_forest_type_app.js`'s `DISTRICT_PROTECTED_STATS`:** the protected-area
-section's output CSV (`outputs/tables/mining_protected_overlap_by_district.csv`) is converted to a
-plain JS object literal and pasted directly into the app — deliberately **not** computed live in
-the app itself. An earlier version did reduce a painted WDPA/WDOECM mask inside the app's
-`showStats()` and it measurably slowed every "Generate stats" click (painting the whole merged
-collection per click, not just the handful of sites near the selected district); since this stat is
-cross-sectional, there's no reason to ever recompute it per click, so a static lookup replaced the
-live `reduceRegion`.
-
-**Known rgee gotchas worked around (apply to any new script following this pattern):**
-`ee_extract()` calls `ee$Image$reduceRegions(image=img, ...)`, a calling convention the installed
-earthengine-api no longer accepts — bypassed throughout by calling `reduceRegions()`/`reduceRegion()`
-directly; `ee$Filter$and()` doesn't exist in the Python client (`and` is a reserved keyword there,
-unlike JS) — use `ee$Filter$And()`.
 
 ---
 
@@ -480,7 +460,7 @@ folder inventory grouped by family. Run this to confirm `build_02` is done befor
 
 ---
 
-## validate_finalproduct.R + .js
+## upload_reference_products.R + validate_finalproduct.js (the .R was upload_reference_products.R, renamed 2026-11-25: it only uploads the reference maps)
 
 **Renamed 2026-09-17** from `validate_ground_truth_comparison.{R,js}` — "ground truth comparison"
 undersold what the `.js` had grown into (full deployed-product QA: interactive cutoff/urban-threshold
@@ -502,7 +482,7 @@ finalproduct.R` now uploads all four nationally instead, using a chunked-and-per
 national scope are large enough to blow EE's ~10 MB inline-upload limit — the same failure
 `build_02` hit uploading ~7,391 Barenblitt polygons. `gt_compare_smallminesds_aoi` was renamed to
 `gt_compare_smallminesds` to match (no longer AOI-scoped). The `.js` no longer needs regenerating
-by the `.R` script — an earlier version of `validate_finalproduct.R` auto-wrote the `.js` from a
+by the `.R` script — an earlier version of `upload_reference_products.R` auto-wrote the `.js` from a
 template each run (old Section 7), but the `.js` has since been hand-built well past what that
 template ever produced (see below), so that step was removed; re-running the `.R` script now only
 refreshes the 4 EE assets.
@@ -559,7 +539,7 @@ attribution, before deciding whether it's a real problem.
 
 ---
 
-## diag_03_product_overlap.R
+## diag_03_product_overlap.R -- ARCHIVED 2026-11-25 (notes/archive/; superseded by diag_03_embedding_product.R)
 
 **Purpose:** Benchmarks our RS mine layer against every external mining product available for
 Ghana — Barenblitt (SW-hull only, positive-labels-only), Maus et al. 2022 (global, industrial-
@@ -715,6 +695,16 @@ panel) breaks, the time series still stands alone.
 ---
 
 ## Archived / relocated, no longer in this folder
+
+- **Archived 2026-11-25** to `notes/archive/` (questions settled): `diag_03_temporal_consistency.R`
+  (Rule B chosen, now in `build_03b`; still cited as the evidence), `diag_03_product_overlap.R`
+  (superseded by `diag_03_embedding_product.R`), `diag_06_onset_2002_check.R` (2002 pile-up resolved by
+  rule e), `validate_cutoff_tuning.js` (cutoff 70 settled), `validate_trainingdata.js` (label QA done),
+  `explore_landsat_sentinel.R` (pre-embeddings), `validate_change_gif.js` (unresolved bug, explore-only),
+  `util_fetch_drive_exports.R` (`build_04` fetches its own exports). Renamed: `validate_backdating_*`
+  -> `diag_04_method_fidelity.R` / `diag_04_groundtruth.R` (they feed the backdating report),
+  `upload_reference_products.R` -> `upload_reference_products.R`. Moved: `diag_05_*` ->
+  `code/3_analysis/a_06_mining_by_region*`. Output CSV names keep the old script names.
 
 - `rs03_embedding_classifier_design.md` → `notes/archive/`. Superseded by
   `embedding_classifier_approach.md` now that `build_02` implements the plan; kept for the original

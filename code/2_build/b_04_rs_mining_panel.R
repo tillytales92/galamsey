@@ -5,19 +5,28 @@
 #   2000-2016  build_04_backdating.R's mine_onset_year_2000_2017_rulee (30 m, rule-e onset years
 #              + flags). A pixel is mined in year Y once its onset <= Y (mining treated as
 #              persistent forward, the same assumption the backdating relies on).
-#   2017-2025  build_03's annual mine_mask_ghana_c4_{yr} (10 m) directly.
+#              Masked to the CONFIRMED 2017 anchor (Rule B cur_2017 = raw17 AND raw18, 30 m share
+#              >= 0.5, same aggregation as build_04) -- one-off 2017 blips get no onset year.
+#   2017-2025  build_03b_temporal_rules.R's mine_status_ghana_c4_ruleB_2017_2025 (10 m):
+#              Option 1 "ever mined" (entry_year <= Y) = main spec, consistent with pre-2017;
+#              Option 2 "currently mined" (cur_{yr}, Rule B, can exit) = 2017+ only.
+#              build_03's raw masks are kept as a baseline column (mined_ha_raw).
 #
 # Design: GEE exports AREA PER HEX BY ONSET YEAR x FLAG (Sections 3-4); every convention is built
 # in R from those counts (Section 5), so thresholds can change without a new export.
 #
 # Conventions (columns of the output panel, all in ha of mined land, cumulative stock):
-#   mined_ha_A          main spec: onset_year (2000-2017); onsets in 2000 = mined by 2000.
+#   mined_ha_A          main spec: onset_year (2000-2017); onsets in 2000 = mined by 2000; 2017+ =
+#                       Option 1 (ever mined under Rule B).
 #   mined_ha_A_persist  robustness: as A, but pixels with persistent_loss == 0 dropped in EVERY year
 #                       (2017+ too, via the np_{yr} bands).
+#   mined_ha_cur        Option 2 (currently mined, Rule B), 2017+ only (NA before: no exits observable).
+#   mined_ha_raw        build_03's raw masks, 2017+ only -- the pre-rule baseline.
+#   unconf_ha           Option 1 area entering in 2025 (unconfirmable, no 2026 mask); 0 in other years.
 #   mined_ha_B          "no mining before LATER_MIN": NA before LATER_MIN; from LATER_MIN on =
 #                       stock + cumulative onset_from{LATER_MIN}. Stock = pixels already bare before
 #                       LATER_MIN, pixels whose post-LATER_MIN loss is below STOCK_MAX_LOSS_X1000
-#                       (no real later conversion -> mined earlier), and undated pixels.
+#                       (no real later conversion -> mined earlier), and undated pixels. 2017+ as A.
 #   new_ha_A / new_ha_B first differences (2017: mask minus 2016 stock, absorbs the 10/30 m seam).
 #
 # Workflow is NON-BLOCKING: each run submits whatever export is missing and stops; re-run once the
@@ -49,6 +58,8 @@ EE_PROJECT    <- "rgee-auth-tillam"
 EE_ASSET_HOME <- sprintf("projects/%s/assets/ghana_mining", EE_PROJECT)
 ONSET_ASSET   <- file.path(EE_ASSET_HOME, sprintf("mine_onset_year_%d_%d_rulee", ONSET_MIN, ONSET_MAX))
 MASK_PREFIX   <- "mine_mask_ghana_c4_"
+STATUS_ASSET  <- file.path(EE_ASSET_HOME, sprintf("mine_status_ghana_c4_ruleB_%d_%d",
+                                                  min(MASK_YEARS), max(MASK_YEARS)))   # build_03b
 PROC_DIR      <- here("data", "processed")
 RAW_DIR       <- here("outputs", "tables", "backdating")   # raw per-hex export CSVs
 DRIVE_FOLDER  <- "ghana_mining_gee_exports"
@@ -66,6 +77,8 @@ googledrive::drive_auth()
 asset_exists <- function(id) tryCatch({ ee$data$getAsset(id); TRUE }, error = function(e) FALSE)
 if (!asset_exists(ONSET_ASSET))
   stop(ONSET_ASSET, " not found -- run build_04_backdating.R Section 12 first (or wait for it)")
+if (!asset_exists(STATUS_ASSET))
+  stop(STATUS_ASSET, " not found -- run build_03b_temporal_rules.R first (or wait for it)")
 
 # Task check in Python: pulling the task list into R overflows on Windows (seen 2026-11-13).
 reticulate::py_run_string(paste(
@@ -98,8 +111,17 @@ fetch_or_submit <- function(name, make_task) {
 }
 
 ####2. Area images ####
-on   <- ee$Image(ONSET_ASSET)
-area <- ee$Image$pixelArea()
+status <- ee$Image(STATUS_ASSET)
+area   <- ee$Image$pixelArea()
+
+# Confirmed 2017 anchor at 30 m: same 10 m -> 30 m aggregation as build_04 Section 4 (mean >= 0.5).
+# A subset of build_04's raw anchor, so masking the onset asset == re-running build_04 on it.
+anchor30 <- status$select("cur_2017")$unmask(0)$
+  setDefaultProjection(status$projection())$
+  reduceResolution(reducer = ee$Reducer$mean(), maxPixels = 64L)$
+  reproject(ee$Projection("EPSG:32630")$atScale(30))$
+  gte(0.5)
+on <- ee$Image(ONSET_ASSET)$updateMask(anchor30)
 
 # (a) 30 m onset bands: area by onset year x persistent_loss (A), and by onset_from{LATER_MIN} year x
 #     loss bin / bare (B). Bin code 0..length(edges) by loss, length(edges)+1 = bare before LATER_MIN.
@@ -117,15 +139,20 @@ bands_b <- unlist(lapply(LATER_MIN:ONSET_MAX, function(y) lapply(0:(n_bins + 1L)
 bands_b <- c(bands_b, list(onset_b$eq(0L)$multiply(area)$rename("B_undated")))
 onset_area <- ee$Image$cat(c(bands_a, bands_b))
 
-# (b) 10 m mask bands: mined area per year, and the part of it with persistent_loss == 0 (for
-#     mined_ha_A_persist). The 30 m flag is read per 10 m pixel (nearest).
+# (b) 10 m mask bands per year: m = Option 1 (ever mined), np = its persistent_loss == 0 part (for
+#     mined_ha_A_persist; 30 m flag read per 10 m pixel, nearest), cur = Option 2, raw = build_03
+#     mask, u = Option 1 area entering in the last (unconfirmable) year.
 np_flag <- persist$eq(0L)$unmask(0)
+entry   <- status$select("entry_year")$unmask(0)
 mask_bands <- unlist(lapply(MASK_YEARS, function(yr) {
-  id <- file.path(EE_ASSET_HOME, paste0(MASK_PREFIX, yr))
-  if (!asset_exists(id)) { message("  [skip] ", id, " not found -- year ", yr, " will be NA"); return(NULL) }
-  m <- ee$Image(id)$unmask(0)$gt(0)
-  list(m$multiply(area)$rename(sprintf("m_%d", yr)),
-       m$And(np_flag)$multiply(area)$rename(sprintf("np_%d", yr)))
+  ever <- entry$gt(0)$And(entry$lte(yr))
+  raw  <- ee$Image(file.path(EE_ASSET_HOME, paste0(MASK_PREFIX, yr)))$unmask(0)$gt(0)
+  out <- list(ever$multiply(area)$rename(sprintf("m_%d", yr)),
+              ever$And(np_flag)$multiply(area)$rename(sprintf("np_%d", yr)),
+              status$select(sprintf("cur_%d", yr))$unmask(0)$multiply(area)$rename(sprintf("cur_%d", yr)),
+              raw$multiply(area)$rename(sprintf("raw_%d", yr)))
+  if (yr == max(MASK_YEARS)) out <- c(out, list(entry$eq(yr)$multiply(area)$rename(sprintf("u_%d", yr))))
+  out
 }), recursive = FALSE)
 mask_area <- ee$Image$cat(mask_bands)
 
@@ -167,8 +194,8 @@ for (hex_km in HEX_SIZES_KM) {
         select(c("hex_id", img$bandNames()$getInfo()), retainGeometry = FALSE),
       description = name, folder = DRIVE_FOLDER, fileFormat = "CSV")
 
-  n_on <- sprintf("b_04_rs_onset_area_rulee_%s", res_tag)
-  n_mk <- sprintf("b_04_rs_mask_area_%s", res_tag)
+  n_on <- sprintf("b_04_rs_onset_area_rulee_conf_%s", res_tag)   # _conf = confirmed-2017 anchor
+  n_mk <- sprintf("b_04_rs_mask_area_ruleB_%s", res_tag)
   ok_on <- fetch_or_submit(n_on, export_for(onset_area, n_on, 30L))
   ok_mk <- fetch_or_submit(n_mk, export_for(mask_area,  n_mk, 10L))
   if (ok_on && ok_mk) ready[[res_tag]] <- c(onset = n_on, mask = n_mk)
@@ -181,7 +208,7 @@ build_panel <- function(files) {
   on_df <- read_csv(file.path(RAW_DIR, paste0(files[["onset"]], ".csv")), show_col_types = FALSE) |>
     select(hex_id, starts_with("A_"), starts_with("B_"))
   mk_df <- read_csv(file.path(RAW_DIR, paste0(files[["mask"]], ".csv")), show_col_types = FALSE) |>
-    select(hex_id, starts_with("m_"), starts_with("np_"))
+    select(hex_id, starts_with(c("m_", "np_", "cur_", "raw_", "u_")))
   ha <- function(x) x / 1e4   # m^2 -> ha
 
   # A: new area per onset year, total and persistent only
@@ -201,9 +228,10 @@ build_panel <- function(files) {
     transmute(hex_id, stock_B = coalesce(stock_B, 0) + coalesce(und, 0))
   b_new <- b_long |> filter(!to_stock) |> group_by(hex_id, year) |> summarise(new_B = ha(sum(m2)), .groups = "drop")
 
-  masks <- mk_df |> pivot_longer(-hex_id, names_to = c("kind", "year"), names_pattern = "(m|np)_(\\d{4})",
+  masks <- mk_df |> pivot_longer(-hex_id, names_to = c("kind", "year"), names_pattern = "(m|np|cur|raw|u)_(\\d{4})",
                                  values_to = "m2") |>
     mutate(year = as.integer(year), m2 = ha(m2)) |> pivot_wider(names_from = kind, values_from = m2)
+  if (!"u" %in% names(masks)) masks$u <- NA_real_
 
   panel <- expand_grid(hex_id = union(on_df$hex_id, mk_df$hex_id), year = YEARS) |>
     left_join(a_new, by = c("hex_id", "year")) |>
@@ -220,12 +248,16 @@ build_panel <- function(files) {
            mined_ha_B         = case_when(year < LATER_MIN ~ NA_real_,
                                           year < min(MASK_YEARS) ~ stock_B + cum_B,
                                           TRUE ~ m),
+           mined_ha_cur       = if_else(year < min(MASK_YEARS), NA_real_, cur),
+           mined_ha_raw       = if_else(year < min(MASK_YEARS), NA_real_, raw),
+           unconf_ha          = coalesce(u, 0),
            new_ha_A = mined_ha_A - lag(mined_ha_A),
            new_ha_B = mined_ha_B - lag(mined_ha_B)) |>
     ungroup() |>
-    select(hex_id, year, mined_ha_A, mined_ha_A_persist, mined_ha_B, new_ha_A, new_ha_B)
+    select(hex_id, year, mined_ha_A, mined_ha_A_persist, mined_ha_B, mined_ha_cur, mined_ha_raw,
+           unconf_ha, new_ha_A, new_ha_B)
 
-  attr(panel, "meta") <- list(onset_asset = ONSET_ASSET, later_min = LATER_MIN,
+  attr(panel, "meta") <- list(onset_asset = ONSET_ASSET, status_asset = STATUS_ASSET, later_min = LATER_MIN,
                               stock_max_loss_x1000 = STOCK_MAX_LOSS_X1000,
                               undated_ha_A = ha(sum(on_df$A_undated, na.rm = TRUE)), built = Sys.time())
   panel
@@ -239,8 +271,9 @@ for (res_tag in names(ready)) {
 
   # Quick checks: national totals by year per convention, and the 2016 -> 2017 seam
   tot <- panel |> group_by(year) |>
-    summarise(across(c(mined_ha_A, mined_ha_A_persist, mined_ha_B), ~ round(sum(.x) / 100)), .groups = "drop")
-  message("\n", res_tag, ": total mined area by year (km2) -- A / A_persist / B")
+    summarise(across(c(mined_ha_A, mined_ha_A_persist, mined_ha_B, mined_ha_cur, mined_ha_raw, unconf_ha),
+                     ~ round(sum(.x) / 100)), .groups = "drop")
+  message("\n", res_tag, ": total mined area by year (km2) -- A (Opt 1) / A_persist / B / cur (Opt 2) / raw / unconf")
   print(as.data.frame(tot))
   message(sprintf("Undated (onset_year = 0, excluded from A): %.0f ha | B stock rule: loss < %d x1000, bare pre-%d, undated",
                   meta$undated_ha_A, STOCK_MAX_LOSS_X1000, LATER_MIN))

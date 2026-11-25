@@ -151,9 +151,63 @@ columns).
 
 ---
 
-## a_06_awomaso_case_study.R — moved out (2026-08-05)
+## (former a_06) awomaso_case_study.R — moved out (2026-08-05)
 
 Relocated to `code/1_remote_sensing/validate_awomaso_case_study.R` — on reflection it's a
 single-site visual QA check on the classifier's own output (does Awomaso's before/after look
 plausible?), not a descriptive/causal result for the paper/deck like the rest of this folder.
 Briefly lived here 2026-08-04–2026-08-05 (moved from the former `rs08_visualisation.R`).
+
+---
+
+## a_06_mining_by_region_data.R + a_06_mining_by_region.qmd
+
+**Moved 2026-11-25** from `code/1_remote_sensing/` (was `diag_05_data_prep.R` + `diag_05_mining_by_region.qmd`):
+it describes the finished mining product rather than diagnosing a build stage. Output folders keep their
+old names (`outputs/{figures,tables}/diag_05/`).
+
+**Split 2026-11-06** into two files, on request, so the report can be re-rendered without a live EE
+session: `a_06_mining_by_region_data.R` does the `ee_Authenticate()`/`ee_Initialize()`, the district
+`reduceRegions()` exports (district + protected-area overlap), and **also** builds every ggplot and
+calls `ggsave()` — it writes PNGs to `outputs/figures/diag_05/` and report-ready CSVs (already
+arranged/sliced, e.g. `top10_districts.csv`, `region_increase.csv`) plus a small `diag05_meta.rds`
+(the year range) to `outputs/tables/diag_05/`. `a_06_mining_by_region.qmd` only
+`read_csv()`/`kable()`s those tables and `knitr::include_graphics()`s those PNGs — no `rgee`, `sf`,
+or `googledrive` in its dependency list, so it renders offline. Run the `.R` script first (in
+RStudio, interactively, for the EE browser login), then render the `.qmd`. The three canonical
+outputs consumed elsewhere (`outputs/tables/mining_by_district.csv`, `mining_by_region.csv`,
+`mining_protected_overlap_by_district.csv` — the last one feeds
+`explore_mining_vs_forest_type_app.js`'s `DISTRICT_PROTECTED_STATS`) are unchanged in content and
+path, just now written by the `.R` script instead of the `.qmd`.
+
+**Purpose:** District/region-level overview of cumulative galamsey extent (`mine_mask_ghana_c4_{yr}`,
+2017–2025, union-to-date) — national sanity check, region distribution/ranking/growth, top-10
+districts, and how much of each district's mining falls inside a WDPA/WDOECM **Designated**
+protected area (national parks, forest reserves — mostly the latter). Pulls protected areas
+directly from the **public GEE catalog** (`WCMC/WDPA/current/polygons` + `WCMC/WDOECM/current/polygons`,
+filtered to Ghana + Designated) — no upload needed, always current; `upload_protected_areas.R`
+(a local WDPA/WDOECM Jul 2026 extract) is kept only as a fallback, not the primary path.
+
+**Originally rewritten from `.Rmd` to Quarto `.qmd`** (2026-11-05), styled to match
+`code/4_presentation/galamsey_motivation.qmd`'s colour identity (galawine `#450457` + the project's
+plasma `MINING_PALETTE`) as a single scrollable HTML report, not a slide deck (a reveal.js format
+was considered and rejected — this report's dense per-district tables and multi-panel figures don't
+suit slide-by-slide presentation). The original `.Rmd`'s `MIN_MINING_KM2` cutoff-selection content
+(a district-level distribution histogram + candidate-cutoff table) was **dropped** — that question
+is settled (`explore_mining_vs_forest_type_app.js` already hardcodes `MIN_MINING_KM2 <- 1`) — and is
+archived at `notes/archive/diag_05_mining_by_region.Rmd` if that reasoning is ever needed again.
+
+**Feeds `explore_mining_vs_forest_type_app.js`'s `DISTRICT_PROTECTED_STATS`:** the protected-area
+section's output CSV (`outputs/tables/mining_protected_overlap_by_district.csv`) is converted to a
+plain JS object literal and pasted directly into the app — deliberately **not** computed live in
+the app itself. An earlier version did reduce a painted WDPA/WDOECM mask inside the app's
+`showStats()` and it measurably slowed every "Generate stats" click (painting the whole merged
+collection per click, not just the handful of sites near the selected district); since this stat is
+cross-sectional, there's no reason to ever recompute it per click, so a static lookup replaced the
+live `reduceRegion`.
+
+**Known rgee gotchas worked around (apply to any new script following this pattern):**
+`ee_extract()` calls `ee$Image$reduceRegions(image=img, ...)`, a calling convention the installed
+earthengine-api no longer accepts — bypassed throughout by calling `reduceRegions()`/`reduceRegion()`
+directly; `ee$Filter$and()` doesn't exist in the Python client (`and` is a reserved keyword there,
+unlike JS) — use `ee$Filter$And()`.

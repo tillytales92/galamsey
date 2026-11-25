@@ -89,7 +89,7 @@ TUNE <- FALSE   # TRUE clips to TUNE_AOI. Sections 10/11/12 are guarded by !TUNE
 TUNE_AOI <- ee$Geometry$Rectangle(c(-2.05, 5.98, -1.87, 6.15))   # Awomaso
 
 # 2026-11-17: Sections 10/11 off by default -- rule e's fidelity vs classifica was already scored by
-# validate_backdating_method_fidelity.R (Section 6). Flip on to re-score the deployed asset itself.
+# diag_04_method_fidelity.R (Section 6). Flip on to re-score the deployed asset itself.
 RUN_ONSET_EXPORT       <- FALSE   # submit Section 10's onset-vs-classifica CSV for METHOD
 RUN_VALIDATION         <- FALSE   # upload/merge the classifica validation points (Section 10)
 RUN_DROPOUT_DIAGNOSTIC <- FALSE   # submit Section 11's LandTrendr dropout breakdown
@@ -104,6 +104,9 @@ aoi   <- if (TUNE) TUNE_AOI else ghana
 asset_exists <- function(id) tryCatch({ ee$data$getAsset(id); TRUE }, error = function(e) FALSE)
 
 ####4. Anchor footprint: mined-as-of-2017 (MASK_YEARS), at 30 m ####
+# NOTE 2026-11-25: the deployed asset was anchored on the RAW 2017 mask. b_04 now masks it with the
+# Rule-B CONFIRMED anchor (build_03b's cur_2017), which is equivalent. On any re-run, anchor on
+# cur_2017 of mine_status_ghana_c4_ruleB_2017_2025 here instead.
 mask_ids <- file.path(EE_ASSET_HOME, sprintf("%s%d", MASK_PREFIX, MASK_YEARS))
 mask_ids <- Filter(asset_exists, mask_ids)
 if (length(mask_ids) == 0)
@@ -243,7 +246,7 @@ annual_composite <- function(yr, band, reducer) {
 
   # Rule e: forward/backward passes carry the nearest well-observed (>= 2 obs) value and year;
   # a 1-obs year with a well-observed year on BOTH sides gets the linear interpolation. Same logic
-  # as validate_backdating_vs_classifier_groundtruth.R's annual_max_e (duplicated, not sourced).
+  # as diag_04_groundtruth.R's annual_max_e (duplicated, not sourced).
   # Note: the passes span YRS_P, so a 1-obs 2018 can interpolate towards 2019 (post-2013 1-obs
   # years are rare, so dating is effectively unchanged vs the validated 1998-2018 runs).
   sentinel <- ee$Image$constant(-9)$toFloat()
@@ -396,6 +399,33 @@ if (TUNE) {
   }
 }
 
+# Sections 10-11 export CSVs to Drive. Non-blocking, like b_04: local copy -> done; on Drive -> download;
+# still running -> wait; else submit. Re-run the section once the task shows COMPLETED.
+# (Replaces util_fetch_drive_exports.R, archived 2026-11-25. Helpers duplicated, not sourced.)
+DIAG_DIR <- here("outputs", "tables", "backdating")
+reticulate::py_run_string(paste(
+  "import ee",
+  "def ee_task_running(desc):",
+  "    try:",
+  "        tasks = ee.data.getTaskList()",
+  "    except Exception:",
+  "        tasks = [t.status() for t in ee.batch.Task.list()]",
+  "    return any(t.get('description') == desc and t.get('state') in ('READY', 'RUNNING') for t in tasks)",
+  sep = "\n"))
+fetch_or_submit <- function(name, make_task) {
+  dest <- file.path(DIAG_DIR, paste0(name, ".csv"))
+  if (file.exists(dest)) { message("  have ", basename(dest)); return(TRUE) }
+  googledrive::drive_auth()
+  folder <- googledrive::drive_find(pattern = "ghana_mining_gee_exports", type = "folder", n_max = 1)
+  hit <- if (nrow(folder)) googledrive::drive_ls(folder[1, ]) |> filter(name == paste0(!!name, ".csv")) else tibble()
+  if (nrow(hit)) {
+    dir.create(DIAG_DIR, recursive = TRUE, showWarnings = FALSE)
+    googledrive::drive_download(hit[1, ], path = dest, overwrite = TRUE); return(TRUE)
+  }
+  if (isTRUE(reticulate::py$ee_task_running(name))) { message("  '", name, "' still running"); return(FALSE) }
+  make_task()$start(); message("  submitted '", name, "' -- re-run this section when COMPLETED"); FALSE
+}
+
 ####10. Validation vs Barenblitt et al. classifica (RUN_VALIDATION) ####
 # classifica = 2-digit conversion year (07..17 -> 2007..2017). Upload the annual polygons as
 # points (one per polygon) once, then sample the onset raster at each. Guarded by !TUNE.
@@ -430,16 +460,17 @@ if (!TUNE && RUN_VALIDATION) {
     sampled  <- onset_year$sampleRegions(collection = conv_pts,
                                          properties = list("classifica"),
                                          scale = EXPORT_SCALE, tileScale = 8L)
-    task <- ee$batch$Export$table$toDrive(
-      collection = sampled$select(c("classifica", "onset_year")),
-      # window + rule suffixed so it never collides with earlier scored CSVs
-      description = sprintf("build_04_onset_vs_barenblitt_%s_rulee_min%d_max%d", METHOD, ONSET_MIN, ONSET_MAX),
-      folder = "ghana_mining_gee_exports", fileFormat = "CSV")
-    task$start()
-    message("Submitted onset-vs-classifica export. Fetch it with util_fetch_drive_exports.R. ",
-            "Score against classifica + 1 (our label convention), undated (0) excluded:\n",
-            "  d <- subset(d, onset_year > 0); e <- abs(d$onset_year - (2001 + d$classifica))\n",
-            "  mean(e == 0); mean(e <= 1); mean(e <= 2)")
+    # window + rule suffixed so it never collides with earlier scored CSVs
+    val_name <- sprintf("build_04_onset_vs_barenblitt_%s_rulee_min%d_max%d", METHOD, ONSET_MIN, ONSET_MAX)
+    if (fetch_or_submit(val_name, function() ee$batch$Export$table$toDrive(
+          collection = sampled$select(c("classifica", "onset_year")),
+          description = val_name, folder = "ghana_mining_gee_exports", fileFormat = "CSV"))) {
+      # Score against classifica + 1 (our label convention), undated (0) excluded
+      d <- read_csv(file.path(DIAG_DIR, paste0(val_name, ".csv")), show_col_types = FALSE) |> filter(onset_year > 0)
+      e <- abs(d$onset_year - (2001 + d$classifica))
+      message(sprintf("vs classifica + 1: exact %.1f%%, +-1 yr %.1f%%, +-2 yr %.1f%% (n = %d)",
+                      100 * mean(e == 0), 100 * mean(e <= 1), 100 * mean(e <= 2), nrow(d)))
+    }
   }
 }
 
@@ -464,12 +495,11 @@ if (!TUNE && RUN_DROPOUT_DIAGNOSTIC) {
 
   diag_sampled <- diag_img$sampleRegions(collection = conv_pts, properties = list("classifica"),
                                          scale = EXPORT_SCALE, tileScale = 8L)
-  diag_task <- ee$batch$Export$table$toDrive(
-    collection = diag_sampled$select(c("classifica", "ever_mined_flag", "max_mag", "dur", "preval", "onset_raw")),
-    description = sprintf("build_04_dropout_diagnostic_landtrendr_min%d_max%d", ONSET_MIN, ONSET_MAX),
-    folder = "ghana_mining_gee_exports", fileFormat = "CSV")
-  diag_task$start()
-  message("Submitted dropout-diagnostic export -> outputs/tables/backdating/.")
+  diag_name <- sprintf("build_04_dropout_diagnostic_landtrendr_min%d_max%d", ONSET_MIN, ONSET_MAX)
+  if (fetch_or_submit(diag_name, function() ee$batch$Export$table$toDrive(
+        collection = diag_sampled$select(c("classifica", "ever_mined_flag", "max_mag", "dur", "preval", "onset_raw")),
+        description = diag_name, folder = "ghana_mining_gee_exports", fileFormat = "CSV")))
+    message("Dropout diagnostic in ", file.path(DIAG_DIR, paste0(diag_name, ".csv")))
 }
 
 ####12. Export national onset raster (flip TUNE <- FALSE first) ####

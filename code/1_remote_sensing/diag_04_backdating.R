@@ -4,8 +4,9 @@
 #   (a) Section 2b: a by-year summary of the whole asset (area per onset year, LandTrendr agreement,
 #       start vegetation, loss size, computable years; inside vs outside the Barenblitt hull)
 #       -> outputs/tables/backdating/onset_summary_2000_2017.csv, barenblitt_yearly_area.csv
-#   (a2) Section 2c: classifier-era area 2017-2025 from build_03's masks (yearly stock + first-detected
-#       new area), to join onto the backdated series -> classifier_era_area_2017_2025.csv
+#   (a2) Section 2c: classifier-era area 2017-2025 from build_03b's Rule-B asset (Option 2 stock +
+#       Option 1 entries), to join onto the backdated series -> classifier_era_area_2017_2025.csv
+#   2026-11-25: everything is on the CONFIRMED 2017 anchor (build_03b cur_2017), see Section 2.
 #   (b) Sections 3-7: the example-pixel figure below.
 #
 # (b) illustrates how the deployed Barenblitt-replica backdating works, on a handful of real pixels.
@@ -47,6 +48,10 @@ IMG_START <- 1998L; IMG_END   <- 2018L
 # weak-spots figure only (its onset band = "onset_plain"), to show what rule e changed.
 ONSET_ASSET <- file.path(EE_ASSET_HOME, sprintf("mine_onset_year_%d_%d_rulee", ONSET_MIN, ONSET_MAX))
 PLAIN_ASSET <- file.path(EE_ASSET_HOME, sprintf("mine_onset_year_%d_%d_barenblitt", ONSET_MIN, ONSET_MAX))
+# 2026-11-25: build_03b's Rule-B asset. Its cur_2017 is the CONFIRMED anchor (raw17 AND raw18); the onset
+# asset (built on the raw 2017 anchor) is masked to it below, same 10 m -> 30 m rule as build_04 / b_04,
+# so Sections 2b and 3 describe the footprint the panel actually uses. Section 2c reads Options 1/2.
+STATUS_ASSET <- file.path(EE_ASSET_HOME, "mine_status_ghana_c4_ruleB_2017_2025")
 N_PER_YEAR  <- 40L    # candidate pixels sampled per onset year
 SEED        <- 7L
 
@@ -62,7 +67,12 @@ bar_hull_ee <- sf_as_ee(st_sf(geometry = st_convex_hull(st_combine(st_geometry(c
 #   (max ~1.12e9, inside int32)
 #   onset_idx = onset_year - 1999 (0 = undatable); lt_agree 0/1/2, 9 -> 3 (undated);
 #   start_class 0 = bare <0.4, 1 = 0.4-0.6, 2 = >=0.6, 3 = no data; deriv_bin = loss x1000 / 10, 0-49.
-asset   <- ee$Image(ONSET_ASSET)
+status  <- ee$Image(STATUS_ASSET)
+to30    <- function(img) img$setDefaultProjection(status$projection())$
+  reduceResolution(reducer = ee$Reducer$mean(), maxPixels = 64L)$
+  reproject(ee$Projection("EPSG:32630")$atScale(30))
+anchor30 <- to30(status$select("cur_2017")$unmask(0))$gte(0.5)
+asset   <- ee$Image(ONSET_ASSET)$updateMask(anchor30)                       # confirmed-anchor footprint
 in_hull <- ee$Image$constant(0L)$paint(ee$FeatureCollection(list(ee$Feature(bar_hull_ee))), 1L)   # paint() needs a FeatureCollection
 sn      <- asset$select("start_ndvi_x1000")
 start_class <- ee$Image$constant(3L)$
@@ -101,28 +111,28 @@ conv |> st_transform(32630) |>
   group_by(bar_year) |> summarise(bar_km2 = sum(area_km2), .groups = "drop") |>
   write_csv(here("outputs", "tables", "backdating", "barenblitt_yearly_area.csv"))
 
-#### 2c. Classifier era 2017-2025 from build_03's annual masks (to join onto the backdated series) ####
-# Per 30 m pixel, a 9-bit flag: bit (yr - 2017) set if mined in mine_mask_ghana_c4_{yr}. One exact
-# frequency histogram of in_hull*1000 + bits gives, for every year, both
-#   stock_km2 = area flagged mined in that year's mask (not monotone: masks can flicker), and
-#   new_km2   = area first flagged that year among pixels NOT mined in 2017 (same rule as the
-#               ground-truth test), so backdated (to 2017) + new (2018+) is one continuous onset series.
-# Same 10 m -> 30 m majority rule as build_04's anchor.
-MASK_PREFIX <- "mine_mask_ghana_c4_"
-CLS_YEARS   <- 2017:2025
-mask30 <- function(yr) {
-  id <- file.path(EE_ASSET_HOME, paste0(MASK_PREFIX, yr))
-  ee$Image(id)$unmask(0)$setDefaultProjection(ee$Image(id)$projection())$
-    reduceResolution(reducer = ee$Reducer$mean(), maxPixels = 64L)$
-    reproject(ee$Projection("EPSG:32630")$atScale(30))$gte(0.5)$toInt32()
-}
-bits <- Reduce(function(acc, i) acc$add(mask30(CLS_YEARS[i])$multiply(as.integer(2^(i - 1)))),
-               seq_along(CLS_YEARS)[-1], mask30(CLS_YEARS[1]))
-code_c <- in_hull$toInt32()$multiply(1000L)$add(bits)$updateMask(bits$gt(0))$rename("code")
+#### 2c. Classifier era 2017-2025 from build_03b's Rule-B asset (to join onto the backdated series) ####
+# Per 30 m pixel (same 10 m -> 30 m majority rule as the anchor): n_ever = number of years 2017-2025
+# mined under Option 1 (monotone, so entry year = 2026 - n_ever), and a 9-bit flag of Option 2 status
+# (bit (yr - 2017) set if cur_{yr} = 1). One exact frequency histogram of
+# in_hull*1e4 + n_ever*1e3 + bits gives, per year,
+#   stock_km2 = Option 2 "currently mined" area (can fall: real exits, two-year rule), and
+#   new_km2   = Option 1 entries that year (2018+; 2017 entries = the anchor, covered by backdating),
+#   ever_km2  = Option 1 cumulative; 2025 entries are unconfirmed (no 2026 mask).
+CLS_YEARS <- 2017:2025
+entry10  <- status$select("entry_year")$unmask(0)
+ever10   <- ee$Image$cat(lapply(CLS_YEARS, function(y) entry10$gt(0)$And(entry10$lte(y))$rename(paste0("e", y))))
+cur10    <- ee$Image$cat(lapply(CLS_YEARS, function(y) status$select(paste0("cur_", y))$unmask(0)$rename(paste0("c", y))))
+both30   <- to30(ever10$addBands(cur10))$gte(0.5)$toInt32()               # one reduceResolution, 18 bands
+n_ever   <- both30$select(paste0("e", CLS_YEARS))$reduce(ee$Reducer$sum())
+bits     <- Reduce(function(acc, i) acc$add(both30$select(paste0("c", CLS_YEARS[i]))$multiply(as.integer(2^(i - 1)))),
+                   seq_along(CLS_YEARS)[-1], both30$select(paste0("c", CLS_YEARS[1])))
+code_c <- in_hull$toInt32()$multiply(10000L)$add(n_ever$multiply(1000L))$add(bits)$
+  updateMask(n_ever$gt(0)$Or(bits$gt(0)))$rename("code")
 # Too heavy for an interactive getInfo (9 masks x reduceResolution over all Ghana: it hung for ~1 h on
 # 2026-11-13). Runs as a Drive table export instead, one row per code. Re-run this section once the
 # task shows COMPLETED: it then downloads and tabulates. Sections 3-7 do not depend on it.
-CLS_EXPORT <- "diag_04_classifier_era_codes_2017_2025"
+CLS_EXPORT <- "diag_04_classifier_era_codes_2017_2025_ruleB"   # _ruleB: new code layout, not the raw-mask export
 cls_raw    <- here("outputs", "tables", "backdating", paste0(CLS_EXPORT, ".csv"))
 if (!file.exists(cls_raw)) {
   googledrive::drive_auth()
@@ -143,16 +153,19 @@ if (!file.exists(cls_raw)) {
 } else {
 px <- read_csv(cls_raw, show_col_types = FALSE) |>
   transmute(code = as.numeric(code), n_pixels = as.numeric(n_pixels)) |>
-  mutate(region = if_else(code %/% 1000 == 1, "bar_hull", "outside"), b = code %% 1000)
+  mutate(region = if_else(code %/% 10000 == 1, "bar_hull", "outside"),
+         n_ever = (code %/% 1000) %% 10, b = code %% 1000,
+         entry  = if_else(n_ever > 0, max(CLS_YEARS) + 1 - n_ever, NA_real_))
 flag <- function(b, i) (b %/% 2^(i - 1)) %% 2 == 1
 cls_tbl <- map_dfr(seq_along(CLS_YEARS), function(i) {
-  earlier_none <- if (i == 1) rep(TRUE, nrow(px)) else
-    Reduce(`&`, lapply(seq_len(i - 1), function(j) !flag(px$b, j)))
-  px |> mutate(stock = flag(b, i), new = flag(b, i) & earlier_none) |>
+  y <- CLS_YEARS[i]
+  px |> mutate(stock = flag(b, i), new = !is.na(entry) & entry == y, ever = !is.na(entry) & entry <= y) |>
     group_by(region) |>
-    summarise(stock_km2 = sum(n_pixels[stock]) * 900 / 1e6, new_km2 = sum(n_pixels[new]) * 900 / 1e6, .groups = "drop") |>
-    mutate(year = CLS_YEARS[i])
-}) |> mutate(new_km2 = if_else(year == 2017L, NA_real_, new_km2))   # 2017 = the anchor, covered by backdating
+    summarise(stock_km2 = sum(n_pixels[stock]) * 900 / 1e6, new_km2 = sum(n_pixels[new]) * 900 / 1e6,
+              ever_km2 = sum(n_pixels[ever]) * 900 / 1e6, .groups = "drop") |>
+    mutate(year = y)
+}) |> mutate(new_km2 = if_else(year == 2017L, NA_real_, new_km2),   # 2017 = the anchor, covered by backdating
+             unconfirmed = year == max(CLS_YEARS))
 write_csv(cls_tbl, here("outputs", "tables", "backdating", "classifier_era_area_2017_2025.csv"))
 message("Classifier-era series written (2017 stock: ",
         round(sum(cls_tbl$stock_km2[cls_tbl$year == 2017])), " km2)")
@@ -253,7 +266,7 @@ obs <- map_dfr(seq_len(nrow(picked)), function(i) {
 })
 
 #### 6. Recompute the method from the raw observations ####
-# Also rule e (diag_06 / validate_backdating_method_fidelity.R): a 1-obs year's annual max replaced by
+# Also rule e (diag_06 / diag_04_method_fidelity.R): a 1-obs year's annual max replaced by
 # linear interpolation between the nearest >= 2-obs years. Drawn in the figures where it differs.
 win_year <- function(year, loss) {
   cand <- year >= max(IMG_START + 2L, ONSET_MIN) & year <= min(IMG_END - 1L, ONSET_MAX) & !is.na(loss)

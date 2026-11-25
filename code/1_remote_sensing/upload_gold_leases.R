@@ -82,7 +82,7 @@ message("Wrote ", local_shp)
 # upload_as_asset()). It fails SILENTLY from R's perspective (no error, "Uploaded: ..."
 # prints) but the asset either lands under the legacy namespace or never becomes
 # queryable, so Collection.loadTable in the Code Editor reports "not found" at the
-# Cloud-Project path. Proven fix (same pattern as build_02/validate_finalproduct.R):
+# Cloud-Project path. Proven fix (same pattern as build_02/upload_reference_products.R):
 # build the FeatureCollection inline via sf_as_ee() with NO assetId (via = "getInfo",
 # fine at this size), then persist it with EE's own Export$table$toAsset, which
 # resolves Cloud-Project asset paths correctly.

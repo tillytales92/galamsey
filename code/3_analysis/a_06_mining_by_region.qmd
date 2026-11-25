@@ -21,10 +21,10 @@ a { color: #9E2F7F; }
 ```
 
 <!--
-diag_05_mining_by_region.qmd -- decision-ready report (see code/1_remote_sensing/explainer.md's
-diag_NN_* convention). Split 2026-11-06 from a single EE-authenticated .qmd into this
-presentation-only document + diag_05_data_prep.R, which does the EE auth, downloads, and figure/
-table generation. Run diag_05_data_prep.R in RStudio first; this file only reads what it writes to
+a_06_mining_by_region.qmd -- descriptive report on the finished product (see code/3_analysis/explainer.md;
+moved from code/1_remote_sensing/diag_05_* on 2026-11-25). Split 2026-11-06 from a single EE-authenticated .qmd into this
+presentation-only document + a_06_mining_by_region_data.R, which does the EE auth, downloads, and figure/
+table generation. Run a_06_mining_by_region_data.R in RStudio first; this file only reads what it writes to
 outputs/figures/diag_05/ and outputs/tables/diag_05/ (no rgee, no EE session, no internet needed to
 render). See explainer.md for the full rationale and the rgee gotchas the prep script works around.
 -->
@@ -48,7 +48,7 @@ first_year  <- min(embed_years)
 Same definition as `build_03_embedding_panel.R` / `explore_mining_vs_forest_type_app.js`: the
 **union-to-date** of `mine_mask_ghana_c4_<yr>` (monotonically non-decreasing cumulative footprint),
 not each year's raw independent classification. Built, pulled by district, and written to
-`outputs/tables/mining_by_district.csv` / `mining_by_region.csv` by `diag_05_data_prep.R` -- see
+`outputs/tables/mining_by_district.csv` / `mining_by_region.csv` by `a_06_mining_by_region_data.R` -- see
 that script for the EE/rgee side of this.
 
 ## 2. National total (sanity check)

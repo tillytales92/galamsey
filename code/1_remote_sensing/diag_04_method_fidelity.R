@@ -1,4 +1,4 @@
-# validate_backdating_method_fidelity.R -- one-off check, independent of build_04's settings
+# diag_04_method_fidelity.R -- one-off check, independent of build_04's settings
 #
 # Question: on Barenblitt et al.'s OWN footprint (FullConversiontoMiningExtent2019.shp), how well do
 # three dating methods reproduce their yearly labels (classifica)?
@@ -15,7 +15,7 @@
 #
 # Output: outputs/tables/backdating/validate_backdating_fidelity_3methods.csv
 #   (per point: classifica, onset_bar, onset_lt, onset_cc; 0 = no year) + console summary.
-# 2026-11-16: + rule a1 from diag_06_onset_2002_check.R (Barenblitt replica, but a year with fewer
+# 2026-11-16: + rule a1 from notes/archive/diag_06_onset_2002_check.R (Barenblitt replica, but a year with fewer
 #   than A1_MIN_OBS clear observations counts as missing). Separate, cheap export (no CCDC re-run):
 #   validate_backdating_fidelity_a1.csv = classifica, onset_bar, onset_bar_a1 on the same points.
 #   Question: does a1 shrink the 19% of points the replica dates >= 4 yrs before classifica + 1?

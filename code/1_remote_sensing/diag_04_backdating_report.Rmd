@@ -59,7 +59,7 @@ gt_score <- function(x) x |> group_by(method, imagery) |>
   reframe(acc(onset, first_detected_year, n_pixels)) |> fmt_acc()
 
 # --- Barenblitt classifica comparison: all three methods on Barenblitt's own 2019 footprint ---
-# (validate_backdating_method_fidelity.R). Their labels run one year earlier than ours, so
+# (diag_04_method_fidelity.R). Their labels run one year earlier than ours, so
 # classifica + 1 is the comparable year; that script's window runs to 2018 for this reason.
 fid_path <- first_existing(f("validate_backdating_fidelity_3methods.csv"))
 
@@ -87,9 +87,10 @@ bar_dense  <- if (!is.null(gt_persist)) filter(gt_persist, method == "barenblitt
 # Summary
 
 **What this is.** We want to know when mining began on land that is mined today. The embeddings
-classifier maps mining only from 2017 on. So we take every pixel mined in its 2017 mask, look back
+classifier maps mining only from 2017 on. So we take every pixel mined in 2017 (confirmed: also mined
+in 2018, see `diag_03_embedding_product_report`), look back
 through the Landsat archive (1998-2018) for the year its vegetation was cleared, and impute that as
-the pixel's conversion year ("onset"). Joined with the classifier's first detections from 2018, this
+the pixel's conversion year ("onset"). Joined with the classifier's first confirmed detections from 2018, this
 gives one onset series for 2000-2025, which feeds the panel.
 
 ```{r bottom-line, results='asis'}
@@ -219,7 +220,7 @@ LandTrendr as a confidence flag (`lt_agree`); Section 2.5 sets out why. **Naming
 
 **1.2 The Barenblitt method in detail**
 
-For every pixel mined by 2017 (from the embeddings classifier's 2017 mask):
+For every pixel mined by 2017 (in the embeddings classifier's 2017 mask, and confirmed by its 2018 mask):
 
 1. Take every clear Landsat observation 1998-2018 and keep each year's **maximum NDVI**.
 2. Smooth with a **3-year centred moving average**.
@@ -298,7 +299,7 @@ if (!is.null(gt)) {
 ```{r gt-dense, results='asis'}
 if (is.null(gt)) pending("embeddings ground-truth test") else {
   gp <- filter(gt, persistent == 1, imagery == "full")
-  cat(sprintf("<small>Script: `validate_backdating_vs_classifier_groundtruth.R` · %s pixels (%.0f km²)%s</small>\n\n",
+  cat(sprintf("<small>Script: `diag_04_groundtruth.R` · %s pixels (%.0f km²)%s</small>\n\n",
               format(round(sum(gp$n_pixels[gp$method == "barenblitt"])), big.mark = ","),
               sum(gp$n_pixels[gp$method == "barenblitt"]) * 900 / 1e6,
               if (gt_is_v1) " · LandTrendr here uses the **old** single-year gate (>100), not the deployed 200/4/100 version." else ""))
@@ -339,8 +340,8 @@ if (!is.null(gt) && "thin" %in% gt$imagery) {
 ```
 
 ```{r gt-thin, results='asis'}
-if (is.null(gt) || !"thin" %in% gt$imagery) pending("thinning test (`validate_backdating_vs_classifier_groundtruth.R` with `THIN_TARGET = 2.5`)") else {
-  cat("<small>Script: `validate_backdating_vs_classifier_groundtruth.R` (`THIN_TARGET = 2.5`)</small>\n\n")
+if (is.null(gt) || !"thin" %in% gt$imagery) pending("thinning test (`diag_04_groundtruth.R` with `THIN_TARGET = 2.5`)") else {
+  cat("<small>Script: `diag_04_groundtruth.R` (`THIN_TARGET = 2.5`)</small>\n\n")
   cat('<details class="more"><summary>Show table</summary>\n\n')
   gt_score(filter(gt, persistent == 1)) |> arrange(method, imagery) |>
     mutate(method = mlab[method], imagery = recode(imagery, full = "dense", thin = "thinned")) |>
@@ -375,8 +376,8 @@ if (!is.na(fid_path)) {
 ```
 
 ```{r cls-compare, results='asis'}
-if (is.na(fid_path)) pending("three-method classifica comparison (`validate_backdating_method_fidelity.R`)") else {
-  cat(sprintf("<small>Script: `validate_backdating_method_fidelity.R` · %s points on Barenblitt et al.'s 2019 footprint, 2007-2018 window</small>\n\n",
+if (is.na(fid_path)) pending("three-method classifica comparison (`diag_04_method_fidelity.R`)") else {
+  cat(sprintf("<small>Script: `diag_04_method_fidelity.R` · %s points on Barenblitt et al.'s 2019 footprint, 2007-2018 window</small>\n\n",
               format(nrow(d) / 3, big.mark = ",")))
   cat('<details class="more"><summary>Show table</summary>\n\n')
   d |> group_by(method) |> reframe(acc(onset, truth), points = n()) |> fmt_acc() |>
@@ -399,9 +400,9 @@ share the single-image artefacts that rule e removes, so agreement with them is 
 early4 <- function(onset, truth, w = rep(1, length(truth))) {
   dated <- !is.na(onset); 100 * sum(w[dated & onset - truth <= -4]) / sum(w[dated])
 }
-if (is.na(ef_path)) pending("rule e embeddings test (`validate_backdating_vs_classifier_groundtruth.R`, `RULE_VARIANTS = c(\"e\",\"f\")`)") else {
+if (is.na(ef_path)) pending("rule e embeddings test (`diag_04_groundtruth.R`, `RULE_VARIANTS = c(\"e\",\"f\")`)") else {
   ef <- read_csv(ef_path, show_col_types = FALSE) |> filter(persistent == 1)
-  cat("<small>Script: `validate_backdating_vs_classifier_groundtruth.R` (`RULE_VARIANTS = c(\"e\",\"f\")`, Barenblitt et al. study area)</small>\n\n")
+  cat("<small>Script: `diag_04_groundtruth.R` (`RULE_VARIANTS = c(\"e\",\"f\")`, Barenblitt et al. study area)</small>\n\n")
   cat('<details class="more"><summary>Show table</summary>\n\n')
   ef |> pivot_longer(c(bar, e), names_to = "method", values_to = "onset") |> group_by(imagery, method) |>
     reframe(acc(onset, first_detected_year, n_pixels), early = early4(onset, first_detected_year, n_pixels)) |>
@@ -469,7 +470,7 @@ bar_area <- if (file.exists(f("barenblitt_yearly_area.csv"))) read_csv(f("barenb
 if (is.null(osum)) pending("by-year summary of the deployed asset (`diag_04_backdating.R`, Section 2b)") else {
   tot <- sum(osum$n_pixels); und <- sum(osum$n_pixels[osum$onset_year == 0])
   pre05 <- sum(osum$n_pixels[osum$onset_year > 0 & osum$onset_year < LATER_MIN])
-  cat(sprintf(paste0("The deployed asset covers **%s pixels (%.0f km²)** mined by 2017, %.0f%% of them inside Barenblitt et al.'s study area. ",
+  cat(sprintf(paste0("The deployed asset covers **%s pixels (%.0f km²)** mined by 2017 (confirmed in 2018), %.0f%% of them inside Barenblitt et al.'s study area. ",
                      "**%.1f%%** could not be dated. **%.0f%%** are dated before %d (the starting stock under the robustness convention).\n\n"),
               format(round(tot), big.mark = ","), tot * 900 / 1e6,
               100 * sum(osum$n_pixels[osum$region == "bar_hull"]) / tot, 100 * und / tot, 100 * pre05 / tot, LATER_MIN))
@@ -502,7 +503,7 @@ onset_series <- function(reg) {
     summarise(new_km2 = sum(n_pixels) * 900 / 1e6, .groups = "drop") |> mutate(source = "backdated (Barenblitt replica, Landsat)")
   und  <- tibble(year = ONSET_MAX, new_km2 = sum(o$n_pixels[o$onset_year == 0]) * 900 / 1e6, source = "undatable (in 2017 mask)")
   new  <- cls |> filter(region %in% reg, year > ONSET_MAX) |> group_by(year) |>
-    summarise(new_km2 = sum(new_km2), .groups = "drop") |> mutate(source = "classifier (first detection)")
+    summarise(new_km2 = sum(new_km2), .groups = "drop") |> mutate(source = "classifier (first confirmed detection)")
   bind_rows(back, und, new) |> arrange(year)
 }
 ours_bh <- onset_series("bar_hull")
@@ -546,15 +547,17 @@ if (!is.null(ours_bh) && !is.null(theirs)) {
 
 ## 3.2 The full series, 2000-2025
 
-The backdated product (to 2017) joined with the classifier's first detections (2018-2025).
+The backdated product (to 2017) joined with the classifier's first confirmed detections (2018-2025).
+From 2017 on, both are cleaned by the temporal rule (Rule B: a status counts only when two consecutive
+years agree; see `diag_03_embedding_product_report`).
 
 - **Bars:** new mining area per year, coloured by source.
-- **Line:** the cumulative total of the bars. It assumes a pixel stays mined once it has been mined.
-- **White dots (2017-2025):** the area that year's classifier mask actually shows as mined, without
-  that assumption. A dot below the line means some earlier-mined pixels no longer show up as mined that
-  year: the mask flickers (a pixel can drop out in one year and return in the next), and some sites
-  revegetate or flood. The gap between line and dots shows how far the "once mined, always mined"
-  assumption is from what the classifier actually sees each year.
+- **Line:** the cumulative total of the bars, i.e. Option 1, "ever mined": a pixel stays mined once it
+  has been mined. This is the panel's main spec.
+- **White dots (2017-2025):** Option 2, "currently mined". The same rule, but a pixel can exit after two
+  years in a row of "not mine". The gap between line and dots is land mined earlier that no longer
+  shows as mined: revegetation, flooding or abandonment, not one-year flicker, which the rule removes.
+- **2025** cannot be confirmed (no 2026 mask), so its bar is provisional.
 
 Dashed lines mark 2007 (under the "no mining before 2007" convention, everything earlier becomes a
 starting stock) and the 2017/2018 seam between backdating and the classifier.
@@ -577,7 +580,7 @@ if (!is.null(ours_gh)) {
     scale_y_continuous(name = "cumulative mined area (km², line)",
                        sec.axis = sec_axis(~ . / sc_f, name = "new area per year (km², bars)")) +
     scale_fill_manual(values = c(`backdated (Barenblitt replica, Landsat)` = "#2C7FB8", `undatable (in 2017 mask)` = "grey60",
-                                 `classifier (first detection)` = "#FDB863")) +
+                                 `classifier (first confirmed detection)` = "#FDB863")) +
     labs(x = NULL, fill = NULL) + theme_minimal() + theme(legend.position = "top")
 }
 ```
@@ -664,7 +667,7 @@ if (file.exists(p)) include_graphics(p) else pending("weak-spots figure (`diag_0
 |---|---|---|
 | Already bare in 1998-2002 | 3.9% of dated area nationally; smaller losses; real onset may predate the series | flag `start_ndvi_x1000`; `bare_pre2007` sends such pixels to the starting stock under the "from 2007" convention |
 | Few computable years | some pixels choose from only a handful of candidate years | flag `n_computable_years`, `n_obs_years` |
-| 2002 pile-up | 7.4% of onsets with the plain replica (0.5% in 2001). A single-image artefact: 57% of 2002 pixels have only one clear image in 2003, the first Landsat 7 SLC-off year, against 17% of other pixels, and the median NDVI dips 0.81 → 0.44 → 0.76 (`diag_06_onset_2002_check.R`). The same one-year dips make up 40-60% of all onsets before 2012 | rule e (deployed): 2002 falls to about 4.2% of onsets, with half of the 2002 pixels moving, mostly to 2005 or later (`diag_06` sample); the rest keep a 2002 date and are flagged where the loss does not persist (`persistent_loss`). Nationally 2002 is still 4.6% of dated area, about 1.7× its neighbours. A likely cause: rule e only fixes years with exactly one image, so a 2003 with two or three images that are all low (dry-season-only dates, haze, partly masked cloud) still gives a dip. Before 2007, so it is in the starting stock under both conventions |
+| 2002 pile-up | 7.4% of onsets with the plain replica (0.5% in 2001). A single-image artefact: 57% of 2002 pixels have only one clear image in 2003, the first Landsat 7 SLC-off year, against 17% of other pixels, and the median NDVI dips 0.81 → 0.44 → 0.76 (`notes/archive/diag_06_onset_2002_check.R`). The same one-year dips make up 40-60% of all onsets before 2012 | rule e (deployed): 2002 falls to about 4.2% of onsets, with half of the 2002 pixels moving, mostly to 2005 or later (`diag_06` sample); the rest keep a 2002 date and are flagged where the loss does not persist (`persistent_loss`). Nationally 2002 is still 4.6% of dated area, about 1.7× its neighbours. A likely cause: rule e only fixes years with exactly one image, so a 2003 with two or three images that are all low (dry-season-only dates, haze, partly masked cloud) still gives a dip. Before 2007, so it is in the starting stock under both conventions |
 | 2008 (and 2009) | Still present with rule e: 2008 has 9.7 km², about half its neighbours, and 28% of it was already bare in 1998-2002 (2009: 18%; 2004-2007: 4-7%). With no real loss to find, the steepest-loss pick lands on a small fluctuation, and these land in 2008/09 more often than in other years. Cause not established: possibly noisy annual values in the Landsat 7 SLC-off years, when Landsat 5 recorded little over West Africa. An earlier check found Barenblitt et al.'s data often date these pixels much later (not yet re-run on the rule-e asset) | `persistent_loss` does not catch it (68%, normal). The bare-at-start flag does: under the "from 2007" convention, `bare_pre2007` sends such pixels to the starting stock |
 | Smaller losses before 2011 | sparser imagery or more gradual early clearing | no minimum-loss threshold: it would cut early years far more and make mining look later |
 
@@ -673,7 +676,7 @@ if (file.exists(p)) include_graphics(p) else pending("weak-spots figure (`diag_0
 
 | Setting | Value | Why |
 |---|---|---|
-| Anchor footprint | embeddings mask, mined by 2017 | 2018+ onsets come from the classifier directly |
+| Anchor footprint | embeddings mask, mined in 2017 and 2018 (Rule B) | one-off 2017 blips get no onset year; 2018+ onsets come from the classifier directly |
 | Onset window | 2000-2017 | 2017 was cut off before (8.9% "undatable") |
 | Imagery | 1998-2018, full year (to 2020 for the persistence check only) | the 3-yr average needs a year either side; shortening it would misdate early mining |
 | Single-image years | interpolated from the nearest ≥2-image years (rule e) | removes fake one-year dips without dropping any year (Sections 1.3, 2.4) |
@@ -685,7 +688,10 @@ if (file.exists(p)) include_graphics(p) else pending("weak-spots figure (`diag_0
 
 # Appendix: deployed asset bands
 
-`mine_onset_year_2000_2017_rulee`, 30 m (replaces `mine_onset_year_2000_2017_barenblitt`, which is kept):
+`mine_onset_year_2000_2017_rulee`, 30 m (replaces `mine_onset_year_2000_2017_barenblitt`, which is kept).
+It was built on the raw 2017 anchor. `diag_04_backdating.R` and `b_04` mask it to the confirmed anchor
+(`cur_2017` of `mine_status_ghana_c4_ruleB_2017_2025`), which is equivalent to rebuilding it, since every
+pixel is dated on its own.
 
 | Band | Meaning | No-data value |
 |---|---|---|
@@ -704,5 +710,5 @@ if (file.exists(p)) include_graphics(p) else pending("weak-spots figure (`diag_0
 
 Sources: CSVs and figures in `outputs/tables/backdating/` and `outputs/figures/backdating/`,
 produced by `build_04_backdating.R`,
-`validate_backdating_vs_classifier_groundtruth.R`, `validate_backdating_method_fidelity.R` and
+`diag_04_groundtruth.R`, `diag_04_method_fidelity.R` and
 `diag_04_backdating.R`.

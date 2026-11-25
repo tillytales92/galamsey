@@ -1,4 +1,4 @@
-# validate_backdating_vs_classifier_groundtruth.R
+# diag_04_groundtruth.R
 #
 # Question: how well do the backdating methods recover the right year, (a) with the dense imagery of
 # 2018-2025 and, optionally, (b) with that imagery thinned to pre-2013 sparsity?
@@ -21,7 +21,7 @@
 #                 PERSIST_DROP below y-3..y-1), on the rule-e series; 0 where no loss persists. Scored also as
 #                 f_fb = f, else the rule-e year (the planned build_04 onset + persistent_loss flag). Rule e =
 #                 the replica with every 1-obs year's annual max replaced by linear interpolation between
-#                 the nearest >= 2-obs years (see diag_06_onset_2002_check.R / validate_backdating_method_
+#                 the nearest >= 2-obs years (see notes/archive/diag_06_onset_2002_check.R / validate_backdating_method_
 #                 fidelity.R). The thinned run is the decisive test: thinning creates exactly the sparse
 #                 1-obs years e targets, against a reference year that is not NDVI-based. bar_thin here
 #                 should match the _ccdc run's bar_thin where the regions overlap (same thinning seed).

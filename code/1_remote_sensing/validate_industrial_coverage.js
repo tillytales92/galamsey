@@ -37,7 +37,7 @@
 //     (IND_ERASE_BAR_ART dropped to FALSE 2026-10-27) -- reference-only context.
 //
 // Pure geometry/coverage comparison, no S2/year machinery -- see validate_finalproduct.js /
-// validate_cutoff_tuning.js for imagery-based QA. NOT YET RUN in the Code Editor -- rewritten
+// notes/archive/validate_cutoff_tuning.js for imagery-based QA. NOT YET RUN in the Code Editor -- rewritten
 // 2026-10-27 for the per-mine mode table; paste in and check after the R upload script's assets land.
 
 var ASSET_HOME   = "projects/rgee-auth-tillam/assets/ghana_mining";
