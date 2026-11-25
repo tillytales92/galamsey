@@ -216,7 +216,7 @@ artisanal recall — matches the pre-full-stack estimate, i.e. the water/road ma
 detections. Still over-predicts Barenblitt by 2.1–2.5× nationally — **this number predates the
 2026-10-27 industrial-exclusion rework above and hasn't been recomputed since**, so the over-
 prediction ratio today is plausibly lower than 2.1–2.5×, not confirmed (see
-`validate_fp_source_breakdown.R` below for the rest of the FP residual).
+`validate_fp_source_breakdown.R` below, now archived, for the rest of the FP residual).
 
 **Scope stop:** ends at the annual 2017–2025 mask — does **not** aggregate to the hex × year panel.
 That waits until after `build_04` backdates the mask to 2000–2016, so the panel is built from the
@@ -504,7 +504,7 @@ cutoff × GHSL sweep scored against a Barenblitt-overlap recall proxy) directly 
 
 ---
 
-## validate_fp_source_breakdown.R
+## validate_fp_source_breakdown.R (archived 2026-11-25)
 
 **Purpose:** Attributes `build_02`'s flagged area (probability tiles, not the post-cutoff mask) to
 candidate false-positive sources at a sweep of cutoffs, so the `build_03` post-processing config is
@@ -723,3 +723,5 @@ panel) breaks, the time series still stands alone.
 - Earlier archived (see `notes/archive/`): `validate_ntrees_ablation.R`,
   `validate_ghsl_100m_epochs.js`, `validate_positive_training_urban_check.js`,
   `validate_true_mines_urban_mask.js` (10 m version), `trial_multiclass_classifier.R`.
+- **Archived 2026-11-25:** `validate_fp_source_breakdown.R` -- its job (choosing build_03's FP masks) ended
+  with the 2026-09-08 config decision; its 2022 CSV already contains the cutoff-70 rows, so no re-run is needed.

@@ -8,7 +8,7 @@
 #
 # 2026-09-03: repointed to the TILED c4 export. build_02 Section 10 writes one asset per
 # (year, tile) -- mine_prob_ghana_c4_{yr}_t{NN}, NOT a single per-year image -- so mine_prob_img()
-# below mosaics each year's tiles. PROB_THRESHOLD 90 -> 45 (settled 2026-08-18).
+# below mosaics each year's tiles. PROB_THRESHOLD 90 -> 45 (2026-08-18) -> 70 (2026-11-25).
 #
 # Replaces validate_awomaso_case_study.R (2026-08-05): that script read one-off, manually
 # exported rasters for exactly 3 years (2017/2021/2024) from data/raw/awomaso_figure/; this
@@ -78,8 +78,8 @@ SITES <- list(
 )
 SITE           <- "awomaso"
 YEARS          <- 2017:2025
-PROB_THRESHOLD <- 45                       # uint8 percent; settled cutoff (2026-08-18,
-                                            # project_4class_urban_confusion). See diag_02_scoring.R
+PROB_THRESHOLD <- 70                       # uint8 percent; deployed cutoff (45 -> 70 on 2026-11-25,
+                                            # matching diag_02_scoring.R SETTLED_CUTOFF). See diag_02_scoring.R
                                             # for where it sits on the PR/ROC curve.
 MAP_YEARS      <- c(min(YEARS), max(YEARS))   # which years get a map panel (each is a download -- keep small)
 

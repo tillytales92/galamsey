@@ -13,9 +13,11 @@ The project has two sequential phases:
 
 1. **Remote Sensing** (`code/1_remote_sensing/`) — classify mine presence across all of
    Ghana via Google Earth Engine. Currently deployed: a Random Forest on Google
-   AlphaEarth satellite embeddings, directly classifying 2017–2025, extended back to
-   2005–2016 by replicating Barenblitt et al.'s own NDVI-decline dating method on the
-   classifier's own footprint. Earlier years are not yet covered.
+   AlphaEarth satellite embeddings, directly classifying 2017–2025, smoothed by a
+   forward-only temporal rule (a pixel changes state only when the next year confirms
+   it), and extended back to 2000–2016 by replicating Barenblitt et al.'s own
+   NDVI-decline dating method on the classifier's confirmed 2017 footprint.
+   `code/2_build/b_04_rs_mining_panel.R` turns this into a hex × year panel, 2000–2025.
 2. **Descriptives & Analysis** (`code/3_analysis/`) — spatial and economic analysis of
    mining incidence. Currently uses Barenblitt et al. (2021) as an interim data source;
    designed to swap in the remote-sensing panel once Part 1 is validated as a replacement.
@@ -31,12 +33,14 @@ code/
 ├── 0_data/            d_NN_*  — raw-data acquisition & covariate builders
 │                               (elevation, waterways, MERIT hydrology, gold geology, GEE downloads)
 ├── 1_remote_sensing/          — AlphaEarth-embeddings classifier + backdating pipeline:
-│                               explore_* (exploration) / build_* (the sequential pipeline:
-│                               labels → classifier → panel → backdating) / validate_*
-│                               (one-off checks) / diag_* (re-run-on-change diagnostics).
+│                               build_* (the sequential pipeline: labels → classifier →
+│                               annual masks → temporal rule → backdating) / diag_*
+│                               (re-run-on-change diagnostics + reports) / upload_*
+│                               (local layers → EE assets) / validate_*, explore_* (one-off).
 │                               See code/1_remote_sensing/explainer.md for current status.
 ├── 2_build/           b_NN_*  — writes data/processed/ artifacts
-│                               (hex/district cross-sections, first-stage models, event panel)
+│                               (hex/district cross-sections, first-stage models, event panel,
+│                                RS mining panel)
 ├── 3_analysis/        a_NN_*  — produces figures, tables, and reports
 └── 4_presentation/            — Quarto/LaTeX slides summarizing motivation & findings
 ```
@@ -49,7 +53,8 @@ code/
 3. `2_build/b_02_firststage_models.R` — MAUP-robustness model ladder.
 4. `2_build/b_03a`–`b_03e_*.R` — assembles the hex × year event panel (VI extraction,
    own-mining, flow graph, flow exposure, final assembly).
-5. `3_analysis/a_NN_*` scripts/Rmds are then independent of each other.
+5. `2_build/b_04_rs_mining_panel.R` — RS mining panel (needs Earth Engine).
+6. `3_analysis/a_NN_*` scripts/Rmds are then independent of each other.
 
 ## Conventions
 

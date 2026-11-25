@@ -24,8 +24,9 @@ The project has two sequential phases:
 
 1. **Remote Sensing** — detect and classify gold mine presence across all of Ghana via Google Earth
    Engine. **Deployed**: a Random Forest on Google AlphaEarth embeddings (4-class, `no_maus` label
-   combo, cutoff 70), classifying 2017–2025 directly and backdated to 2005–2016 by replicating
-   Barenblitt et al.'s own NDVI-decline dating method. **Not yet validated as a Barenblitt
+   combo, cutoff 70), classifying 2017–2025 directly, smoothed by a forward-only temporal rule
+   (Rule B), and backdated to 2000–2016 by replicating Barenblitt et al.'s own NDVI-decline dating
+   method (Barenblitt replica + rule e) on the confirmed 2017 footprint. **Not yet validated as a Barenblitt
    replacement** — see Part 1 below.
 2. **Descriptives & Analysis** — facts about galamsey incidence, spatial dynamics, and economic
    impacts. Currently runs on Barenblitt data; re-run on the RS panel once Part 1 is validated.
@@ -49,17 +50,20 @@ The project has two sequential phases:
 
 Full script-by-script status: `code/1_remote_sensing/explainer.md` (re-run/re-read this, not this
 section, for anything below day-to-day). Current pipeline: `build_01_labels.R` → `build_02_embedding_classifier.R`
-→ `build_03_embedding_panel.R` → `build_04_backdating.R` → `2_build/b_04_rs_mining_panel.R`.
+→ `build_03_embedding_panel.R` → `build_03b_temporal_rules.R` → `build_04_backdating.R` → `2_build/b_04_rs_mining_panel.R`.
 
 - [x] **Classifier deployed**: `build_02`/`build_03` fully exported 2017–2025 (c4/no_maus, cutoff 70, GHSL/GSW/GRIP4 knockouts, ICMM/Maus/Tang&Werner industrial-mine exclusion — 14 named mines).
 - [x] **Backdating deployed** (2026-11-18): `build_04` → `mine_onset_year_2000_2017_rulee` (Barenblitt replica + rule e, 12 bands incl. `onset_from2007`, `persistent_loss`, `bare_pre2007`). National: 683 km² dated; persistent loss 65% (2000-06) vs 87% (2011-17). Validation + weak spots in `diag_04_backdating_report.Rmd` (rendered, slimmed 2026-11-18).
+- [x] **Temporal rule deployed** (2026-11-25): `build_03b_temporal_rules.R` → `mine_status_ghana_c4_ruleB_2017_2025` (Rule B, confirm with T+1; bands `cur_2017..2025` + `entry_year`). Option 1 "ever mined" = main spec for 2000–2025; Option 2 "currently mined" = 2017+ robustness. 2017 confirmed (raw 2017 AND 2018: −94 km², −14%); 2025 raw/unconfirmed (~394 km² of 2025 entries). Backdated layer is masked to the confirmed 2017 anchor (no `build_04` re-run needed).
+- [~] **2017–2025 product report** `diag_03_embedding_product_report.Rmd` (sweep, final-mask PA/UA, ablation, reference overlap, Ghana trend chart, flicker, weak spots): written, renders with "pending" blocks; exports `diag03_areas` / `diag03_points_2022` submitted 2026-11-25 → re-run `diag_03_embedding_product.R`, then render. Also check the 21 km² Option 1 vs Option 2 gap in 2017 (should be 0; suspected scale-100 artefact).
 - [ ] Backdating open: residual 2002 bump (4.6%, ~1.7× neighbours) and 2008 dip (28% bare-at-start); optional despike-rule test (replace any one-year dip, not only single-image years) deferred.
-- [x] **`b_04_rs_mining_panel.R`** run (2026-11-18): `data/processed/rs_mining_panel_hex5km_2000_2025.{rds,csv}`, 3,348 hexes (b_01 study area, 665 of 683 km²), conventions A / A_persist / B. Remaining: 2/1 km and national extent; `STOCK_MAX_LOSS_X1000` (25) provisional; definition question below.
+- [~] **`b_04_rs_mining_panel.R`**: first run 2026-11-18 (`data/processed/rs_mining_panel_hex5km_2000_2025.{rds,csv}`, 3,348 hexes, conventions A / A_persist / B). Rewired 2026-11-25 to the confirmed 2017 anchor + new columns `mined_ha_cur` (Option 2), `mined_ha_raw`, `unconf_ha`; its two exports are submitted → re-run to rebuild. Remaining: 2/1 km and national extent; `STOCK_MAX_LOSS_X1000` (25) provisional.
 - [ ] Industrial-mine exclusion confirmed deployed and visually QA'd, but not formally scored.
 - [ ] Spatial cross-validation for the embedding classifier (by district) — not started.
 - [ ] Score Maus/Tang & Werner/SmallMinesDS against each other more formally (currently informal EDA-level comparisons only).
-- [ ] **Overhaul `embedding_classifier_approach.md`** (straighten + slim, like the backdating report). Key gap: reported accuracy (OA 0.891 / PA 0.870 / UA 0.907, SmallMinesDS 2022) is not for the deployed product, since the sweep stops at cutoff 64 and the deployed cutoff is 70. Re-score the deployed cutoff-70 masks against SmallMinesDS 2022 (and 2016 if usable); state the balanced-test-set and single-year/5-district caveats.
-- [ ] **Decide what counts as "mined" in the panel** (pre-2017 survivor-only vs raw flickering 2017+ masks; ever-mined + entry rule vs current mask + flicker rule) — see `notes/2026-11-18_what_counts_as_mined.md`.
+- [~] **Accuracy at the deployed cutoff**: `diag_02_scoring.R` sweep now covers cutoff 70 (2022 probabilities vs SmallMinesDS: PA 0.646, UA 0.946, F1 0.768, AUC 0.959). Final-mask (post-knockout, raw/Option 1/Option 2) PA/UA comes from `diag03_points_2022`. Still to do: overhaul `embedding_classifier_approach.md` (slim; replace the old OA 0.891 / PA 0.870 / UA 0.907 numbers; state balanced-test-set and single-year/5-district caveats).
+- [x] **What counts as "mined"** — resolved 2026-11-25: Rule B; Option 1 (ever mined) main, Option 2 (currently mined) 2017+ only. Event-study caveat: any smoothing rule autocorrelates treatment, so run with/without it.
+- [ ] **RS folder reorg, remaining**: per-stage subfolders (`01_labels/` … `04_backdating/`, `utils/`, `explore/`; HTML → `outputs/reports/`); merge `make_industrial_mines_dataset.R` + `upload_industrial_candidate_maus.R` → `build_03a_industrial_mines.R` (verify identical to `industrial_final_selected_2026-10-27`).
 
 ### Build (`code/2_build/`)
 
@@ -74,6 +78,7 @@ section, for anything below day-to-day). Current pipeline: `build_01_labels.R` �
 - [ ] Re-fit all event-study designs once outcome revisions (peak-EVI robustness, river definition) settle.
 - [ ] Add Hansen Global Forest Change as an event-study outcome.
 - [x] `a_01_incidence_maps_rs.R` (new) — RS-panel equivalent of `a_01_incidence_maps.R`, built and run.
+- [x] `a_06_mining_by_region` (`_data.R` needs EE, then `.qmd`) — moved from `1_remote_sensing/diag_05_*` 2026-11-25; outputs still in `outputs/*/diag_05/`.
 - [ ] D3b, D4a, D5c, D6a–c still blocked on the data items above; D3c partially unblocked (see Data section).
 
 ### Presentation (`code/4_presentation/`)
@@ -96,7 +101,7 @@ code/
 │                       time that's happened; don't re-add one)
 ├── 2_build/           b_NN_* — writes data/processed/ artifacts
 │                      (b_01 cross-sections, b_02 first-stage models, b_03a–e event panel,
-│                       b_04 RS mining panel — new, in progress)
+│                       b_04 RS mining panel)
 ├── 3_analysis/        a_NN_* — figures, tables, reports (Barenblitt-based + a_01_..._rs.R RS twin)
 └── 4_presentation/    Quarto/LaTeX slides summarizing motivation & findings
 ```
@@ -128,8 +133,9 @@ Barenblitt's own pipeline). `mine_data` has not been switched over in any Part 2
 | 1 | Harmonise external labels (Barenblitt + Tang & Werner; Maus tried, ablated out) + SmallMinesDS hold-out | done | `build_01_labels.R` |
 | 2 | Train RF on AlphaEarth embeddings, export annual probability tiles 2017–2025 | done | `build_02_embedding_classifier.R` |
 | 3 | Threshold + postprocess (water/road/urban/industrial knockouts) → annual binary mask | done | `build_03_embedding_panel.R` |
-| 4 | Backdate 2005–2016 via Barenblitt-replica NDVI-decline dating | done, robustness pending | `build_04_backdating.R` |
-| 5 | Assemble hex × year panel | 5 km only, bar_hull-scoped | `2_build/b_04_rs_mining_panel.R` |
+| 3b | Temporal rule (Rule B) → current status + entry year 2017–2025 | done | `build_03b_temporal_rules.R` |
+| 4 | Backdate 2000–2016 via Barenblitt-replica NDVI-decline dating (rule e) | done, robustness pending | `build_04_backdating.R` |
+| 5 | Assemble hex × year panel | 5 km only, b_01 study area; rebuild pending | `2_build/b_04_rs_mining_panel.R` |
 | — | Spatial CV / district-level accuracy assessment | not started | — |
 
 ---
@@ -222,9 +228,9 @@ anything that looks wrong rather than assume it's current.*
 
 | ID | Task | Status | Script |
 |----|------|--------|--------|
-| D7a | Hexagon or EA panel with land-use variables | todo | `a_06_dataset_panel.R` |
-| D7b | Mining intensity + agricultural intensity (NDVI/EVI) over time | todo | `a_06_dataset_panel.R` |
-| D7c | Merge census variables (2000, 2010, 2021) | todo | `a_06_dataset_panel.R` |
+| D7a | Hexagon or EA panel with land-use variables | todo | `a_07_dataset_panel.R` |
+| D7b | Mining intensity + agricultural intensity (NDVI/EVI) over time | todo | `a_07_dataset_panel.R` |
+| D7c | Merge census variables (2000, 2010, 2021) | todo | `a_07_dataset_panel.R` |
 
 ---
 
@@ -232,6 +238,7 @@ anything that looks wrong rather than assume it's current.*
 
 ---
 
+*Updated 2026-11-25: RS punch list (Rule B, 2017–2025 report, b_04 rewire, cutoff-70 scoring, reorg), stage table, D7 script renamed a_07 (a_06 is taken).*
 *Last major revision: 2026-11-06 — Part 1 and the Data/RS punch-list items rewritten against verified
 current state (previous version, from 2026-07-15, had drifted to describing a pre-reorg,
 not-yet-deployed classifier as the current one). Part 2/3 spot-checked, not re-audited.*
