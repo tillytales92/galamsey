@@ -132,16 +132,33 @@ okA <- fetch_or_submit("diag03_areas", function()
     description = "diag03_areas", folder = DRIVE_FOLDER, fileFormat = "CSV"))
 
 ####5. Export B: SmallMinesDS 2022 points on the final masks ####
-pts <- readRDS(here("data", "processed", "labels", "smallminesds_validation_points_2022.rds")) |>
-  mutate(pt_id = row_number()) |> select(pt_id, patch_id, label) |> st_transform(4326)
-chunks <- split(pts, ceiling(seq_len(nrow(pts)) / 2000))
-pts_ee <- Reduce(function(a, b) a$merge(b), lapply(chunks, function(x) sf_as_ee(x, via = "getInfo")))
-pt_img <- ee$Image$cat(list(raw[["2022"]]$rename("raw"), cur[["2022"]]$rename("cur"), ever[["2022"]]$rename("ever")))
-okB <- fetch_or_submit("diag03_points_2022", function()
-  ee$batch$Export$table$toDrive(
-    collection = pt_img$sampleRegions(collection = pts_ee, properties = list("pt_id", "patch_id", "label"),
-                                      scale = SCALE, geometries = FALSE, tileScale = 8L),
-    description = "diag03_points_2022", folder = DRIVE_FOLDER, fileFormat = "CSV"))
+# Two stages (2026-11-25): sampling with the 11,040 points inlined in the task ran out of memory
+# (EE error code 8), so the points are first stored as a table asset (cheap task, no image maths),
+# and the sampling export reads that asset. Re-run the script after each stage completes.
+PTS_ASSET <- file.path(EE_ASSET_HOME, "diag03_smallminesds_pts_2022")
+asset_exists <- function(id) tryCatch({ ee$data$getAsset(id); TRUE }, error = function(e) FALSE)
+okB <- FALSE
+if (!asset_exists(PTS_ASSET)) {
+  if (task_running("diag03_pts_upload")) {
+    message("  'diag03_pts_upload' still running")
+  } else {
+    pts <- readRDS(here("data", "processed", "labels", "smallminesds_validation_points_2022.rds")) |>
+      mutate(pt_id = row_number()) |> select(pt_id, patch_id, label) |> st_transform(4326)
+    chunks <- split(pts, ceiling(seq_len(nrow(pts)) / 2000))
+    pts_inline <- Reduce(function(a, b) a$merge(b), lapply(chunks, function(x) sf_as_ee(x, via = "getInfo")))
+    ee$batch$Export$table$toAsset(collection = pts_inline, description = "diag03_pts_upload",
+                                  assetId = PTS_ASSET)$start()
+    message("  submitted 'diag03_pts_upload' (points -> asset); re-run when it completes")
+  }
+} else {
+  pts_ee <- ee$FeatureCollection(PTS_ASSET)
+  pt_img <- ee$Image$cat(list(raw[["2022"]]$rename("raw"), cur[["2022"]]$rename("cur"), ever[["2022"]]$rename("ever")))
+  okB <- fetch_or_submit("diag03_points_2022", function()
+    ee$batch$Export$table$toDrive(
+      collection = pt_img$sampleRegions(collection = pts_ee, properties = list("pt_id", "patch_id", "label"),
+                                        scale = SCALE, geometries = FALSE, tileScale = 16L),
+      description = "diag03_points_2022", folder = DRIVE_FOLDER, fileFormat = "CSV"))
+}
 
 if (okA && okB) message("Both CSVs in ", OUT_DIR, " -- render diag_03_embedding_product_report.Rmd") else
   message("Exports pending -- re-run once COMPLETED.")

@@ -37,10 +37,29 @@ The project has two sequential phases:
 
 **Pipeline:** `0_data` → `1_remote_sensing` → `2_build` → `3_analysis` → `4_presentation`
 
+### Next up (as of 2026-11-25, in order)
+
+1. **Finish the running round (waits on GEE).** `diag03_points_2022` failed (out of memory, 11k points inlined);
+   now two-stage: `diag03_pts_upload` (points → asset `diag03_smallminesds_pts_2022`) submitted 2026-11-25, then
+   re-run `diag_03_embedding_product.R` to submit the sampling export. Other exports pending: `diag03_areas`,
+   `b_04_rs_onset_area_rulee_conf_5km`, `b_04_rs_mask_area_ruleB_5km`,
+   `diag_04_classifier_era_codes_2017_2025_ruleB`. When COMPLETED: re-run `diag_03_embedding_product.R`,
+   `b_04_rs_mining_panel.R`, `diag_04_backdating.R` §2c → render `diag_03_embedding_product_report.Rmd` and
+   `diag_04_backdating_report.Rmd` → re-run `a_01_incidence_maps_rs.R` on the rebuilt panel.
+2. **Check the Option 1 vs Option 2 gap in 2017** (21 km² at scale 100; must be 0) in the 10 m `diag03_areas` output.
+3. **Read the final-mask accuracy** (raw / Option 1 / Option 2 vs SmallMinesDS 2022, from `diag03_points_2022`)
+   and decide: good enough to start the swap, or spatial validation first?
+4. **Push `backdating-onset-rules`** (several unpushed commits) and open a PR into `main`.
+5. **The swap** (the goal of Part 1): extend `b_04` to all of Ghana + 2/1 km; feed it into `b_01`'s mining
+   columns and `b_03b`'s own mining (renumber `b_04` → right after `b_01`, e.g. `b_01b`); re-run the event
+   studies. Run them with and without Rule B (smoothing autocorrelates the treatment indicator).
+
 ### Data (`code/0_data/`)
 
 - [ ] **River definition** for `dist_river_km` + flow treatment (OSM vs MERIT `upa` threshold vs RS measure) — see `rivers_exploration.Rmd`. **Blocked on geologist review.**
 - [~] **Peak-EVI outcome pipeline**: built in `b_03a_vi_panel.R`, run at 5/2 km, 1 km deferred (perf). Remaining: 1 km run; verify ESA CCI class sets against UN-LCCS legend; robustness vs DE Africa 2022 masks.
+- [ ] `d_09_weather.R` v2 export (coastal fill + `t2m_land_share`) submitted but never downloaded — re-run once.
+- [ ] DHS (`d_08`) → hex/district spatial join not started (clusters are in `data/raw/dhs/`).
 - [ ] Re-download/re-stack the missing 2021–2024 MODIS land-cover layers (`d_01` Sec 9 requests 2001:2024, stack ends 2020).
 - [🔒] Acquire: historical mine-licence register (D3c — partially unblocked, see below), COCOBOD cocoa yields (D5c), census microdata / GLSS 7 (D6a–c). Wire weather into D3b: CHIRPS + ERA5-Land now built per hex5km/district 1990-2025 (`d_09_weather.R` v2, `data/processed/weather/`), unused so far.
 - [x] **Ghana Mining Repository EDA** (`d_12_mining_repository.R`): KML + Excel cadastre parsed, cross-file joins verified. `start_date` genuinely spans 1995–2025 (not a flat snapshot) — **this may partially unblock D3c**, pending confirmation it means first issuance, not latest renewal (a `2025-01-01` pileup in 392/1,786 rows needs checking first). See `data_inventory.md` §2.
@@ -59,25 +78,28 @@ section, for anything below day-to-day). Current pipeline: `build_01_labels.R` �
 - [ ] Backdating open: residual 2002 bump (4.6%, ~1.7× neighbours) and 2008 dip (28% bare-at-start); optional despike-rule test (replace any one-year dip, not only single-image years) deferred.
 - [~] **`b_04_rs_mining_panel.R`**: first run 2026-11-18 (`data/processed/rs_mining_panel_hex5km_2000_2025.{rds,csv}`, 3,348 hexes, conventions A / A_persist / B). Rewired 2026-11-25 to the confirmed 2017 anchor + new columns `mined_ha_cur` (Option 2), `mined_ha_raw`, `unconf_ha`; its two exports are submitted → re-run to rebuild. Remaining: 2/1 km and national extent; `STOCK_MAX_LOSS_X1000` (25) provisional.
 - [ ] Industrial-mine exclusion confirmed deployed and visually QA'd, but not formally scored.
-- [ ] Spatial cross-validation for the embedding classifier (by district) — not started.
+- [ ] Spatial cross-validation for the embedding classifier (by district) — not started. SmallMinesDS covers 5 SW districts and one year only; no accuracy evidence for the north. Visual-review (Collect Earth-style) validation is the parked option for that.
+- [ ] `STOCK_MAX_LOSS_X1000 = 25` (pre-2007 starting stock under convention B) still provisional.
+- [ ] `validate_finalproduct.js`: "Final product > raw" km² discrepancy (2026-09-21 open item) never investigated — check if still present.
+- [ ] Explore app (`explore_mining_vs_forest_type_app.js`) GEE App publish error ("mine_mask_ghana_c4_2024 not found") unresolved; next check = the App's bound Cloud Project vs `rgee-auth-tillam`.
 - [ ] Score Maus/Tang & Werner/SmallMinesDS against each other more formally (currently informal EDA-level comparisons only).
 - [~] **Accuracy at the deployed cutoff**: `diag_02_scoring.R` sweep now covers cutoff 70 (2022 probabilities vs SmallMinesDS: PA 0.646, UA 0.946, F1 0.768, AUC 0.959). Final-mask (post-knockout, raw/Option 1/Option 2) PA/UA comes from `diag03_points_2022`. Still to do: overhaul `embedding_classifier_approach.md` (slim; replace the old OA 0.891 / PA 0.870 / UA 0.907 numbers; state balanced-test-set and single-year/5-district caveats).
 - [x] **What counts as "mined"** — resolved 2026-11-25: Rule B; Option 1 (ever mined) main, Option 2 (currently mined) 2017+ only. Event-study caveat: any smoothing rule autocorrelates treatment, so run with/without it.
-- [ ] **RS folder reorg, remaining**: per-stage subfolders (`01_labels/` … `04_backdating/`, `utils/`, `explore/`; HTML → `outputs/reports/`); merge `make_industrial_mines_dataset.R` + `upload_industrial_candidate_maus.R` → `build_03a_industrial_mines.R` (verify identical to `industrial_final_selected_2026-10-27`).
+- [ ] **RS folder reorg, remaining**: per-stage subfolders (`01_labels/` … `04_backdating/`, `utils/`, `explore/`; HTML → `outputs/reports/` already done 2026-11-25); merge `make_industrial_mines_dataset.R` + `upload_industrial_candidate_maus.R` → `build_03a_industrial_mines.R` (verify identical to `industrial_final_selected_2026-10-27`).
 
 ### Build (`code/2_build/`)
 
 - [x] `b_01_cross_section.R` run (hex 1/2/5 km + district caches exist). `b_02_firststage_models.R` full ladder run (`d03_maup_results.rds` exists). `b_03a`–`e` event panels exist at 1/2/5 km.
 - [ ] Extend the MERIT D8 hex flow graph beyond the study-area clip to all of Ghana.
-- [~] `b_04_rs_mining_panel.R` — 5 km panel built; see Remote Sensing section above for what remains.
+- [~] `b_04_rs_mining_panel.R` — 5 km panel built; see Remote Sensing section above for what remains. Not yet used by `b_01`–`b_03` (they still read Barenblitt et al.) — see "The swap" in Next up.
 
 ### Analysis (`code/3_analysis/`)
 
 - [x] `a_05_event_study_1.Rmd` knitted (2026-07-16). `a_05_event_study_2.Rmd` knitted (2026-07-13). `a_05_event_study_2b.Rmd` knitted (2026-07-09, not in previous version of this list).
-- [ ] `a_05_event_study_3.Rmd` not yet knitted — treat as provisional until it is.
+- [ ] `a_05_event_study_3.Rmd` not yet knitted — treat as provisional until it is. `a_03_firststage_diagnostics.Rmd` has no rendered HTML either.
 - [ ] Re-fit all event-study designs once outcome revisions (peak-EVI robustness, river definition) settle.
 - [ ] Add Hansen Global Forest Change as an event-study outcome.
-- [x] `a_01_incidence_maps_rs.R` (new) — RS-panel equivalent of `a_01_incidence_maps.R`, built and run.
+- [x] `a_01_incidence_maps_rs.R` — RS-panel equivalent of `a_01_incidence_maps.R`; repointed 2026-11-25 to `data/processed/rs_mining_panel_hex5km_2000_2025.rds` (ever mined). Re-run after the `b_04` rebuild.
 - [x] `a_06_mining_by_region` (`_data.R` needs EE, then `.qmd`) — moved from `1_remote_sensing/diag_05_*` 2026-11-25; outputs still in `outputs/*/diag_05/`.
 - [ ] D3b, D4a, D5c, D6a–c still blocked on the data items above; D3c partially unblocked (see Data section).
 
@@ -238,6 +260,7 @@ anything that looks wrong rather than assume it's current.*
 
 ---
 
+*Updated 2026-11-25 (later): "Next up" list + open items added; code docs now in `code/*/documentation/`, rendered reports in `outputs/reports/`.*
 *Updated 2026-11-25: RS punch list (Rule B, 2017–2025 report, b_04 rewire, cutoff-70 scoring, reorg), stage table, D7 script renamed a_07 (a_06 is taken).*
 *Last major revision: 2026-11-06 — Part 1 and the Data/RS punch-list items rewritten against verified
 current state (previous version, from 2026-07-15, had drifted to describing a pre-reorg,
