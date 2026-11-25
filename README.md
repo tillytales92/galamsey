@@ -33,7 +33,8 @@ code/
 ├── 0_data/            d_NN_*  — raw-data acquisition & covariate builders
 │                               (elevation, waterways, MERIT hydrology, gold geology, GEE downloads)
 ├── 1_remote_sensing/          — AlphaEarth-embeddings classifier + backdating pipeline:
-│                               build_* (the sequential pipeline: labels → classifier →
+│                               one subfolder per stage (01_labels/ … 04_backdating/,
+│                               utils/, explore/); build_* (the sequential pipeline: labels → classifier →
 │                               annual masks → temporal rule → backdating) / diag_*
 │                               (re-run-on-change diagnostics + reports) / upload_*
 │                               (local layers → EE assets) / validate_*, explore_* (one-off).

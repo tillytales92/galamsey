@@ -288,10 +288,10 @@ step itself is not yet built.
 
 | Piece | Path |
 |---|---|
-| Label harmonisation | `code/1_remote_sensing/build_01_labels.R` |
-| Classifier + ablation | `code/1_remote_sensing/build_02_embedding_classifier.R` |
-| Panel post-processing (cutoff/masks) | `code/1_remote_sensing/build_03_embedding_panel.R` |
-| Backdating (2000–2016) | `code/1_remote_sensing/build_04_backdating.R` |
+| Label harmonisation | `code/1_remote_sensing/01_labels/build_01_labels.R` |
+| Classifier + ablation | `code/1_remote_sensing/02_classifier/build_02_embedding_classifier.R` |
+| Panel post-processing (cutoff/masks) | `code/1_remote_sensing/03_annual_masks/build_03_embedding_panel.R` |
+| Backdating (2000–2016) | `code/1_remote_sensing/04_backdating/build_04_backdating.R` |
 | Design notes (archived) | `notes/archive/rs03_embedding_classifier_design.md` |
 | Literature review | `literature/rs/remote_sensing_overview.md` |
 | Label artifacts | `data/processed/labels/labels_positives_{polygons,points}.rds`, `labels_exclusion_mask.rds`, `smallminesds_validation_points_{2016,2022}.rds` |

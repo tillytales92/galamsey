@@ -5,6 +5,21 @@ directly from satellite imagery via Google Earth Engine, so the RS-derived mine 
 replace Barenblitt as the `mine_data` source throughout Parts 2–3. It is the "swap-in" target the
 build scripts are written around.
 
+**Folder layout (2026-11-25).** Scripts sit in one subfolder per pipeline stage; each stage holds its
+`build_*` script, the `diag_*` diagnostics/report that check it, and the helpers it needs:
+
+| Subfolder | Contents |
+|---|---|
+| `01_labels/` | `build_01_labels.R`; `upload_reference_products.R` (Barenblitt et al. / Maus / Tang & Werner / SmallMinesDS as EE assets for comparison) |
+| `02_classifier/` | `build_02_embedding_classifier.R`; `diag_02_scoring.R`, `diag_02_external_references.R` |
+| `03_annual_masks/` | `build_03_embedding_panel.R`, `build_03b_temporal_rules.R`; `diag_03_embedding_product.R` + report; industrial-mine helpers (`make_industrial_mines_dataset.R`, `upload_industrial_candidate_maus.R`, `upload_gold_leases.R`, `validate_industrial_coverage.js`); `validate_finalproduct.js` |
+| `04_backdating/` | `build_04_backdating.R`; `diag_04_backdating.R` + report, `diag_04_groundtruth.R`, `diag_04_method_fidelity.R` |
+| `utils/` | `validate_gee_assets.R` (asset inventory), `upload_protected_areas.R` |
+| `explore/` | `explore_mining_vs_forest_type{,_app}.js`, `validate_site_timeseries.R` |
+| `documentation/` | this file, `embedding_classifier_approach.md` |
+
+Sections below are still ordered by script, not by folder.
+
 > **File-set current as of 2026-11-05.** Deployed model: 4-class (`c4` = mine/urban/water/other),
 > `no_maus` label combo, cutoff **70**, GHSL-100m epoch-matched urban mask at **500**/10000, JRC
 > GSW permanent-water/coast and GRIP4 road buffers, **plus industrial-mine exclusion (ICMM/Maus,

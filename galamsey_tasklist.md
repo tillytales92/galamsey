@@ -85,7 +85,7 @@ section, for anything below day-to-day). Current pipeline: `build_01_labels.R` �
 - [ ] Score Maus/Tang & Werner/SmallMinesDS against each other more formally (currently informal EDA-level comparisons only).
 - [~] **Accuracy at the deployed cutoff**: `diag_02_scoring.R` sweep now covers cutoff 70 (2022 probabilities vs SmallMinesDS: PA 0.646, UA 0.946, F1 0.768, AUC 0.959). Final-mask (post-knockout, raw/Option 1/Option 2) PA/UA comes from `diag03_points_2022`. Still to do: overhaul `embedding_classifier_approach.md` (slim; replace the old OA 0.891 / PA 0.870 / UA 0.907 numbers; state balanced-test-set and single-year/5-district caveats).
 - [x] **What counts as "mined"** — resolved 2026-11-25: Rule B; Option 1 (ever mined) main, Option 2 (currently mined) 2017+ only. Event-study caveat: any smoothing rule autocorrelates treatment, so run with/without it.
-- [ ] **RS folder reorg, remaining**: per-stage subfolders (`01_labels/` … `04_backdating/`, `utils/`, `explore/`; HTML → `outputs/reports/` already done 2026-11-25); merge `make_industrial_mines_dataset.R` + `upload_industrial_candidate_maus.R` → `build_03a_industrial_mines.R` (verify identical to `industrial_final_selected_2026-10-27`).
+- [ ] **RS folder reorg, remaining**: per-stage subfolders and HTML → `outputs/reports/` DONE 2026-11-25; still to do: merge `make_industrial_mines_dataset.R` + `upload_industrial_candidate_maus.R` → `build_03a_industrial_mines.R` (verify identical to `industrial_final_selected_2026-10-27`).
 
 ### Build (`code/2_build/`)
 

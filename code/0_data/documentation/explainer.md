@@ -333,7 +333,7 @@ scale. Non-blocking workflow: re-run until the exports are downloaded.
 **Purpose:** A cheap onset-year proxy for Maus et al.'s static mining polygons: the earliest and
 modal year of Hansen Global Forest Change forest loss inside each polygon, checked against
 Barenblitt et al.'s per-parcel conversion years where the two overlap (SW Ghana, 2007–2017).
-Written 2026-07-07, before the project's own backdating (`1_remote_sensing/build_04_backdating.R`)
+Written 2026-07-07, before the project's own backdating (`1_remote_sensing/04_backdating/build_04_backdating.R`)
 existed; that is now the main dating method, so this is a side diagnostic.
 
 **Caveats:** forest loss is not mining (logging, fire, clearing); polygons that were not forest in
@@ -354,7 +354,7 @@ script row-binds them back together.
 
 **Outputs:** `data/processed/protected_areas/protected_areas_{poly,points}.shp` (WGS84, one feature
 per SITE_ID), the raw unzip in `data/processed/protected_areas/unzipped/`, and
-`outputs/figures/protected_areas/`. `1_remote_sensing/upload_protected_areas.R` filters the
+`outputs/figures/protected_areas/`. `1_remote_sensing/utils/upload_protected_areas.R` filters the
 designated areas and uploads them to Earth Engine for the explore app.
 
 ## d_12_mining_repository.R
@@ -370,7 +370,7 @@ it may be the latest renewal, not first issuance.
 
 **Outputs:** `data/processed/mining_repository/active_licenses_clean.gpkg` (granted licences with
 cleaned type and a gold flag), `outputs/figures/mining_repository/`.
-`1_remote_sensing/upload_gold_leases.R` takes the gold mining leases from it for the
+`1_remote_sensing/03_annual_masks/upload_gold_leases.R` takes the gold mining leases from it for the
 industrial-mine work.
 
 ## d_13_nightlights.R
