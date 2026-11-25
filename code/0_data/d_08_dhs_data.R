@@ -2,7 +2,7 @@
 # Pulls Ghana DHS (Demographic and Health Survey) data via the `rdhs` package:
 # economic/employment, household wealth, and maternal/newborn health, all from the IR
 # (women's) recode, plus GE cluster coordinates for later spatial join onto the hex/
-# district panel. Design + how to add a new domain: code/0_data/explainer.md.
+# district panel. Design + how to add a new domain: code/0_data/documentation/explainer.md.
 #
 # Setup required before first run (see https://docs.ropensci.org/rdhs/):
 #   1. Register a DHS Program project at https://dhsprogram.com/data/new-user-registration.cfm

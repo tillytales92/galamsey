@@ -2,7 +2,7 @@
 # Two-part gold-potential characterisation:
 #
 # PART 1 — Hydro-geomorphic analysis for ALLUVIAL (placer) gold potential (Secs A–E, J–L)
-#   Plan + conceptual background: code/0_data/gold_deposits.md. Explains what we are looking
+#   Plan + conceptual background: code/0_data/documentation/gold_deposits.md. Explains what we are looking
 #   for (valley bottoms, floodplains, terraces, confluences, depressions), why each matters
 #   for alluvial gold, and how MERIT Hydro / a DEM / WhiteboxTools / SAGA produce the layers.
 #   This script was split out of d_02_elevation.R, which is now the basic terrain layer only.

@@ -5,7 +5,7 @@
 #
 # NOTE: the valley-bottom / floodplain hydro-geomorphic indices (MRVBF, HAND, flow
 # direction, sinks, etc.) have been moved to code/0_data/d_06_gold_deposits.R — see the plan
-# in code/0_data/gold_deposits.md. This script is deliberately the *basic* terrain layer only.
+# in code/0_data/documentation/gold_deposits.md. This script is deliberately the *basic* terrain layer only.
 #
 # Source: elevatr -> AWS Terrain Tiles (Mapzen/Tilezen).
 #   https://github.com/tilezen/joerd/blob/master/docs/data-sources.md

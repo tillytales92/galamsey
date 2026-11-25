@@ -2,7 +2,7 @@
 # RS-panel counterpart to a_01_incidence_maps.R's D1a/D1b -- same palette/layout conventions,
 # driven by code/2_build/b_04_rs_mining_panel.R's hex panel instead of Barenblitt. Kept as a
 # SEPARATE script/output set, not a replacement (2026-11-05 decision: keep both sources available
-# for comparison, see code/2_build/explainer.md once b_04 gets its own entry there).
+# for comparison, see code/2_build/documentation/explainer.md once b_04 gets its own entry there).
 #
 # Scope note: b_04 currently only has a 5km hex CSV, bar_hull-scoped (not national) -- see that
 # script's own header. This script inherits both limits; extending either is a b_04-level decision,

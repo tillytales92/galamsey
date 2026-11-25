@@ -19,10 +19,10 @@ but not yet used.
 
 *See also: `galamsey_tasklist.md` (task status); `notes/barenblitt_dataset_documentation.md` and
 `notes/girard_gold_suitability_documentation.md` (extended dataset notes);
-`code/0_data/gold_deposits.md` (hydro-geomorphic instrument plan);
-`code/0_data/rivers_exploration.Rmd` (river-definition exploration);
-`code/1_remote_sensing/explainer.md` (script-by-script status/rationale for the RS mine-detection
-pipeline) and `code/1_remote_sensing/embedding_classifier_approach.md` (plain-language methodology
+`code/0_data/documentation/gold_deposits.md` (hydro-geomorphic instrument plan);
+`code/0_data/documentation/rivers_exploration.Rmd` (river-definition exploration);
+`code/1_remote_sensing/documentation/explainer.md` (script-by-script status/rationale for the RS mine-detection
+pipeline) and `code/1_remote_sensing/documentation/embedding_classifier_approach.md` (plain-language methodology
 write-up of §1's classifier + backdating).*
 
 ---
@@ -32,8 +32,8 @@ write-up of §1's classifier + backdating).*
 The dependent variable of the whole project: where and when land was converted to mining. Barenblitt
 is the current source; the RS panel below (this project's own classifier + backdating) is being
 developed to **replace** it (the `mine_data` swap point in Part 2/3 scripts). Full rationale and
-script-by-script detail: `code/1_remote_sensing/explainer.md` and
-`code/1_remote_sensing/embedding_classifier_approach.md`.
+script-by-script detail: `code/1_remote_sensing/documentation/explainer.md` and
+`code/1_remote_sensing/documentation/embedding_classifier_approach.md`.
 
 | Dataset | Source | Coverage | Years | Status | Use | Script |
 |---------|--------|----------|-------|--------|-----|--------|
@@ -108,7 +108,7 @@ down-weight `gold_suit_share` at 1–2 km grids.
 ## 4. Rivers & hydrology
 
 Two representations of the river network, plus a sub-basin partition, are in use; the remaining
-candidates add real-water observation and finer river topology. (See `code/0_data/rivers_exploration.Rmd`
+candidates add real-water observation and finer river topology. (See `code/0_data/documentation/rivers_exploration.Rmd`
 for the full river-definition comparison.)
 
 | Dataset | Source | Coverage | Years | Resolution | Status | Use | Script |
@@ -141,7 +141,7 @@ remains an unacquired candidate.
 genuinely in use (`elev_mean`/`slope_mean` are extracted and joined in `b_01_cross_section.R`).
 MERIT-DEM is the base for the placer/valley-bottom indices (HAND, MRVBF, SPI/STI) `d_06`/`d_04`
 compute (checked 2026-11-06: genuinely written to disk, but consumed nowhere downstream) — a parked
-idea, not actively pursued. See `code/0_data/gold_deposits.md` for the full placer-geomorphology
+idea, not actively pursued. See `code/0_data/documentation/gold_deposits.md` for the full placer-geomorphology
 plan and rationale; not re-explained here.
 
 ---

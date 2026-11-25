@@ -135,7 +135,7 @@ them):
 ```{r outcomes-setup}
 # Vegetation-index outcomes, built from the reworked b_03a_vi_panel.R "peak EVI" pipeline
 # (Vashold et al. 2026 methodology; see galamsey_tasklist.md's Data section and
-# code/2_build/explainer.md). Restricted 2026-07-08 to peak (max) only, for both NDVI and EVI;
+# code/2_build/documentation/explainer.md). Restricted 2026-07-08 to peak (max) only, for both NDVI and EVI;
 # the veg_narrow mask was dropped 2026-07-16, leaving nominecrop + cropland -- see the prose
 # above this chunk for what each mask means. evi_modis_nominecrop_max is listed first and is the
 # HEADLINE throughout this file (the panelview-thresholds completeness check points at it

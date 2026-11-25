@@ -1,6 +1,6 @@
 # Alluvial Gold Potential from Hydro-Geomorphology — Plan
 
-*Companion to `code/0_data/data_gold_deposits.R`. Working/planning document — this is where we
+*Companion to `code/0_data/d_06_gold_deposits.R` (and `d_02`, `d_04`). Working/planning document — this is where we
 think through the approach before committing code. Status: exploratory.*
 
 ---

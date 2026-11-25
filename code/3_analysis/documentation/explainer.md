@@ -11,7 +11,7 @@ shapefiles today, ready to swap in the RS panel once Part 1 is complete.
 
 **The methodology behind the statistical content of `a_02`, `a_03`, and `a_05` — Moran's I, LISA,
 the geography-weighted null, the M1–M5 ladder, the spatial spline, the spatial lag model, and every
-event-study design — is documented separately in [`../4_presentation/methodology_explainer.md`](../4_presentation/methodology_explainer.md).**
+event-study design — is documented separately in [`../4_presentation/methodology_explainer.md`](../../4_presentation/documentation/methodology_explainer.md).**
 This file describes *what each script does and emits*; the methodology file describes *how the
 methods work and what they do and do not show*.
 

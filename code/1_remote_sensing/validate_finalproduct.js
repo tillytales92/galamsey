@@ -278,7 +278,7 @@ function outsideCoverage(label, testRegion) {
 // OWN_REGION), once over just the currently selected site (currentAoi) -- so you can see whether
 // the deployed product behaves the same way locally as it does over the source's full extent.
 //
-// CAVEAT (2026-09-22, see notes/2026-09-21_open_items.md sections F-H): computed at scale:100 for
+// CAVEAT (2026-09-22, see notes/archive/2026-09-21_open_items.md sections F-H): computed at scale:100 for
 // speed -- coarser than deployedNat's true native 10m storage resolution. deployedNat is exported
 // with pyramidingPolicy "mode", so summarising it at 100m rounds mixed/boundary 100m cells up to
 // fully "mined" wherever mined pixels are the local majority -- inflating "Final product km2" by

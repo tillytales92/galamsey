@@ -48,7 +48,7 @@ The project has two sequential phases:
 
 ### Remote Sensing (`code/1_remote_sensing/`)
 
-Full script-by-script status: `code/1_remote_sensing/explainer.md` (re-run/re-read this, not this
+Full script-by-script status: `code/1_remote_sensing/documentation/explainer.md` (re-run/re-read this, not this
 section, for anything below day-to-day). Current pipeline: `build_01_labels.R` → `build_02_embedding_classifier.R`
 → `build_03_embedding_panel.R` → `build_03b_temporal_rules.R` → `build_04_backdating.R` → `2_build/b_04_rs_mining_panel.R`.
 

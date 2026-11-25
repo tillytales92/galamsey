@@ -591,11 +591,11 @@ if (APPLY_INDUSTRIAL) {
                   as.numeric(sum(st_area(st_transform(candidate, UTM30N)))) / 1e6))
 
   # persist for QGIS + as an upload fallback if sf_as_ee() still chokes on the geometry
-  dir.create(here("outputs"), showWarnings = FALSE)
-  ind_shp <- here("outputs", "industrial_exclusion_candidate.shp")
-  st_write(candidate, here("outputs", "industrial_exclusion_candidate.gpkg"), delete_dsn = TRUE, quiet = TRUE)
+  dir.create(here("data", "processed", "industrial_mines"), recursive = TRUE, showWarnings = FALSE)
+  ind_shp <- here("data", "processed", "industrial_mines", "industrial_exclusion_candidate.shp")
+  st_write(candidate, here("data", "processed", "industrial_mines", "industrial_exclusion_candidate.gpkg"), delete_dsn = TRUE, quiet = TRUE)
   st_write(candidate, ind_shp, delete_dsn = TRUE, quiet = TRUE)
-  message("  wrote outputs/industrial_exclusion_candidate.{gpkg,shp}")
+  message("  wrote data/processed/industrial_mines/industrial_exclusion_candidate.{gpkg,shp}")
 
   suppressMessages(sf_use_s2(ind_old_s2))
 

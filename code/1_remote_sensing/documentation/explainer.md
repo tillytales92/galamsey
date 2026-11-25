@@ -171,7 +171,7 @@ Section 10b's `recombine_split_tiles()`. `validate_gee_assets.R` checks complete
 per year, 2017–2025 → EE assets `mine_mask_ghana_c4_{yr}`.
 
 **Status as of 2026-09-15:** v1 config settled and deployed (full FP-reduction investigation in
-`notes/2026-09-07_build03_fp_postprocessing_plan.md` + `notes/2026-09-08_build03_config_decision.md`).
+`notes/2026-09-08_build03_config_decision.md`; the 09-07 groundwork notes are in `notes/archive/`).
 2017–2024 masks are exported; **2025 is still pending** — the EE noncommercial quota (Contributor
 tier) ran out mid-month, so the export task is queued rather than blocked outright and should land
 once restricted-mode throttling eases or the quota resets 2026-10-01.

@@ -97,7 +97,7 @@ The catch: embeddings only exist from 2017 — hence the separate backdating pha
    [not yet built] merge into one 2000-2025 surface -> hex x year panel
 ```
 
-§9 covers the last two boxes in plain language. `code/1_remote_sensing/explainer.md` has current
+§9 covers the last two boxes in plain language. `code/1_remote_sensing/documentation/explainer.md` has current
 status/config for every script — check there for what's actually run vs. pending.
 
 ---
@@ -124,12 +124,12 @@ mining." Two geometric fixes:
    becomes an **exclusion mask** (~11,000 km², 4.6% of Ghana); negatives are sampled only outside
    it, so a spot only teaches "not a mine" if no source places mining anywhere near it.
 
-![](../../outputs/figures/embedding_classifier_explainer/fig1_erosion_exclusion_schematic.png)
+![](../../../outputs/figures/embedding_classifier_explainer/fig1_erosion_exclusion_schematic.png)
 
 Result: **9,690 positive polygons + 185 salvage points**, each tagged with source + vintage
 (interactive map: `outputs/figures/labels/labels_overview_map.html`).
 
-![](../../outputs/figures/labels/labels_overview_map.png)
+![](../../../outputs/figures/labels/labels_overview_map.png)
 
 ---
 
@@ -143,7 +143,7 @@ source is paired with the embedding year matching its imagery: **Barenblitt & Ma
 SmallMinesDS itself criticises Maus/Tang by name for lacking acquisition dates; vintage-pairing is
 our answer to that.
 
-![](../../outputs/figures/embedding_classifier_explainer/fig2_vintage_timeline.png)
+![](../../../outputs/figures/embedding_classifier_explainer/fig2_vintage_timeline.png)
 
 ---
 
@@ -238,7 +238,7 @@ cosine-similarity method — was planned as a sanity check but never run; see §
 
 ## 9. After training: from probability maps to a mine panel
 
-Full technical detail lives in `code/1_remote_sensing/explainer.md`; here's the shape of it.
+Full technical detail lives in `code/1_remote_sensing/documentation/explainer.md`; here's the shape of it.
 
 **`build_03_embedding_panel.R`** turns annual probabilities into a binary mine mask. A probability
 alone isn't a map — some cutoff has to separate "mine" from "not" (§8), and raw imagery still
@@ -302,7 +302,7 @@ step itself is not yet built.
 | Probability tiles (deployed) | EE assets `mine_prob_ghana_c4_{2017..2025}_t{01..17}` |
 | Annual binary masks | EE assets `mine_mask_ghana_c4_{2017..2024}` (2025 pending) |
 | Backdated onset years | EE asset `mine_onset_year_2000_2016_{landtrendr,barenblitt}` (pending validation) |
-| Full script-by-script status | `code/1_remote_sensing/explainer.md` |
+| Full script-by-script status | `code/1_remote_sensing/documentation/explainer.md` |
 
 *Data sources: Barenblitt et al. (2021); Maus et al. (2022); Tang & Werner (2023);
 Ofori-Ampofo et al. (2025); Brown et al. (2025). Document: Till Meissner.*

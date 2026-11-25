@@ -4,7 +4,7 @@
 # (Sec 8-10, DISABLED by default — heavy at study-area scale), and the D8 hex flow graph + upstream
 # galamsey-exposure builder (Sec 11) on the canonical d03 5 km hex grid (full SW Ghana).
 #
-# Background and full conceptual framework: code/0_data/gold_deposits.md — read that first.
+# Background and full conceptual framework: code/0_data/documentation/gold_deposits.md — read that first.
 #
 # Two MERIT products (do not confuse them):
 #   MERIT-DEM   (Yamazaki et al. 2017) — error-reduced 90 m DEM. Band 'dem'. Use for elevation,

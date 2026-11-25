@@ -7,7 +7,7 @@
 #   exactly ONE clear observation is replaced by linear interpolation between the nearest years
 #   with >= 2 -> 3yr moving average -> first difference -> qualityMosaic picks the steepest loss.
 #   Rule e removes most single-image fake dips (the 2002 pile-up) without dropping any year.
-#   Validation + rule comparison: code/1_remote_sensing/explainer.md (backdating section).
+#   Validation + rule comparison: code/1_remote_sensing/documentation/explainer.md (backdating section).
 # Cross-check (Section 6): LandTrendr, feeds the lt_agree flag only.
 #
 # Bands (Section 12): two onset conventions + credibility flags --

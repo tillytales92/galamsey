@@ -37,13 +37,16 @@ code/
 │                               annual masks → temporal rule → backdating) / diag_*
 │                               (re-run-on-change diagnostics + reports) / upload_*
 │                               (local layers → EE assets) / validate_*, explore_* (one-off).
-│                               See code/1_remote_sensing/explainer.md for current status.
+│                               See code/1_remote_sensing/documentation/explainer.md for current status.
 ├── 2_build/           b_NN_*  — writes data/processed/ artifacts
 │                               (hex/district cross-sections, first-stage models, event panel,
 │                                RS mining panel)
 ├── 3_analysis/        a_NN_*  — produces figures, tables, and reports
 └── 4_presentation/            — Quarto/LaTeX slides summarizing motivation & findings
 ```
+
+Each code folder has a `documentation/` subfolder with its `explainer.md` (script-by-script
+status and rationale) and any design notes for that stage.
 
 ### Execution order
 

@@ -52,8 +52,8 @@ message(sprintf("Cleaned: %d features, %.0f km2 total", nrow(pa_ee),
                 sum(as.numeric(st_area(st_transform(pa_ee, UTM30N)))) / 1e6))
 
 ####4. Local copy (fallback for a manual Code Editor upload) ####
-dir.create(here("outputs"), showWarnings = FALSE)
-local_shp <- here("outputs", "protected_areas_designated.shp")
+dir.create(here("data", "processed", "protected_areas"), recursive = TRUE, showWarnings = FALSE)
+local_shp <- here("data", "processed", "protected_areas", "protected_areas_designated.shp")
 st_write(pa_ee, local_shp, delete_dsn = TRUE, quiet = TRUE)
 message("Wrote ", local_shp)
 

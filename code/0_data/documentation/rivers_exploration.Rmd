@@ -723,5 +723,5 @@ geochemistry. **Feedback on the [open questions](#geo-questions) would change wh
 
 *Data: MERIT Hydro (Yamazaki et al. 2019); OpenStreetMap contributors; Barenblitt et al. (2021).
 Companion scripts: `d_03_waterways.R` (OSM), `d_04_merit.R` (MERIT flow graph, Secs 11a–11j),
-`d_05_ndvi.R` (Ankobra basin definition). See also `4_presentation/methodology_explainer.md`
+`d_05_ndvi.R` (Ankobra basin definition). See also `4_presentation/documentation/methodology_explainer.md`
 (event-study designs).*

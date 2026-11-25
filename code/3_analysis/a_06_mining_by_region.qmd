@@ -21,7 +21,7 @@ a { color: #9E2F7F; }
 ```
 
 <!--
-a_06_mining_by_region.qmd -- descriptive report on the finished product (see code/3_analysis/explainer.md;
+a_06_mining_by_region.qmd -- descriptive report on the finished product (see code/3_analysis/documentation/explainer.md;
 moved from code/1_remote_sensing/diag_05_* on 2026-11-25). Split 2026-11-06 from a single EE-authenticated .qmd into this
 presentation-only document + a_06_mining_by_region_data.R, which does the EE auth, downloads, and figure/
 table generation. Run a_06_mining_by_region_data.R in RStudio first; this file only reads what it writes to

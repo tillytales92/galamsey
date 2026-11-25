@@ -12,7 +12,7 @@
 #   2018-2024  raw[T] == raw[T+1] -> cur = raw[T]; else cur = cur[T-1]
 #   2025       cur = raw25 (no 2026 to confirm) -> entry_year == 2025 = UNCONFIRMED entries
 # Differs from the tested diag_03 version only at 2017 (there: 2017 = raw).
-# Rationale + design discussion: code/1_remote_sensing/explainer.md ("Temporal-consistency rule").
+# Rationale + design discussion: code/1_remote_sensing/documentation/explainer.md ("Temporal-consistency rule").
 #
 # Does NOT need build_04 to be re-run: the backdating is per pixel, and the confirmed 2017 footprint
 # is a subset of the raw one, so masking the existing onset asset (b_04 Section 2) is equivalent.

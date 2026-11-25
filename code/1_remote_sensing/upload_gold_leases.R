@@ -7,7 +7,7 @@
 # "Mining Lease" AND gold == 1 (NA = no commodity data, dropped). Geometry is cleaned the same way as
 # build_03 (per-feature GEOS check, precision snap, POLYGON-only, MULTIPOLYGON, 4326) so no degenerate
 # rings reach EE. Output asset: projects/rgee-auth-tillam/assets/ghana_mining/mining_leases_gold_<YYYY-MM-DD>
-# plus a local copy in outputs/ to upload by hand if sf_as_ee() times out.
+# plus a local copy in data/processed/industrial_mines/ to upload by hand if sf_as_ee() times out.
 #
 # Run INTERACTIVELY (rgee authentication). Not yet run -- check the asset in the Code Editor afterwards.
 
@@ -69,8 +69,8 @@ message(sprintf("Cleaned: %d features, %.0f km2 total", nrow(leases_ee),
                 sum(as.numeric(st_area(st_transform(leases_ee, UTM30N)))) / 1e6))
 
 ####5. Local copy (fallback for a manual Code Editor upload) ####
-dir.create(here("outputs"), showWarnings = FALSE)
-local_shp <- here("outputs", paste0("mining_leases_gold_", SNAPSHOT, ".shp"))
+dir.create(here("data", "processed", "industrial_mines"), recursive = TRUE, showWarnings = FALSE)
+local_shp <- here("data", "processed", "industrial_mines", paste0("mining_leases_gold_", SNAPSHOT, ".shp"))
 st_write(leases_ee, local_shp, delete_dsn = TRUE, quiet = TRUE)
 message("Wrote ", local_shp)
 

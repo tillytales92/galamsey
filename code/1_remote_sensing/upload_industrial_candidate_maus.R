@@ -40,7 +40,7 @@
 #   projects/rgee-auth-tillam/assets/ghana_mining/industrial_candidate_tangwerner_<YYYY-MM-DD>  (polygons, raw)
 #   projects/rgee-auth-tillam/assets/ghana_mining/industrial_final_selected_<YYYY-MM-DD>        (polygons, FINAL)
 #   projects/rgee-auth-tillam/assets/ghana_mining/icmm_points_ghana_<YYYY-MM-DD>                (points)
-# plus local copies in outputs/ to upload by hand if sf_as_ee() times out.
+# plus local copies in data/processed/industrial_mines/ to upload by hand if sf_as_ee() times out.
 #
 # Run INTERACTIVELY (rgee authentication). Not yet run -- check all four assets in the Code Editor after.
 
@@ -299,11 +299,11 @@ final_ee    <- ee_ready(final_selected)
 icmm_pts_ee <- st_transform(icmm_pts, 4326) |> select(-lon, -lat)
 
 ####5. Local copies (fallback for a manual Code Editor upload) ####
-dir.create(here("outputs"), showWarnings = FALSE)
-maus_shp  <- here("outputs", paste0("industrial_candidate_maus_", SNAPSHOT, ".shp"))
-tw_shp    <- here("outputs", paste0("industrial_candidate_tangwerner_", SNAPSHOT, ".shp"))
-final_shp <- here("outputs", paste0("industrial_final_selected_", SNAPSHOT, ".shp"))
-icmm_shp  <- here("outputs", paste0("icmm_points_ghana_", SNAPSHOT, ".shp"))
+dir.create(here("data", "processed", "industrial_mines"), recursive = TRUE, showWarnings = FALSE)
+maus_shp  <- here("data", "processed", "industrial_mines", paste0("industrial_candidate_maus_", SNAPSHOT, ".shp"))
+tw_shp    <- here("data", "processed", "industrial_mines", paste0("industrial_candidate_tangwerner_", SNAPSHOT, ".shp"))
+final_shp <- here("data", "processed", "industrial_mines", paste0("industrial_final_selected_", SNAPSHOT, ".shp"))
+icmm_shp  <- here("data", "processed", "industrial_mines", paste0("icmm_points_ghana_", SNAPSHOT, ".shp"))
 st_write(maus_ee, maus_shp, delete_dsn = TRUE, quiet = TRUE)
 st_write(tw_ee, tw_shp, delete_dsn = TRUE, quiet = TRUE)
 st_write(final_ee, final_shp, delete_dsn = TRUE, quiet = TRUE)

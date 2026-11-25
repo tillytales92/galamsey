@@ -15,6 +15,10 @@ export) and `d_02` (DEM) are the base downloads; `d_03` builds the waterways lay
 needs; `d_04` builds the MERIT flow graph that the event-panel pipeline needs; `d_07` turns the
 `d_01`-exported HydroBASINS layer into the per-hex sub-basin clustering key that `b_03e` needs;
 `d_05` and `d_06` are diagnostic / instrument-EDA scripts that read what the others produced.
+`d_08` (DHS), `d_09` (weather) and `d_13` (night lights) build outcome/control covariates; `d_10`
+(Hansen forest-loss onset), `d_11` (protected areas) and `d_12` (mining cadastre) prepare layers
+that the remote-sensing work in `1_remote_sensing/` uses (`upload_protected_areas.R`,
+`upload_gold_leases.R` push their outputs to Earth Engine).
 `download_land_cover_ghana.ipynb` is a standalone Python/Jupyter download (Digital Earth Africa
 STAC, not GEE) for ESA CCI land cover, which `d_01` Sec 9 then stacks alongside the GEE rasters.
 There is no strict global ordering beyond "download before you process".
@@ -154,7 +158,7 @@ galamsey-exposure builder.
 
 Plus diagnostic PNGs and interactive leaflet HTML in `outputs/figures/merit/`.
 
-**Background:** read `code/0_data/gold_deposits.md` first for the full conceptual framework.
+**Background:** read `code/0_data/documentation/gold_deposits.md` first for the full conceptual framework.
 
 **Re-run when:** MERIT data updates, or a new hex resolution is added (extend Sec 11 beyond 5 km).
 
@@ -216,7 +220,7 @@ falls within gold-suitable bedrock), and aggregates to district level.
 **Engines:** WhiteboxTools (`whitebox::install_whitebox()`) and SAGA GIS (for MRVBF only).
 **Prerequisite:** `d_02_elevation.R` must have built the reprojected DEM.
 
-**Companion doc:** `code/0_data/gold_deposits.md` — the conceptual plan (what alluvial-gold
+**Companion doc:** `code/0_data/documentation/gold_deposits.md` — the conceptual plan (what alluvial-gold
 landforms are, why each matters, how the tools produce each layer).
 
 ---
@@ -324,6 +328,51 @@ scale. Non-blocking workflow: re-run until the exports are downloaded.
 
 **Re-run when:** extending the years, or adding a hex resolution to `HEX_SIZES_KM`.
 
+## d_10_forest_loss_onset.R
+
+**Purpose:** A cheap onset-year proxy for Maus et al.'s static mining polygons: the earliest and
+modal year of Hansen Global Forest Change forest loss inside each polygon, checked against
+Barenblitt et al.'s per-parcel conversion years where the two overlap (SW Ghana, 2007–2017).
+Written 2026-07-07, before the project's own backdating (`1_remote_sensing/build_04_backdating.R`)
+existed; that is now the main dating method, so this is a side diagnostic.
+
+**Caveats:** forest loss is not mining (logging, fire, clearing); polygons that were not forest in
+2000 get no signal (`has_baseline_forest` flags them, treat as missing); small polygons get few
+30 m pixels (`n_pixels`).
+
+**Inputs:** `data/raw/hansen/hansen_gfc_ghana_stack.tif` (from `d_01`), the Maus v2 gpkg,
+Barenblitt et al.'s 2007–2017 time series (validation only).
+
+**Outputs:** `data/processed/mining_mausetal/gha_maus_onset_years.csv` (one row per Maus polygon),
+`outputs/figures/forest_loss_onset/`. Run; nothing downstream reads it.
+
+## d_11_protected_areas.R
+
+**Purpose:** Unzips and merges the WDPA/WDOECM Ghana protected-areas extract (July 2026), plus basic
+EDA. The source ships as three zips that are disjoint thirds of one layer (290 polygons), so the
+script row-binds them back together.
+
+**Outputs:** `data/processed/protected_areas/protected_areas_{poly,points}.shp` (WGS84, one feature
+per SITE_ID), the raw unzip in `data/processed/protected_areas/unzipped/`, and
+`outputs/figures/protected_areas/`. `1_remote_sensing/upload_protected_areas.R` filters the
+designated areas and uploads them to Earth Engine for the explore app.
+
+## d_12_mining_repository.R
+
+**Purpose:** EDA of the Ghana Minerals Commission cadastre ("Ghana Mining Repository", 2025-11-09
+snapshot): granted licences with boundaries (KML, 1,279), pending applications (KML, 6,894), the full
+licence register (xlsx, 1,786 rows, a superset of the granted KML) and the owner registry (xlsx).
+Parses the KML attributes from raw XML (GDAL drops them) and checks how the four files join.
+
+**Caveat:** `start_date` spans 1995–2025, which might partially unblock D3c ("does galamsey follow
+the first formal mine?"), but a pile-up at 2025-01-01 (392 of 1,786 rows) must be checked first:
+it may be the latest renewal, not first issuance.
+
+**Outputs:** `data/processed/mining_repository/active_licenses_clean.gpkg` (granted licences with
+cleaned type and a gold flag), `outputs/figures/mining_repository/`.
+`1_remote_sensing/upload_gold_leases.R` takes the gold mining leases from it for the
+industrial-mine work.
+
 ## d_13_nightlights.R
 
 **Purpose:** Annual nighttime lights per unit (b_01 hex grid, 5 km; and the 260 districts),
@@ -349,3 +398,17 @@ Changes within a unit relative to the year are safer than levels across the swit
 **Outputs — `data/processed/nightlights/`:** `nightlights_{hex5km,districts}_1992_2025.{rds,csv}`.
 
 **Re-run when:** a new year is released, or a hex resolution is added to `HEX_SIZES_KM`.
+
+---
+
+## Non-script files in this folder
+
+- `download_land_cover_ghana.ipynb` — Python notebook that downloads ESA CCI land cover (300 m,
+  1995–2022) from Digital Earth Africa to `data/raw/land_cover/esa/`. The only source of those
+  rasters, which `d_01` Sec 9 stacks and `2_build/b_03a_vi_panel.R` uses as land-cover masks.
+- `gold_deposits.md` — design note for the alluvial-gold terrain layers (`d_02`, `d_04`, `d_06`
+  cite it section by section).
+- `rivers_exploration.Rmd` / `.html` — self-contained report comparing river definitions (OSM vs
+  MERIT Hydro vs remote sensing) on the Ankobra basin, written for a geologist's review;
+  published on Posit Connect Cloud (the `rsconnect/` folder holds that publish record).
+
